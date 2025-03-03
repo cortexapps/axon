@@ -1,0 +1,91 @@
+City             ,Country                          ,Latitude    ,Longitude   ,Timezone
+Shanghai         ,China                            ,31.2323437  ,121.4691024 ,Asia/Shanghai
+Beijing          ,China                            ,39.9057136  ,116.3912972 ,Asia/Shanghai
+Dhaka            ,Bangladesh                       ,23.7644025  ,90.389015   ,Asia/Dhaka
+Chengdu          ,China                            ,30.6598628  ,104.0633717 ,Asia/Shanghai
+Delhi            ,India                            ,28.6517178  ,77.2219388  ,Asia/Kolkata
+Istanbul         ,Turkey                           ,41.0091982  ,28.9662187  ,Europe/Istanbul
+Karachi          ,Pakistan                         ,24.8546842  ,67.0207055  ,Asia/Karachi
+Guangzhou        ,China                            ,23.1301964  ,113.2592945 ,Asia/Shanghai
+Tianjin          ,China                            ,39.1235635  ,117.1980785 ,Asia/Shanghai
+Tokyo            ,Japan                            ,35.6828387  ,139.7594549 ,Asia/Tokyo
+Moscow           ,Russia                           ,55.755826   ,37.6173     ,Europe/Moscow
+Shenzhen         ,China                            ,22.543096   ,114.057865  ,Asia/Shanghai
+Mumbai           ,India                            ,19.0759837  ,72.8776559  ,Asia/Kolkata
+São Paulo        ,Brazil                           ,-23.5505203 ,-46.633308  ,America/Sao_Paulo
+Kinshasa         ,Democratic Republic of the Congo ,-4.4419311  ,15.2662931  ,Africa/Kinshasa
+Lagos            ,Nigeria                          ,6.5243793   ,3.3792057   ,Africa/Lagos
+Jakarta          ,Indonesia                        ,-6.2087634  ,106.845599  ,Asia/Jakarta
+Lahore           ,Pakistan                         ,31.5497     ,74.3436     ,Asia/Karachi
+Seoul            ,South Korea                      ,37.5665     ,126.978     ,Asia/Seoul
+Wuhan            ,China                            ,30.592849   ,114.305539  ,Asia/Shanghai
+Cairo            ,Egypt                            ,30.0444196  ,31.2357116  ,Africa/Cairo
+Bangkok          ,Thailand                         ,13.7563     ,100.5018    ,Asia/Bangkok
+Chongqing        ,China                            ,29.56301    ,106.551556  ,Asia/Shanghai
+Lima             ,Peru                             ,-12.046374  ,77.042793   ,America/Lima
+Bogotá           ,Colombia                         ,4.711       ,74.0721     ,America/Bogota
+London           ,United Kingdom                   ,51.5074     ,-0.1278     ,Europe/London
+New York City    ,United States                    ,40.7128     ,-74.006     ,America/New_York
+Hong Kong        ,Hong Kong                        ,22.3193     ,114.1694    ,Asia/Hong_Kong
+Baghdad          ,Iraq                             ,33.3152     ,44.3661     ,Asia/Baghdad
+Santiago         ,Chile                            ,-33.4489    ,-70.6693    ,America/Santiago
+Riyadh           ,Saudi Arabia                     ,24.7136     ,46.6753     ,Asia/Riyadh
+Singapore        ,Singapore                        ,1.3521      ,103.8198    ,Asia/Singapore
+Shijiazhuang     ,China                            ,38.0428     ,114.5143    ,Asia/Shanghai
+Sydney           ,Australia                        ,-33.8688    ,151.2093    ,Australia/Sydney
+Ankara           ,Turkey                           ,39.9334     ,32.8597     ,Europe/Istanbul
+Alexandria       ,Egypt                            ,31.2001     ,29.9187     ,Africa/Cairo
+Kolkata          ,India                            ,22.5726     ,88.3639     ,Asia/Kolkata
+Yangon           ,Myanmar                          ,16.8409     ,96.1735     ,Asia/Yangon
+Ahmedabad        ,India                            ,23.0225     ,72.5714     ,Asia/Kolkata
+Ho Chi Minh City ,Vietnam                          ,10.8231     ,106.6297    ,Asia/Ho_Chi_Minh
+Hyderabad        ,India                            ,17.385      ,78.4867     ,Asia/Kolkata
+Pune             ,India                            ,18.5204     ,73.8567     ,Asia/Kolkata
+Surat            ,India                            ,21.1702     ,72.8311     ,Asia/Kolkata
+Suzhou           ,China                            ,31.2989     ,120.5853    ,Asia/Shanghai
+Madrid           ,Spain                            ,40.4168     ,-3.7038     ,Europe/Madrid
+Toronto          ,Canada                           ,43.65107    ,-79.347015  ,America/Toronto
+Belo Horizonte   ,Brazil                           ,-19.9167    ,-43.9345    ,America/Sao_Paulo
+Kuala Lumpur     ,Malaysia                         ,3.139       ,101.6869    ,Asia/Kuala_Lumpur
+Rome             ,Italy                            ,41.9028     ,12.4964     ,Europe/Rome
+Paris            ,France                           ,48.8566     ,2.3522      ,Europe/Paris
+Bucharest        ,Romania                          ,44.4268     ,26.1025     ,Europe/Bucharest
+Vienna           ,Austria                          ,48.2082     ,16.3738     ,Europe/Vienna
+Hamburg          ,Germany                          ,53.5511     ,9.9937      ,Europe/Berlin
+Warsaw           ,Poland                           ,52.2297     ,21.0122     ,Europe/Warsaw
+Budapest         ,Hungary                          ,47.4979     ,19.0402     ,Europe/Budapest
+Barcelona        ,Spain                            ,41.3851     ,2.1734      ,Europe/Madrid
+Munich           ,Germany                          ,48.1351     ,11.582      ,Europe/Berlin
+Milan            ,Italy                            ,45.4642     ,9.19        ,Europe/Rome
+Prague           ,Czech Republic                   ,50.0755     ,14.4378     ,Europe/Prague
+Brussels         ,Belgium                          ,50.8503     ,4.3517      ,Europe/Brussels
+Sofia            ,Bulgaria                         ,42.6977     ,23.3219     ,Europe/Sofia
+Birmingham       ,United Kingdom                   ,52.4862     ,-1.8904     ,Europe/London
+Cologne          ,Germany                          ,50.9375     ,6.9603      ,Europe/Berlin
+Naples           ,Italy                            ,40.8518     ,14.2681     ,Europe/Rome
+Stockholm        ,Sweden                           ,59.3293     ,18.0686     ,Europe/Stockholm
+Turin            ,Italy                            ,45.0703     ,7.6869      ,Europe/Rome
+Amsterdam        ,Netherlands                      ,52.3676     ,4.9041      ,Europe/Amsterdam
+Marseille        ,France                           ,43.2965     ,5.3698      ,Europe/Paris
+Zagreb           ,Croatia                          ,45.815      ,15.9819     ,Europe/Zagreb
+Valencia         ,Spain                            ,39.4699     ,-0.3763     ,Europe/Madrid
+Frankfurt        ,Germany                          ,50.1109     ,8.6821      ,Europe/Berlin
+Seville          ,Spain                            ,37.3891     ,-5.9845     ,Europe/Madrid
+Palermo          ,Italy                            ,38.1157     ,13.3615     ,Europe/Rome
+Lisbon           ,Portugal                         ,38.7223     ,-9.1393     ,Europe/Lisbon
+Athens           ,Greece                           ,37.9838     ,23.7275     ,Europe/Athens
+Helsinki         ,Finland                          ,60.1695     ,24.9355     ,Europe/Helsinki
+Dublin           ,Ireland                          ,53.3498     ,-6.2603     ,Europe/Dublin
+Oslo             ,Norway                           ,59.9139     ,10.7522     ,Europe/Oslo
+Copenhagen       ,Denmark                          ,55.6761     ,12.5683     ,Europe/Copenhagen
+Edinburgh        ,United Kingdom                   ,55.9533     ,-3.1883     ,Europe/London
+Manchester       ,United Kingdom                   ,53.4808     ,-2.2426     ,Europe/London
+Glasgow          ,United Kingdom                   ,55.8642     ,-4.2518     ,Europe/London
+Rotterdam        ,Netherlands                      ,51.9225     ,4.47917     ,Europe/Amsterdam
+The Hague        ,Netherlands                      ,52.0705     ,4.3007      ,Europe/Amsterdam
+Antwerp          ,Belgium                          ,51.2194     ,4.4025      ,Europe/Brussels
+Riga             ,Latvia                           ,56.9496     ,24.1052     ,Europe/Riga
+Vilnius          ,Lithuania                        ,54.6872     ,25.2797     ,Europe/Vilnius
+Tallinn          ,Estonia                          ,59.437      ,24.7535     ,Europe/Tallinn
+Luxembourg City  ,Luxembourg                       ,49.6117     ,6.13        ,Europe/Luxembourg
+Reykjavik        ,Iceland                          ,64.1355     ,-21.8954    ,Atlantic/Reykjavik

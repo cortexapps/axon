@@ -1,0 +1,44 @@
+[tool.poetry]
+name = "cortex-axon-sdk"
+# Version is managed by CI. Do not change here...coz it'll be a NoOp.
+version = "0.0.11"
+description = "Cortex Axon Python SDK"
+authors = ["Cortex <TODO@cortex.io>"]
+readme = "README.md"
+packages = [{ include = "cortex_axon" }, { include = "generated" }]
+include = ["cortex_axon/**", "generated/**"]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+grpcio = "~1.68.1"
+grpcio-tools = "~1.68.1"
+protoletariat = "~3.3.2"
+
+[tool.poetry.group.dev.dependencies]
+ruff = "~0.7.4"
+pytest = "~8.3.3"
+
+[tool.pytest.ini_options]
+pythonpath = [".", "generated", "cortex_axon"]
+testpaths = ["tests"]
+addopts = "--strict-markers"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.ruff]
+exclude = ["generated"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle
+    "F",   # Pyflakes
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "SIM", # flake8-simplify
+    "I",   # isort
+]
+ignore = [
+    "E501", # don't enforce line-length violations
+]

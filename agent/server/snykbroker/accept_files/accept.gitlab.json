@@ -1,0 +1,13 @@
+{
+  "private": [
+    {
+      "method": "any",
+      "path": "/*",
+      "origin": "https://${GITLAB}",
+      "auth": {
+        "scheme": "bearer",
+        "token": "${GITLAB_TOKEN}"
+      }
+    }
+  ]
+}

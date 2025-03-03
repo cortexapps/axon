@@ -1,0 +1,54 @@
+name: Agent Unit Test
+
+on:
+  push:
+    branches:
+      - '**'
+
+# Temporary until SDK is public
+env:
+  GITHUB_USERNAME: ${{ secrets.GH_ACTOR }}
+  GITHUB_PASSWORD: ${{ secrets.GH_TOKEN }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Set up Go
+        uses: actions/setup-go@v3
+        with:
+          go-version: '1.22.9'
+
+      - name: Install dependencies
+        run: |
+            sudo apt install -y protobuf-compiler  
+            make -C agent setup proto
+
+      - name: Run Agent tests
+        run: make -C agent test
+
+      - name: Run Go SDK tests
+        run: |
+          cd sdks/go
+          go mod tidy
+          make test
+
+      - name: Run scaffold test - build image
+        run: |
+          make docker-build
+      
+      - name: Run scaffold test - Go
+        run: |
+          cd scaffold && ./scaffold_test.sh go
+
+      - name: Run scaffold test - Python
+        run: |
+            cd scaffold && ./scaffold_test.sh python
+      
+      - name: Run Relay Test
+        run: |
+          make -C agent relay-test

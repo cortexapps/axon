@@ -1,0 +1,10 @@
+grpcio
+grpcio-tools
+openmeteo-requests
+requests-cache 
+retry-requests 
+numpy 
+pandas
+tzlocal
+pytz
+jinja2

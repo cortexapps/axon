@@ -1,0 +1,17 @@
+#! /bin/sh
+
+echo "Starting Cortex Axon Agent"
+
+# We write a host entry "cortex-api" for convenience
+if ! grep -q "cortex-api" /etc/hosts >/dev/null; then
+    echo "127.0.0.1  cortex-api" >> /etc/hosts
+fi
+
+# Validate variables
+if [ -z "$CORTEX_API_TOKEN" ] && [ -z "$DRYRUN" ]
+then
+  echo "ERROR: Either CORTEX_API_TOKEN or DRYRUN is required"
+  exit 1
+fi
+
+exec /agent/cortex-axon-agent serve "$@"

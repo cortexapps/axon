@@ -1,0 +1,7 @@
+__debug*
+.env
+venv
+
+.idea/*
+sdks/python/dist
+.qodo

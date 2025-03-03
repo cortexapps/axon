@@ -1,0 +1,22 @@
+{
+    "private": [
+      {
+        "method": "any",
+        "path": "/*",
+        "origin": "https://${GITHUB_API}",
+        "auth": {
+          "scheme": "bearer",
+          "token": "${GITHUB_TOKEN}"
+        }
+      },
+      {
+        "method": "POST",
+        "path": "/graphql",
+        "origin": "https://${GITHUB_GRAPHQL}",
+        "auth": {
+          "scheme": "bearer",
+          "token": "${GITHUB_TOKEN}"
+        }
+      }
+    ]
+}

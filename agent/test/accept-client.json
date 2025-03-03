@@ -1,0 +1,16 @@
+{
+    "public": [
+      {
+        "method": "any",
+        "path": "/*"
+      }
+    ],
+    "private": [
+      {
+        "method": "any",
+        "path": "/*",
+        "origin": "http://python-server"
+      }
+    ]
+}
+  

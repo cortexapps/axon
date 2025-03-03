@@ -1,0 +1,15 @@
+syntax = "proto3";
+package cortex.axon;
+
+option go_package = "github.com/cortexapps/axon";
+
+
+//
+// General
+//
+message Error {
+  string code = 1;
+  string message = 2;
+}
+
+
