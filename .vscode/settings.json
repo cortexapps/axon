@@ -1,0 +1,8 @@
+{
+    "testing.coverageToolbarEnabled": true,
+    "go.coverOnSave": true,
+    "go.coverOnSingleTest": true,
+    "go.coverOnSingleTestFile": true,
+    "go.coverShowCounts": true,
+    "go.testExplorer.showDynamicSubtestsInEditor": true
+}

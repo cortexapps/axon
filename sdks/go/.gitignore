@@ -1,0 +1,3 @@
+# I would like to generate these at build time but this causes a failure in CI that I cannot reproduce
+# in a local container, and so i'll come back to it.
+# mock_axon

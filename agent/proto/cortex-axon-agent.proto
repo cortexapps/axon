@@ -1,0 +1,174 @@
+syntax = "proto3";
+package cortex.axon;
+import "common.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/cortexapps/axon";
+
+service AxonAgent {
+  rpc RegisterHandler(RegisterHandlerRequest) returns (RegisterHandlerResponse);
+  rpc UnregisterHandler(UnregisterHandlerRequest) returns (UnregisterHandlerResponse);
+  rpc ListHandlers(ListHandlersRequest) returns (ListHandlersResponse);
+  rpc GetHandlerHistory(GetHandlerHistoryRequest) returns (GetHandlerHistoryResponse);
+
+  rpc Dispatch (stream DispatchRequest) returns (stream DispatchMessage);  
+  rpc ReportInvocation(ReportInvocationRequest) returns (ReportInvocationResponse);
+}
+
+
+
+//
+// Handler Registration
+//
+
+message RegisterHandlerRequest {
+  string dispatch_id = 1;
+  string handler_name = 2;
+  int32 timeout_ms = 3;
+  repeated HandlerOption options = 4;
+}
+
+
+enum HandlerInvokeType {
+  NONE = 0;
+  RUN_NOW = 1;
+  CRON_SCHEDULE = 2;
+  RUN_INTERVAL = 3;
+  WEBHOOK = 4;
+}
+
+message HandlerInvokeOption {
+  HandlerInvokeType type = 1;
+  string value = 2;
+}
+
+
+message HandlerOption {
+  oneof option {
+    HandlerInvokeOption invoke = 1;
+  }
+}
+
+
+message RegisterHandlerResponse {
+  Error error = 1;
+  string id = 2;
+}
+
+message UnregisterHandlerRequest {
+  string id = 1;
+}
+
+message UnregisterHandlerResponse {
+  Error error = 1;
+}
+
+message ListHandlersRequest {
+}
+
+message HandlerInfo {
+  string name = 1;
+  repeated HandlerOption options = 2;  
+  string dispatch_id = 20;
+  string id = 21;
+  google.protobuf.Timestamp last_invoked_client_timestamp = 100;
+  bool   is_active = 101;
+}
+
+message ListHandlersResponse {
+  Error error = 1;
+  repeated HandlerInfo handlers = 2;
+}
+
+//
+// Dispatch loop
+//
+
+message DispatchRequest {
+  string dispatch_id = 1;
+}
+
+message DispatchMessage {
+
+  DispatchMessageType type = 1;
+
+  oneof message {
+    DispatchHandlerInvoke invoke = 10;
+  }
+}
+
+enum DispatchMessageType {
+  DISPATCH_MESSAGE_TYPE_NONE = 0;
+  DISPATCH_MESSAGE_INVOKE = 1;
+  DISPATCH_MESSAGE_WORK_COMPLETED = 2;
+}
+
+message DispatchHandlerInvoke{
+  string invocation_id = 1;
+  string dispatch_id = 2;
+  string handler_id = 3;
+  string handler_name = 4;
+  int32  timeout_ms = 10;
+  HandlerInvokeType reason = 11;
+  map<string, string> args = 20;
+}
+
+//
+// Invocation Reporting
+//
+
+message Log {
+  string level = 1;
+  google.protobuf.Timestamp timestamp = 2;
+  string message = 3;
+}
+
+message ReportInvocationRequest {
+  DispatchHandlerInvoke handler_invoke = 1;
+  google.protobuf.Timestamp start_client_timestamp = 100;
+  int32  duration_ms = 101;
+  oneof message {
+    InvokeResult result = 200;
+    Error error = 201;
+  }
+  repeated Log logs = 300;
+}
+
+message ReportInvocationResponse {
+  Error error = 1;
+}
+
+message InvokeResult {
+  string value = 10;  
+}
+
+
+// 
+// History
+//
+
+message GetHandlerHistoryRequest {
+  string handler_name = 1;
+  google.protobuf.Timestamp start_time = 2;
+  google.protobuf.Timestamp end_time = 3;
+  bool include_logs = 4;
+  int32 tail = 5;
+}
+
+message HandlerExecution {
+  string handler_name = 1;
+  string handler_id = 2;
+  string invocation_id = 3;
+  string dispatch_id = 4;
+  google.protobuf.Timestamp publish_server_timestamp = 10;
+  google.protobuf.Timestamp receive_server_timestamp = 11;
+  google.protobuf.Timestamp start_client_timestamp = 12;
+  int32  duration_ms = 13;
+  Error error = 20;
+  repeated Log logs = 30;
+}
+
+message GetHandlerHistoryResponse {
+  Error error = 1;
+  repeated HandlerExecution history = 2;
+}

@@ -1,0 +1,40 @@
+name: Python SDK Publish
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'SemverVersion string'
+        required: true
+
+jobs:
+  test-and-publish-sdk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Set up Python
+        uses: actions/setup-python@v2
+        with:
+          python-version: '3.13'
+
+      - name: Install Poetry
+        uses: snok/install-poetry@v1.3.4
+        with:
+          version: 2.0.0
+
+      - name: Install Protobuf
+        run: |
+          sudo apt install -y protobuf-compiler
+
+      - name: Publish (Test PyPI)
+        id: publish
+        run: |
+          cd sdks/python
+          make all
+          python3 -m pip install --upgrade build --break-system-packages
+          poetry config repositories.test-pypi https://test.pypi.org/legacy/
+          poetry config pypi-token.test-pypi ${{ secrets.TEST_PYPI_API_TOKEN }}
+          poetry version ${{ github.event.inputs.version }}
+          python3 -m build -v          
+          poetry publish -r test-pypi

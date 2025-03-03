@@ -1,0 +1,62 @@
+services:
+  snyk-broker:
+    image: snyk/broker:4.203.4-base
+    platform: "linux/amd64"
+    ports:
+      - "${SERVER_PORT}:7341"
+    volumes:
+      - .:/src
+    environment:
+      ACCEPT: /src/accept-server.json
+    command: snyk-broker server
+
+  axon-relay:
+    build:
+      context: ../..
+      dockerfile: docker/Dockerfile
+    image: cortex-axon-agent:local
+    volumes:
+      - .:/src
+    environment:
+      CORTEX_API_TOKEN: fake-token
+      CORTEX_API_BASE_URL: http://cortex-fake:8081
+      PORT: 7433
+    command: relay -f /src/accept-client.json -i github -a test
+    depends_on:
+      snyk-broker:
+        condition: service_started
+      cortex-fake:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7433/healthcheck"]
+      interval: 5s
+      timeout: 5s
+      retries: 6
+
+
+  python-server:
+    image: python:3.8-alpine
+    volumes:
+      - /tmp:/tmp
+    command: sh -c "apk add curl && python3 -m http.server 80 -d /tmp"
+    healthcheck: # its challenging to get curl on to snyk-broker, so using it here
+      test: ["CMD", "curl", "-f", "http://snyk-broker:7341/healthcheck"]
+      interval: 5s
+      timeout: 5s
+      retries: 6
+    stop_grace_period: 1s  # SIGKILL after 1s
+
+  cortex-fake:
+    image: golang:1.22-alpine
+    volumes:
+      - .:/src
+    environment:
+      PORT: 8081
+      BROKER_SERVER_URL: http://snyk-broker:7341
+      TOKEN: ${TOKEN}
+    command: sh -c "apk add curl && cd /src && go run cortex-registration-fake.go"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/healthcheck"]
+      interval: 5s
+      timeout: 5s
+      retries: 6
