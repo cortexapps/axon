@@ -20,52 +20,27 @@ Axon is composed of:
 
 With Axon you can use your internal Github installation to access your internal services. The Cortex Axon agent will contact the Cortex cloud and establish a secure connection, which will be then used to route requests from there to your internal services.
 
+For details on Relay, see [here](README.relay.md).
+
 ### Setting up the Cortex Relay configuration 
 
 1. Go to your Cortex [GitHub settings page](https://app.getcortexapp.com/admin/settings/github) 
 2. Choose "Add Configuration", then "Relay".  Choose your alias name, for example `github-relay` or any unused name.
 3. Click "Save"
-4. On your machine, create a file called `.env` with the following contents, assuming you are using the public Github API:
+4. On your machine, create a file called `.env` with the following contents, assuming you are using the public Github API, then launch the Docker container
 
 ```
 CORTEX_API_TOKEN=your_cortex_token
 GITHUB_TOKEN=your_github_token
 ```
 
-For a GitHub App token, you'll need to set the following, using your GitHub host name:
-
-
-Now you're ready to run the agent!  Create a file called `docker-compose.yml` with the following contents:
-
-```yaml
-services:
-  axon:
-    image: ghcr.io/cortexapps/cortex-axon-agent:latest
-    env_file: .env
-    env:
-      - GITHUB_API=api.github.com
-      - GITHUB_GRAPHQL=api.github.com/graphql
-    command: [
-      "relay",
-      "-i", "github",
-      "-a", "github-relay", # this is the alias you set up in the Cortex UI
-
-      # if you are using a Github App token, add the following line
-      # "-s", "app",
-    ]
-```
-
-Note if you are using a private Github App installation, you'll need to set the `GITHUB_API` and `GITHUB_GRAPHQL` to your internal Github API endpoints, for example:
+5. Launch the Docker container with the following command: 
 
 ```
-GITHUB_API=github.mycompany.com/api/v3
-GITHUB_GRAPHQL=github.mycompany.com/api/graphql
+docker run --env-file .env ghcr.io/cortexapps/cortex-axon-agent:latest relay -i github -a github-relay
 ```
 
-Now run `docker compose up` and you should see the agent start up and connect to Cortex, and be ready to handle traffic.
-
-To test it, go to the settings page for your integration and push "Test Configurations". If you watch the logging output you should see the agent receive the request and forward it to your internal service, and the Cortex Integrations Settings page will show success.
-
+For details on Relay, see [here](README.relay.md).
 
 ## Writing Handlers
 
@@ -237,54 +212,4 @@ docker run -e "CORTEX_API_TOKEN=$CORTEX_API_TOKEN" my-cortex-app:latest
 
 Note this will run everything inside the same container so you do NOT need to run the separate agent container or publish the ports as with debugging above.
 
-### Running the agent in Kubernetes
-
-To run the agent in Kubernetes, you'll need to create a Deployment that runs the agent with similar configuration above:
-
-* A `Deployment` with the `ghcr.io/cortexapps/cortex-axon-agent:latest` image. 1GB of memory and 1CPU should be sufficient.
-* Enviroment variables or a `ConfigMap` for `GITHUB_API` and `GITHUB_GRAPHQL`
-* Secrets for
-    * `CORTEX_API_TOKEN`
-    * `GITHUB_TOKEN`
-    
-Here is an example to get started with:
-
-```yaml
-
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: github-config
-data:
-  GITHUB_API: api.github.com
-  GITHUB_GRAPHQL: api.github.com/graphql
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: cortex-axon-agent
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: cortex-axon-agent
-  template:
-    metadata:
-      labels:
-        app: cortex-axon-agent
-    spec:
-      containers:
-      - name: cortex-axon-agent
-        image: ghcr.io/cortexapps/cortex-axon-agent:latest
-        resources:
-          limits:
-            memory: "1Gi"
-            cpu: "1"
-        command: ["relay"]
-        args: ["-i", "github", "-a", "github-relay"]
-        envFrom:
-            configMapKeyRef:
-              name: github-config
-            secretRef:
-              name: my-secrets # this will need to be created
-```
+You can then deloy this container into your Kubernetes environment
