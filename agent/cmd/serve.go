@@ -55,14 +55,16 @@ func buildServeStack(cmd *cobra.Command, cfg config.AgentConfig) fx.Option {
 			Integration: common.IntegrationCustom,
 			Alias:       cfg.IntegrationAlias,
 		}),
+		fx.Provide(createHttpServer),
 		fx.Provide(cron.New),
-		fx.Invoke(createHttpServer),
 		fx.Invoke(createWebhookHttpServer),
 	}
 
 	if !cfg.DryRun || os.Getenv("BROKER_TOKEN") != "" {
 		// we only start the broker if we have a token
-		opts = append(opts, fx.Invoke(snykbroker.NewRelayInstanceManager))
+		opts = append(opts,
+			fx.Invoke(snykbroker.NewRelayInstanceManager),
+		)
 	}
 
 	return fx.Options(

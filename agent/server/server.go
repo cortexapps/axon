@@ -50,7 +50,11 @@ type inflightRequest struct {
 	sentAt time.Time
 }
 
-func NewAxonAgent(logger *zap.Logger, config config.AgentConfig, manager handler.Manager) *AxonAgent {
+func NewAxonAgent(
+	logger *zap.Logger,
+	config config.AgentConfig,
+	manager handler.Manager,
+) *AxonAgent {
 	logger = logger.Named("axon-server")
 	agent := &AxonAgent{
 		config:              config,

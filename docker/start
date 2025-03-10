@@ -2,6 +2,14 @@
 
 echo "Starting Cortex Axon Agent"
 
+if [ -z "$AXON_APP" ] && [ -n "$KUBERNETES_SERVICE_HOST" ]
+then
+  echo "WARNING: Running agent in 'serve' mode in Kubernetes is unusual."
+  echo "         Typically, the agent run automatically by a packaged Axon app build into a Dockerfile."
+  echo "         See documentation for more information: https://github.com/cortexapps/axon/blob/main/README.md#publishing-your-code"
+  exit 1
+fi
+
 # We write a host entry "cortex-api" for convenience
 if ! grep -q "cortex-api" /etc/hosts >/dev/null; then
     echo "127.0.0.1  cortex-api" >> /etc/hosts

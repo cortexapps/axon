@@ -16,7 +16,7 @@ type Integration string
 
 const (
 	// NOTE: these MUST match up with values from the server side enum
-	IntegrationCustom    Integration = "cortexcustomer"
+	IntegrationCustom    Integration = ""
 	IntegrationGithub    Integration = "github"
 	IntegrationSlack     Integration = "slack"
 	IntegrationJira      Integration = "jira"

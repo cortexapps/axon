@@ -13,7 +13,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-const axonPathRoot = "/__axon"
+const AxonPathRoot = "/__axon"
 
 type axonHandler struct {
 	io.Closer
@@ -47,10 +47,10 @@ func (h *axonHandler) grpcClient() (pb.AxonAgentClient, error) {
 }
 
 func (h *axonHandler) RegisterRoutes(mux *http.ServeMux) error {
-	mux.HandleFunc(axonPathRoot+"/healthcheck", h.healthcheck)
-	mux.HandleFunc(axonPathRoot+"/info", h.info)
-	mux.HandleFunc(axonPathRoot+"/handlers", h.listHandlers)
-	mux.HandleFunc(axonPathRoot+"/handlers/{handler}", h.getHandler)
+	mux.HandleFunc(AxonPathRoot+"/healthcheck", h.healthcheck)
+	mux.HandleFunc(AxonPathRoot+"/info", h.info)
+	mux.HandleFunc(AxonPathRoot+"/handlers", h.listHandlers)
+	mux.HandleFunc(AxonPathRoot+"/handlers/{handler}", h.getHandler)
 	// TODO: handler logs, etc
 	return nil
 }

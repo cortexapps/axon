@@ -65,18 +65,24 @@ func buildCoreAgentStack(cmd *cobra.Command, cfg config.AgentConfig) fx.Option {
 		}),
 		fx.Provide(snykbroker.NewRegistration),
 		fx.Provide(handler.NewHandlerManager),
-		fx.Provide(server.NewAxonAgent),
-		fx.Invoke(func(lifecycle fx.Lifecycle, logger *zap.Logger, cfg config.AgentConfig, server *server.AxonAgent, manager handler.Manager) *server.AxonAgent {
-			lifecycle.Append(fx.Hook{
-				OnStart: func(ctx context.Context) error {
-					return server.Start(ctx)
-				},
-			},
-			)
-			return server
-		},
-		),
+		fx.Invoke(createAxonAgent),
 	)
+}
+
+func createAxonAgent(
+	lifecycle fx.Lifecycle,
+	logger *zap.Logger,
+	cfg config.AgentConfig,
+	manager handler.Manager,
+	_ cortexHttp.Server, // we need to make sure the HTTP server is always started
+) *server.AxonAgent {
+	agent := server.NewAxonAgent(logger, cfg, manager)
+	lifecycle.Append(fx.Hook{
+		OnStart: func(ctx context.Context) error {
+			return agent.Start(ctx)
+		},
+	})
+	return agent
 }
 
 func createHttpServer(lifecycle fx.Lifecycle, config config.AgentConfig, logger *zap.Logger) cortexHttp.Server {
