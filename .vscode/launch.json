@@ -25,8 +25,8 @@
             "mode": "auto",
             "program": "${workspaceFolder}/agent/main.go",
             "args": [
-                "serve",                
-                "-v"
+                "serve",   
+                "-v"             
             ],
             "envFile": "${workspaceFolder}/.env"
         },

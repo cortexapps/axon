@@ -6,7 +6,7 @@ shift 1
 touch /tmp/app.log
 touch /tmp/agent.log
 tail -f /tmp/app.log -f /tmp/agent.log  &
-
+export AXON_APP=1
 run_agent() {
     echo "Starting Cortex Axon Agent"
     while true;

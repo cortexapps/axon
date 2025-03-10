@@ -63,7 +63,7 @@ func NewRelayInstanceManager(
 }
 
 func (r *relayInstanceManager) RegisterRoutes(mux *http.ServeMux) error {
-	mux.Handle("__axon/reregister", r)
+	mux.Handle(fmt.Sprintf("%s/reregister", cortexHttp.AxonPathRoot), r)
 	return nil
 }
 

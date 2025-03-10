@@ -32,6 +32,25 @@ func TestBuildServeStack(t *testing.T) {
 	app.Stop(context.Background())
 }
 
+func TestBuildServeStackLive(t *testing.T) {
+
+	os.Setenv("CORTEX_API_TOKEN", "xxxyyyzzz")
+	os.Setenv("PORT", "0")
+	config := config.NewAgentEnvConfig()
+	config.HttpServerPort = 0
+	stack := buildServeStack(&cobra.Command{}, config)
+
+	require.NotNil(t, stack)
+
+	app := fx.New(
+		stack,
+	)
+
+	err := app.Start(context.Background())
+	require.NoError(t, err)
+	app.Stop(context.Background())
+}
+
 func TestBuildRelayStack(t *testing.T) {
 
 	envVars := map[string]string{
