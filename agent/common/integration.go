@@ -27,6 +27,7 @@ const (
 
 var subtypes = map[Integration][]string{
 	IntegrationGithub: {"app"},
+	IntegrationJira:   {"bearer"},
 }
 
 func (i Integration) String() string {
@@ -171,7 +172,7 @@ func (ii IntegrationInfo) ValidateSubtype() (string, error) {
 		}
 	}
 
-	return "", fmt.Errorf("integration %s does not support subtype %s", ii.Integration, ii.Subtype)
+	return "", fmt.Errorf("integration %s does not support subtype %s, allowed values are: %v", ii.Integration, ii.Subtype, allowedSubtypes)
 }
 
 func (ii IntegrationInfo) getIntegrationAcceptFile() (string, error) {

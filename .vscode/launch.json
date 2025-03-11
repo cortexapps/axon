@@ -81,7 +81,8 @@
                 "-i",
                 "github",
                 "--alias",
-                "relay2"
+                "relay",
+                "-v"
             ],
             "envFile": "${workspaceFolder}/.env",
             "env": {
@@ -89,7 +90,8 @@
                 "SCAFFOLD_DOCKER_IMAGE": "cortex-axon-agent:local",
                 "PORT" : "7399",
                 "GITHUB_API": "api.github.com",
-                "GITHUB_GRAPHQL": "api.github.com/graphql"
+                "GITHUB_GRAPHQL": "api.github.com/graphql",
+                "JIRA_API": "cortex1.atlassian.net",
             }        
         },
 
