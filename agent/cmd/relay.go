@@ -74,6 +74,7 @@ func init() {
 	RelayCommand.Flags().StringP("accept-file", "f", "", "Accept.json file detailing which APIs are allowed to be relayed")
 	RelayCommand.Flags().StringP("integration", "i", "", fmt.Sprintf("Integration to use for relaying, allowed values are: %v", common.ValidIntegrations()))
 	RelayCommand.Flags().StringP("subtype", "s", "", "Integation subtype, integration dependent")
+	RelayCommand.Flags().BoolP("verbose", "v", false, "Verbose mode")
 	RelayCommand.Flags().StringP("alias", "a", "", "The alias to use for the integration")
 	RelayCommand.MarkFlagRequired("integration")
 	RelayCommand.MarkFlagRequired("alias")
