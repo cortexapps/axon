@@ -252,22 +252,36 @@ func (b *Supervisor) scanLines(reader io.Reader, output chan string, refCount *s
 	done := false
 
 	refCount.Add(1)
+
+	// increase buffer size from default of 60K to 1MB
+	buffer := make([]byte, 1024*1024)
 	go func() {
-		scanner := bufio.NewScanner(reader)
-		for scanner.Scan() {
-			ln := scanner.Text()
-			output <- ln
-			if done {
-				break
+		for !done {
+			scanner := bufio.NewScanner(reader)
+			scanner.Buffer(buffer, cap(buffer)-1)
+			for scanner.Scan() {
+				ln := scanner.Text()
+				output <- ln
+				if done {
+					return
+				}
 			}
-		}
-		err := scanner.Err()
-		if err != nil {
-			output <- fmt.Sprintf("Error reading from scanner: %v", err)
+			err := scanner.Err()
+
+			if err == nil {
+				return
+			}
+
+			if err == io.EOF {
+				return
+			}
+
+			output <- fmt.Sprintf("Warning (non-fatal), failed to read from scanner to pipe output: %v", err)
+
+			// dump what we have in the buffer, first 16K, then continue
+			output <- string(buffer[0:16*1024]) + "...[END OF BUFFER]"
 		}
 
-		b, _ := io.ReadAll(reader)
-		output <- string(b)
 	}()
 
 	return func() {
