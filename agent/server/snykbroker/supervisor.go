@@ -256,7 +256,7 @@ func (b *Supervisor) scanLines(reader io.Reader, output chan string, refCount *s
 	// increase buffer size from default of 60K to 1MB
 	buffer := make([]byte, 1024*1024)
 	go func() {
-		for {
+		for !done {
 			scanner := bufio.NewScanner(reader)
 			scanner.Buffer(buffer, cap(buffer)-1)
 			for scanner.Scan() {
