@@ -51,7 +51,7 @@ Axon also makes it very easy to write sophisicated code that can send date to Co
 Axon is distibuted via a Docker container, so to set up your first application in Python you can run:
 
 ```
-docker run -v "$(pwd)$:/src" ghcr.io/cortexapps/cortex-axon-agent:latest init --language python --name my-cortex-app 
+docker run -v "$(pwd):/src" ghcr.io/cortexapps/cortex-axon-agent:latest init --language python --name my-cortex-app 
 ```
 
 This will:

@@ -73,12 +73,12 @@ func (r *registration) Register(integration common.Integration, alias string) (*
 	}
 
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonBody))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", r.config.CortexApiToken))
 	if err != nil {
 		fmt.Printf("Error creating request: %v\n", err)
 		panic(err)
 	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", r.config.CortexApiToken))
 
 	resp, err := client.Do(req)
 	if err == net.ErrClosed {
