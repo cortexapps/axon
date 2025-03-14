@@ -21,6 +21,7 @@ const defaultSnykBroker = "snyk-broker"
 
 type RelayInstanceManager interface {
 	Start() error
+	Restart() error
 	Close() error
 }
 
@@ -63,7 +64,7 @@ func NewRelayInstanceManager(
 }
 
 func (r *relayInstanceManager) RegisterRoutes(mux *http.ServeMux) error {
-	mux.Handle(fmt.Sprintf("%s/reregister", cortexHttp.AxonPathRoot), r)
+	mux.Handle(fmt.Sprintf("%s/broker/restart", cortexHttp.AxonPathRoot), r)
 	return nil
 }
 
@@ -73,7 +74,7 @@ func (r *relayInstanceManager) ServeHTTP(w http.ResponseWriter, req *http.Reques
 		return
 	}
 
-	err := r.restart()
+	err := r.Restart()
 	if err != nil {
 		r.logger.Error("Unable to reregister", zap.Error(err))
 		w.WriteHeader(http.StatusInternalServerError)
@@ -85,16 +86,19 @@ func (r *relayInstanceManager) ServeHTTP(w http.ResponseWriter, req *http.Reques
 
 var errSkipBroker = errors.New("NoBrokerToken")
 
-func (r *relayInstanceManager) restart() error {
+func (r *relayInstanceManager) Restart() error {
+
+	r.logger.Info("Restarting broker, shutting down existing broker")
 	// re-register and restart supervisor
 	err := r.Close()
 	if err != nil {
-		r.logger.Error("unable to close supervisor on /reregister", zap.Error(err))
+		r.logger.Error("unable to close supervisor on Restart", zap.Error(err))
 	}
 
+	r.logger.Info("Restarting broker")
 	err = r.Start()
 	if err != nil {
-		return fmt.Errorf("unable to start supervisor on /reregister: %w", err)
+		return fmt.Errorf("unable to start supervisor on Restart: %w", err)
 	}
 	return nil
 }
@@ -196,15 +200,21 @@ func (r *relayInstanceManager) Start() error {
 			zap.String("acceptFile", acceptFile),
 		)
 
+		brokerEnv := map[string]string{
+			"ACCEPT":            acceptFile,
+			"BROKER_SERVER_URL": uri,
+			"BROKER_TOKEN":      token,
+			"PORT":              "7343",
+		}
+
+		if r.config.VerboseOutput {
+			brokerEnv["LOG_LEVEL"] = "debug"
+		}
+
 		r.supervisor = NewSupervisor(
 			executable,
 			args,
-			map[string]string{
-				"ACCEPT":            acceptFile,
-				"BROKER_SERVER_URL": uri,
-				"BROKER_TOKEN":      token,
-				"PORT":              "7343",
-			},
+			brokerEnv,
 			r.config.FailWaitTime,
 		)
 		r.startCount.Add(1)

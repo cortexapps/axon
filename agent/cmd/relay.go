@@ -66,7 +66,7 @@ var RelayCommand = &cobra.Command{
 		}
 
 		fmt.Println("Starting agent")
-		startAgent(cmd, buildRelayStack(cmd, config, info))
+		startAgent(buildRelayStack(cmd, config, info))
 	},
 }
 

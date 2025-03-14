@@ -35,7 +35,7 @@ var serveCmd = &cobra.Command{
 		}
 
 		config.Print()
-		startAgent(cmd, buildServeStack(cmd, config))
+		startAgent(buildServeStack(cmd, config))
 		fmt.Println("Server stopped")
 	},
 }
