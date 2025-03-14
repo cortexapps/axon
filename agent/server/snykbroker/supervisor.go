@@ -271,12 +271,15 @@ func (b *Supervisor) scanLines(reader io.Reader, output chan string, refCount *s
 			if err == nil {
 				return
 			}
-			if err != nil {
-				output <- fmt.Sprintf("Warning (non-fatal), failed to read from scanner to pipe output: %v", err)
+
+			if err == io.EOF {
+				return
 			}
 
-			// dump what we have in the buffer, then continue
-			output <- string(buffer) + "...[END OF BUFFER]"
+			output <- fmt.Sprintf("Warning (non-fatal), failed to read from scanner to pipe output: %v", err)
+
+			// dump what we have in the buffer, first 16K, then continue
+			output <- string(buffer[0:16*1024]) + "...[END OF BUFFER]"
 		}
 
 	}()
