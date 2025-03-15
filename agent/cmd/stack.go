@@ -15,28 +15,11 @@ import (
 	"github.com/spf13/cobra"
 	"go.uber.org/fx"
 	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
 )
 
-func getLoggingLevel(cmd *cobra.Command) zapcore.Level {
-
-	if ok, _ := cmd.Flags().GetBool("verbose"); ok {
-		return zap.DebugLevel
-	}
-	return zap.InfoLevel
-}
-
-func startAgent(cmd *cobra.Command, opts fx.Option) {
-	options := []fx.Option{
-		opts,
-	}
-
-	if getLoggingLevel(cmd) != zap.DebugLevel {
-		options = append(options, fx.NopLogger)
-	}
-
+func startAgent(opts fx.Option) {
 	app := fx.New(
-		options...,
+		opts,
 	)
 
 	noBanner := os.Getenv("NO_BANNER")
@@ -47,17 +30,34 @@ func startAgent(cmd *cobra.Command, opts fx.Option) {
 }
 
 func buildCoreAgentStack(cmd *cobra.Command, cfg config.AgentConfig) fx.Option {
-	return fx.Options(
-		fx.Provide(func() *zap.Logger {
+
+	if ok, _ := cmd.Flags().GetBool("verbose"); ok {
+		cfg.VerboseOutput = true
+	}
+
+	options := []fx.Option{}
+
+	if !cfg.VerboseOutput {
+		options = append(options, fx.NopLogger)
+	}
+
+	stackOptions := fx.Options(
+		fx.Supply(cfg),
+		fx.Provide(func(config config.AgentConfig) *zap.Logger {
 			cfg := zap.NewDevelopmentConfig()
-			cfg.Level = zap.NewAtomicLevelAt(getLoggingLevel(cmd))
+
+			loggingLevel := zap.InfoLevel
+			if config.VerboseOutput {
+				loggingLevel = zap.DebugLevel
+			}
+
+			cfg.Level = zap.NewAtomicLevelAt(loggingLevel)
 			logger, err := cfg.Build()
 			if err != nil {
 				panic(err)
 			}
 			return logger
 		}),
-		fx.Supply(cfg),
 		fx.Invoke(func(config config.AgentConfig, logger *zap.Logger) {
 			if config.CortexApiToken == "" && !config.DryRun {
 				logger.Fatal("Cannot start agent: either CORTEX_API_TOKEN or DRYRUN is required")
@@ -67,6 +67,13 @@ func buildCoreAgentStack(cmd *cobra.Command, cfg config.AgentConfig) fx.Option {
 		fx.Provide(handler.NewHandlerManager),
 		fx.Invoke(createAxonAgent),
 	)
+
+	options = append(options, stackOptions)
+
+	return fx.Options(
+		options...,
+	)
+
 }
 
 func createAxonAgent(

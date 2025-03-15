@@ -28,6 +28,7 @@ type AgentConfig struct {
 	WebhookServerPort int
 	EnableApiProxy    bool
 	FailWaitTime      time.Duration
+	VerboseOutput     bool
 }
 
 func (ac AgentConfig) Print() {

@@ -27,6 +27,10 @@ type Supervisor struct {
 	cmd        *exec.Cmd
 	env        map[string]string
 	done       chan struct{}
+	stopFunc   func()
+	pid        int
+	killed     bool
+	runCount   int
 	lastError  error
 }
 
@@ -43,32 +47,19 @@ func NewSupervisor(
 		args:              args,
 		env:               env,
 		fastFailTime:      fastFailTime * 2,
+		done:              make(chan struct{}),
+		stopFunc:          func() {},
 	}
 }
 
 var errKilled = errors.New("killed")
 var errMaxRetries = errors.New("max retries reached")
 
-func (b *Supervisor) trigger() (func(error), error) {
-	b.Lock()
-	if b.done != nil {
-		b.Unlock()
-		return nil, fmt.Errorf("can't call start when already running")
-	}
-	b.done = make(chan struct{})
-	b.Unlock()
-
-	finish := func(err error) {
-		b.Lock()
-		defer b.Unlock()
-		b.lastError = err
-		close(b.done)
-		b.done = nil
-	}
-	return finish, nil
-}
-
 func (b *Supervisor) Start(maxRetries int, window time.Duration) error {
+
+	if b.runCount > 0 {
+		return errors.New("already started, cannot start again")
+	}
 
 	if err := b.runExecutionLoop(maxRetries, window); err != nil {
 		return err
@@ -80,32 +71,34 @@ func (b *Supervisor) runExecutionLoop(maxRetries int, window time.Duration) erro
 
 	tracker := newEventTracker()
 	startTime := time.Now()
-	runCount := 0
 
-	finish, err := b.trigger()
-	if err != nil {
-		return err
+	finish := func(err error) {
+		b.Lock()
+		defer b.Unlock()
+		b.lastError = err
+		if b.done != nil {
+			close(b.done)
+		}
 	}
 
 	fastfail := make(chan struct{})
 	// we run this off thread, looping to restart
 	// the process if it crashes, but exiting
-	// if too many happen in the restart windo
+	// if too many happen in the restart window
+	b.runCount = 1
 	go func() {
 		defer close(fastfail)
 		for maxRetries > 0 {
 			tracker.AddEvent()
-			runCount++
 			err := b.runCommand()
 			runTime := time.Since(startTime)
 
 			if errors.Is(err, errKilled) {
-				fmt.Println("Process killed")
 				finish(nil)
 				return
 			}
 
-			if err != nil && runCount == 1 && runTime < b.fastFailTime {
+			if err != nil && b.runCount == 1 && runTime < b.fastFailTime {
 				finish(fmt.Errorf("run failed immediately: %v", err))
 				return
 			}
@@ -123,7 +116,7 @@ func (b *Supervisor) runExecutionLoop(maxRetries int, window time.Duration) erro
 				}
 				return
 			}
-
+			b.runCount++
 		}
 	}()
 
@@ -170,11 +163,9 @@ func (b *Supervisor) runWatchdog(pid int) func() {
 	}
 }
 
+// runCommand runs a single command and returns the result of the command after it exits,
+// or errKilled if it was intentionally shut down.
 func (b *Supervisor) runCommand() error {
-
-	if b.cmd != nil {
-		panic("Command already running")
-	}
 
 	cmd := exec.Command(b.executable)
 	cmd.Args = append(cmd.Args, b.args...)
@@ -199,38 +190,67 @@ func (b *Supervisor) runCommand() error {
 		}
 	}()
 
+	// sigChan triggers shutdown
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-	killed := false
+
+	running := make(chan struct{})
+
 	go func() {
 		<-sigChan
-		err := cmd.Process.Kill()
-		if err != nil {
-			fmt.Printf("Error killing process: %v\n", err)
-		}
-		killed = true
+		b.stopFunc()
 	}()
 
-	b.cmd = cmd
+	killed := false
+
+	// our stopfunc allows anyone to close the process
+	// and wait for it to finish
+	b.stopFunc = func() {
+		killed = true
+
+		// if process is running trigger a kill
+		if cmd.Process != nil {
+			err := cmd.Process.Kill()
+			if err != nil {
+				fmt.Printf("Error killing process: %v\n", err)
+			}
+		}
+
+		// wait for it to actually finish
+		<-running
+	}
+
 	err := cmd.Start()
 
 	if err != nil {
 		return err
 	}
+	pid := cmd.Process.Pid
+	b.pid = pid
 
 	// We want to make sure the broker is killed if the agent dies or is killed.  This is
 	// mostly useful in the debugger but prevents port from being held open.
 	cancelWatchdog := b.runWatchdog(cmd.Process.Pid)
 	defer cancelWatchdog()
 
-	cmd.Wait()
-	b.cmd = nil
+	// here we wait for it to start then fully finish
+	go func() {
+		cmd.Wait()
+		b.pid = 0
+		b.stopFunc = func() {}
+		close(running)
+		running = nil
+	}()
+
+	// block until the process is done
+	<-running
 	stopStdOut()
 	stopStdErr()
 	wg.Wait()
 
 	if killed {
 		err = errKilled
+		fmt.Printf("Process %v (pid=%v) killed\n", cmd.Path, pid)
 	}
 
 	if err == nil && cmd.ProcessState.ExitCode() != 0 {
@@ -239,11 +259,12 @@ func (b *Supervisor) runCommand() error {
 	return err
 }
 
+func (b *Supervisor) Pid() int {
+	return b.pid
+}
+
 func (b *Supervisor) Close() error {
-	if b.cmd != nil && b.cmd.Process != nil {
-		b.cmd.Process.Kill()
-	}
-	b.cmd = nil
+	b.stopFunc()
 	return nil
 }
 

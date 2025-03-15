@@ -27,6 +27,32 @@ func TestStart_SuccessExit(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestStart_Restart(t *testing.T) {
+
+	supervisor := NewSupervisor(
+		"bash",
+		[]string{"-c", "sleep 300"},
+		map[string]string{
+			"BROKER_TOKEN":      "test_token",
+			"BROKER_SERVER_URL": "http://example.com",
+		},
+		time.Millisecond*10,
+	)
+	output := bytes.Buffer{}
+	supervisor.output = &output
+
+	err := supervisor.Start(1, 1)
+	require.NoError(t, err)
+	require.NotEqual(t, 0, supervisor.Pid())
+	err = supervisor.Close()
+	require.NoError(t, err)
+	require.Equal(t, 0, supervisor.Pid())
+
+	err = supervisor.Start(1, 1)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "already started")
+}
+
 func TestStart_FastFail(t *testing.T) {
 
 	// test that if the command fails quickly off the bat, we don't retry anymore
