@@ -16,18 +16,21 @@ type Integration string
 
 const (
 	// NOTE: these MUST match up with values from the server side enum
-	IntegrationCustom    Integration = ""
-	IntegrationGithub    Integration = "github"
-	IntegrationSlack     Integration = "slack"
-	IntegrationJira      Integration = "jira"
-	IntegrationGitlab    Integration = "gitlab"
-	IntegrationAws       Integration = "AWS"
-	IntegrationSonarqube Integration = "sonarqube"
+	IntegrationCustom     Integration = ""
+	IntegrationGithub     Integration = "github"
+	IntegrationSlack      Integration = "slack"
+	IntegrationJira       Integration = "jira"
+	IntegrationGitlab     Integration = "gitlab"
+	IntegrationAws        Integration = "AWS"
+	IntegrationSonarqube  Integration = "sonarqube"
+	IntegrationBitbucket  Integration = "bitbucket"
+	IntegrationPrometheus Integration = "prometheus"
 )
 
 var subtypes = map[Integration][]string{
-	IntegrationGithub: {"app"},
-	IntegrationJira:   {"bearer"},
+	IntegrationGithub:    {"app"},
+	IntegrationJira:      {"bearer"},
+	IntegrationBitbucket: {"basic"},
 }
 
 func (i Integration) String() string {

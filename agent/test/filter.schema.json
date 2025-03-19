@@ -1,0 +1,64 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "private": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "enum": [
+                    "any", 
+                    "get", "post", "put", "delete", "patch", 
+                    "GET", "POST", "PUT", "DELETE", "PATCH"
+                ]
+            },
+            "path": {
+              "type": "string",
+              "pattern": "^/.*"
+            },
+            "origin": {
+              "type": "string",
+              "pattern": "^http.*$"
+            },
+            "auth": {
+              "type": "object",
+              "oneOf": [
+                {
+                  "properties": {
+                    "scheme": {
+                      "type": "string",
+                      "enum": ["basic"]
+                    },
+                    "username": {
+                      "type": "string"
+                    },
+                    "password": {
+                      "type": "string"                      
+                    }
+                  },
+                  "required": ["scheme", "username", "password"]
+                },
+                {
+                  "properties": {
+                    "scheme": {
+                      "type": "string",
+                      "enum": ["bearer"]
+                    },
+                    "token": {
+                      "type": "string"
+                    }
+                  },
+                  "required": ["scheme", "token"]
+                }
+              ]
+            }
+          },
+          "required": ["method", "path", "origin"]
+        }
+      }
+    },
+    "required": ["private"]
+  }

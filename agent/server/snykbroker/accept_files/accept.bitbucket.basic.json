@@ -1,0 +1,30 @@
+{
+  "private": [
+    {
+      "method": "any",
+      "path": "/*",
+      "origin": "https://${BITBUCKET_API}",
+      "auth": {
+        "scheme": "basic",
+        "username": "${BITBUCKET_USERNAME}",
+        "password": "${BITBUCKET_PASSWORD}"
+      }
+    },
+    {
+      "method": "any",
+      "path": "/*",
+      "origin": "https://${BITBUCKET_API}",
+      "auth": {
+          "scheme": "bearer",
+          "token": "${BITBUCKET_TOKEN}"
+      }
+    },
+      {
+        "method": "any",
+        "path": "/*",
+        "origin": "https://${TOKEN}@${BITBUCKET_API}"
+      }
+    
+
+  ]
+}
