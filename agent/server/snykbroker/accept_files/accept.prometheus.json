@@ -1,0 +1,14 @@
+{
+  "private": [
+    {
+      "method": "any",
+      "path": "/*",
+      "origin": "https://${PROMETHEUS_API}",
+      "auth": {
+          "scheme": "basic",
+          "username": "${PROMETHEUS_USERNAME}",
+          "password": "${PROMETHEUS_PASSWORD}"
+      }
+    }
+  ]
+}

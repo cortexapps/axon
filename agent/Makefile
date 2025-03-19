@@ -54,6 +54,9 @@ test: mocks
 	go mod tidy
 	go test -v ./...
 
+validate-filters:
+	test/validate_filters.sh
+
 relay-test:
 	cd test && ./relay_test.sh
 
