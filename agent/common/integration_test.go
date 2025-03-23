@@ -37,8 +37,8 @@ func TestEmptyAcceptFile(t *testing.T) {
 func TestGithubDefaultAcceptFile(t *testing.T) {
 
 	os.Setenv("GITHUB_TOKEN", "the-github-token")
-	os.Setenv("GITHUB_API", "foo.github.com")
-	os.Setenv("GITHUB_GRAPHQL", "foo.github.com/graphql")
+	os.Setenv("GITHUB_API_ROOT", "foo.github.com")
+	os.Setenv("GITHUB_GRAPHQL_ROOT", "foo.github.com/graphql")
 
 	setAcceptFileDir(t)
 
@@ -56,8 +56,8 @@ func TestGithubDefaultAcceptFile(t *testing.T) {
 func TestGithubDefaultAcceptFileSubtypeExists(t *testing.T) {
 
 	os.Setenv("GITHUB_TOKEN", "the-github-token")
-	os.Setenv("GITHUB_API", "foo.github.com")
-	os.Setenv("GITHUB_GRAPHQL", "foo.github.com/graphql")
+	os.Setenv("GITHUB_API", "https://foo.github.com")
+	os.Setenv("GITHUB_GRAPHQL", "https://foo.github.com/graphql")
 
 	setAcceptFileDir(t)
 

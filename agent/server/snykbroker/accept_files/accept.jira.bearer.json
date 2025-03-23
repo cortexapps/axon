@@ -3,7 +3,7 @@
     {
       "method": "any",
       "path": "/*",
-      "origin": "https://${JIRA_API}",
+      "origin": "${JIRA_API}", 
       "auth": {
           "scheme": "bearer",
           "token": "${JIRA_TOKEN}"

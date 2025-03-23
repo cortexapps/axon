@@ -3,7 +3,7 @@
     {
       "method": "any",
       "path": "/*",
-      "origin": "https://${BITBUCKET_API}",
+      "origin": "${BITBUCKET_API}",
       "auth": {
           "scheme": "bearer",
           "token": "${BITBUCKET_TOKEN}"

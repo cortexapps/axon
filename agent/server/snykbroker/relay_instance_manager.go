@@ -120,6 +120,7 @@ func (r *relayInstanceManager) getUrlAndToken() (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
+	r.logger.Info("Received registration info", zap.String("serverUri", reg.ServerUri))
 
 	return reg.ServerUri, reg.Token, nil
 }

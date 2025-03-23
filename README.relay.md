@@ -36,8 +36,8 @@ services:
     image: ghcr.io/cortexapps/cortex-axon-agent:latest
     env_file: .env
     env:
-      - GITHUB_API=api.github.com
-      - GITHUB_GRAPHQL=api.github.com
+      - GITHUB_API_ROOT=api.github.com
+      - GITHUB_GRAPHQL_ROOT=api.github.com
     command: [
       "relay",
       "-i", "github",
@@ -51,14 +51,34 @@ services:
 Note if you are using a private Github App installation (subtype `app`), you'll need to set the `GITHUB_API` and `GITHUB_GRAPHQL` to your internal Github API endpoints, for example:
 
 ```
-GITHUB_API=github.mycompany.com/api/v3
-GITHUB_GRAPHQL=github.mycompany.com/api/graphql
+GITHUB_API=https://github.mycompany.com/api/v3
+GITHUB_GRAPHQL=https://github.mycompany.com/api/graphql
 ```
 
 Now run `docker compose up` and you should see the agent start up and connect to Cortex, and be ready to handle traffic.
 
 To test it, go to the settings page for your integration and push "Test Configurations". If you watch the logging output you should see the agent receive the request and forward it to your internal service, and the Cortex Integrations Settings page will show success.
 
+You can see the list of built in file types [here](agent/server/snykbroker/accept_files), which will show the variables needed to execute. If an environment variable
+is not found, the start will fail with an error message indicating the missing variable name.
+
+Generally the naming works like:
+
+* `*_API` - the root URL for the API, such as `https://api.github.com`
+* `*_API_ROOT` - just the host and root path for the integration such as `mycompany.github.com/api/v3`
+* `*_HOST` - just the domain name, such as `mycompany.github.com`
+
+
+### Environment Variables Summary
+### Environment Variables Summary
+
+| Integration    | Environment Variables                                                                                               |
+|----------------|---------------------------------------------------------------------------------------------------------------------|
+| **GitHub**     | `GITHUB_API_ROOT=api.github.com`, `GITHUB_GRAPHQL_ROOT=api.github.com/graphql`, `GITHUB_TOKEN`                |
+| **GitHub App** | Arg `-s app`; `GITHUB_API=https://myapp.github.com/api/v3`, `GITHUB_GRAPHQL=https://myapp.github.com/api/graphql`, `GITHUB_TOKEN` |
+| **Prometheus** | `PROMETHEUS_API=http://mycompany.prometheus.internal`, `PROMETHEUS_USERNAME`, `PROMETHEUS_PASSWORD`                 |
+| **Gitlab**     | `GITLAB_API=https://gitlab.com`, `GITLAB_TOKEN`                                                                     |
+| **Sonarqube**  | `SONARQUBE_API=https://sonarqube.mycompany.com`, `SONARQUBE_TOKEN`                                                 |
 ## How it works
 
 Internally, Cortex Axon uses an open-source project published by Snyk called [Snyk Broker](https://docs.snyk.io/enterprise-setup/snyk-broker). 

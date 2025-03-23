@@ -3,7 +3,7 @@
     {
       "method": "any",
       "path": "/*",
-      "origin": "https://${GITLAB}",
+      "origin": "${GITLAB_API}",
       "auth": {
         "scheme": "bearer",
         "token": "${GITLAB_TOKEN}"

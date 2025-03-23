@@ -3,7 +3,7 @@
     {
       "method": "any",
       "path": "/*",
-      "origin": "https://${PROMETHEUS_API}",
+      "origin": "${PROMETHEUS_API}",
       "auth": {
           "scheme": "basic",
           "username": "${PROMETHEUS_USERNAME}",

@@ -60,6 +60,10 @@ func getInstanceId() string {
 		return id
 	}
 
+	if id := os.Getenv("HOSTNAME"); id != "" && id != "localhost" {
+		return id
+	}
+
 	if _, err := os.Stat(instancePath); os.IsNotExist(err) {
 		id := uuid.New().String()
 		err := os.WriteFile(instancePath, []byte(id), 0644)
