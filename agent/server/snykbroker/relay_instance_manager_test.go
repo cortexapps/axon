@@ -70,12 +70,12 @@ func (w *wrappedRelayInstanceManager) Instance() *relayInstanceManager {
 
 func createTestRelayInstanceManager(t *testing.T, controller *gomock.Controller, expectedError error) *wrappedRelayInstanceManager {
 	envVars := map[string]string{
-		"ACCEPT_FILE_DIR":  "./accept_files",
-		"GITHUB_TOKEN":     "the-token",
-		"GITHUB_API":       "api.github.com",
-		"GITHUB_GRAPHQL":   "api.github.com/graphql",
-		"SNYK_BROKER_PATH": "sleep",
-		"SNYK_BROKER_ARGS": "60",
+		"ACCEPT_FILE_DIR":     "./accept_files",
+		"GITHUB_TOKEN":        "the-token",
+		"GITHUB_API_ROOT":     "https://api.github.com",
+		"GITHUB_GRAPHQL_ROOT": "https://api.github.com/graphql",
+		"SNYK_BROKER_PATH":    "sleep",
+		"SNYK_BROKER_ARGS":    "60",
 	}
 
 	common.ApplyEnv(envVars)

@@ -38,12 +38,14 @@ func (i Integration) String() string {
 }
 
 func (i Integration) Validate() error {
-	switch i {
-	case IntegrationGithub, IntegrationSlack, IntegrationJira, IntegrationGitlab, IntegrationAws, IntegrationSonarqube:
-		return nil
-	default:
-		return fmt.Errorf("invalid integration %s", i)
+
+	for _, integration := range ValidIntegrations() {
+		if i == integration {
+			return nil
+		}
 	}
+
+	return fmt.Errorf("invalid integration %s", i)
 }
 
 func ParseIntegration(s string) (Integration, error) {
@@ -55,7 +57,7 @@ func ParseIntegration(s string) (Integration, error) {
 }
 
 func ValidIntegrations() []Integration {
-	return []Integration{IntegrationGithub, IntegrationSlack, IntegrationJira, IntegrationGitlab, IntegrationAws, IntegrationSonarqube}
+	return []Integration{IntegrationGithub, IntegrationSlack, IntegrationJira, IntegrationGitlab, IntegrationAws, IntegrationSonarqube, IntegrationPrometheus}
 }
 
 type IntegrationInfo struct {

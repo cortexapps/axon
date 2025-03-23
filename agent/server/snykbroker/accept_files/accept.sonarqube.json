@@ -3,7 +3,7 @@
     {
       "method": "any",
       "path": "/*",
-      "origin": "https://${SONAR_HOST}",
+      "origin": "${SONARQUBE_API}",
       "auth": {
         "scheme": "bearer",
         "token": "${SONAR_TOKEN}"

@@ -21,7 +21,7 @@
             },
             "origin": {
               "type": "string",
-              "pattern": "^http.*$"
+              "pattern": "^.+$"
             },
             "auth": {
               "type": "object",
