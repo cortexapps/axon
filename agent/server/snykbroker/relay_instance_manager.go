@@ -69,6 +69,11 @@ func (r *relayInstanceManager) RegisterRoutes(mux *http.ServeMux) error {
 	return nil
 }
 
+func (r *relayInstanceManager) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	// should never be called, here just to satisfy the interface
+	w.WriteHeader(http.StatusNotFound)
+}
+
 func (r *relayInstanceManager) handleRestart(w http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
