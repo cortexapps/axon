@@ -50,12 +50,36 @@ func TestRelayRestartServer(t *testing.T) {
 	require.NoError(t, err)
 
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	httpHandler := (mgr.RelayInstanceManager).(http.Handler)
-	httpHandler.ServeHTTP(w, req)
+	req := httptest.NewRequest(http.MethodPost, "/__axon/broker/restart", nil)
+	httpHandler := (mgr.RelayInstanceManager).(cortex_http.RegisterableHandler)
+
+	mux := http.NewServeMux()
+	httpHandler.RegisterRoutes(mux)	
+	mux.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, 2, int(mgr.Instance().startCount.Load()))
+
+}
+
+func TestRelayReRegisterServer(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	mgr := createTestRelayInstanceManager(t, ctrl, nil)
+
+	err := mgr.Start()
+	require.NoError(t, err)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/__axon/broker/reregister", nil)
+	httpHandler := (mgr.RelayInstanceManager).(cortex_http.RegisterableHandler)
+
+	mux := http.NewServeMux()
+	httpHandler.RegisterRoutes(mux)	
+	mux.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, 1, int(mgr.Instance().startCount.Load()))
 
 }
 
