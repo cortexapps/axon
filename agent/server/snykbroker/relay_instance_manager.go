@@ -64,11 +64,12 @@ func NewRelayInstanceManager(
 }
 
 func (r *relayInstanceManager) RegisterRoutes(mux *http.ServeMux) error {
-	mux.Handle(fmt.Sprintf("%s/broker/restart", cortexHttp.AxonPathRoot), r)
+	mux.HandleFunc(fmt.Sprintf("%s/broker/restart", cortexHttp.AxonPathRoot), r.handleRestart)
+	mux.HandleFunc(fmt.Sprintf("%s/broker/reregister", cortexHttp.AxonPathRoot), r.handleReregister)
 	return nil
 }
 
-func (r *relayInstanceManager) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+func (r *relayInstanceManager) handleRestart(w http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
@@ -82,6 +83,21 @@ func (r *relayInstanceManager) ServeHTTP(w http.ResponseWriter, req *http.Reques
 		return
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+func (r *relayInstanceManager) handleReregister(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	r.logger.Info("Reregistering broker")
+	_, _, err := r.getUrlAndToken()
+	if err != nil {
+		r.logger.Error("Unable to reregister", zap.Error(err))
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte("Unable to reregister"))
+		return
+	}
 }
 
 var errSkipBroker = errors.New("NoBrokerToken")
@@ -120,6 +136,7 @@ func (r *relayInstanceManager) getUrlAndToken() (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
+	r.logger.Info("Received registration info", zap.String("serverUri", reg.ServerUri))
 
 	return reg.ServerUri, reg.Token, nil
 }

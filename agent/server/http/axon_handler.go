@@ -50,8 +50,7 @@ func (h *axonHandler) RegisterRoutes(mux *http.ServeMux) error {
 	mux.HandleFunc(AxonPathRoot+"/healthcheck", h.healthcheck)
 	mux.HandleFunc(AxonPathRoot+"/info", h.info)
 	mux.HandleFunc(AxonPathRoot+"/handlers", h.listHandlers)
-	mux.HandleFunc(AxonPathRoot+"/handlers/{handler}", h.getHandler)
-	// TODO: handler logs, etc
+	mux.HandleFunc(AxonPathRoot+"/handlers/{handler}", h.getHandler)	
 	return nil
 }
 
@@ -82,7 +81,7 @@ func (h *axonHandler) healthcheck(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *axonHandler) info(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusOK)
+
 	result := &struct {
 		Integration string   `json:"integration"`
 		Alias       string   `json:"alias"`
