@@ -12,6 +12,7 @@ import (
 	"time"
 
 	pb "github.com/cortexapps/axon-go/.generated/proto/github.com/cortexapps/axon"
+	"github.com/cortexapps/axon-go/version"
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"
@@ -255,7 +256,8 @@ func (a *Agent) Run(ctx context.Context) error {
 
 		// initiate our dispatch session
 		err = stream.Send(&pb.DispatchRequest{
-			DispatchId: a.DispatchId,
+			DispatchId:    a.DispatchId,
+			ClientVersion: version.Client,
 		})
 		if err != nil {
 			a.logger.Error("failed to send registration id", zap.Error(err))

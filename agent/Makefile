@@ -1,4 +1,5 @@
 GO_SDK_DIR = ../sdks/go/
+PYTHON_SDK_DIR = ../sdks/python/
 GENERATED_DIR = .generated/proto
 GENERATED_PATH=$(GENERATED_DIR)/github.com/cortexapps/axon
 
@@ -10,8 +11,21 @@ GO_FILES := $(patsubst proto/%.proto,$(GENERATED_PATH)/%.pb.go,$(PROTO_FILES))
 GOPATH ?= $(HOME)/go
 GOBIN ?= $(GOPATH)/bin
 
-proto: setup $(GO_FILES)
+proto: setup $(GO_FILES) version
 
+version: $(GO_SDK_DIR)/version/agentversion.txt $(PYTHON_SDK_DIR)/cortex_axon/agentversion.py
+
+$(GO_SDK_DIR)/version/agentversion.txt: common/grpcversion.txt
+	@echo "Copying grpc version file to Go sdk"
+	@mkdir -p $(GO_SDK_DIR)/version
+	@cp $< $@
+
+$(PYTHON_SDK_DIR)/cortex_axon/agentversion.py: common/grpcversion.txt
+	@echo "Copying grpc version file to Python sdk"
+	@mkdir -p $(PYTHON_SDK_DIR)/cortex_axon
+	# write a python file with the grpc version eg "AGENT_VERSION = '0.0.1'"
+	@cat $< | sed 's/^[ \t]*//;s/[ \t]*$$//' | sed 's/^/AGENT_VERSION = "/;s/$$/"\n/' > $@
+	
 $(GENERATED_PATH)/%.pb.go: proto/%.proto
 	@echo "Generating protobuf: $< ==> $@ "
 	@mkdir -p $(GENERATED_DIR)

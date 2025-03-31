@@ -7,6 +7,7 @@ from typing import Any, Optional
 from urllib.parse import quote_plus, urlencode
 
 import grpc
+from agentversion import AGENT_VERSION
 
 from generated import (
     common_pb2,
@@ -188,7 +189,8 @@ class AxonClient:
                     registered = True
 
                 initial_message = cortex_axon_agent_pb2.DispatchRequest(
-                    dispatch_id=self.id
+                    dispatch_id=self.id,
+                    client_version=AGENT_VERSION
                 )
                 for response in stub.Dispatch(
                     _client_message_iterator(initial_message)
