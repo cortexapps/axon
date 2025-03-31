@@ -85,11 +85,17 @@ func (s *AxonAgent) UnregisterHandler(ctx context.Context, req *pb.UnregisterHan
 // ReportInvocation to report the result of the invocation.
 func (s *AxonAgent) Dispatch(stream pb.AxonAgent_DispatchServer) error {
 
+	firstRequest := true
 	for {
 		req, err := stream.Recv()
 		status, _ := status.FromError(err)
 		if err == io.EOF || err == context.Canceled || status.Code() == codes.Canceled {
 			return nil
+		}
+
+		if firstRequest {
+			s.logger.Info("received dispatch request", zap.String("dispatch-id", req.DispatchId), zap.String("client-version", req.ClientVersion))
+			firstRequest = false
 		}
 
 		if err != nil {

@@ -3,6 +3,7 @@ package axon
 import (
 	"time"
 
+	"github.com/cortexapps/axon-go/version"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
@@ -15,6 +16,7 @@ type agentOptions struct {
 	loglevel     zapcore.Level
 	loggerConfig zap.Config
 	sleepOnError time.Duration
+	version      string
 }
 
 func defaultAgentOptions() *agentOptions {
@@ -24,6 +26,7 @@ func defaultAgentOptions() *agentOptions {
 		loglevel:     zapcore.InfoLevel,
 		loggerConfig: zap.NewDevelopmentConfig(),
 		sleepOnError: time.Second * 5,
+		version:      version.Client,
 	}
 }
 

@@ -62,9 +62,10 @@ func (r *registration) Register(integration common.Integration, alias string) (*
 	client := &http.Client{}
 
 	reqBody := &registerRequest{
-		Integration: integration,
-		Alias:       alias,
-		InstanceId:  r.config.InstanceId,
+		Integration:   integration,
+		Alias:         alias,
+		InstanceId:    r.config.InstanceId,
+		ClientVersion: common.ClientVersion,
 	}
 
 	jsonBody, err := json.Marshal(reqBody)
@@ -121,4 +122,5 @@ type registerRequest struct {
 	Alias              string             `json:"alias"`
 	InstanceId         string             `json:"instanceId"`
 	IntegrationSubtype string             `json:"integrationSubtype,omitempty"`
+	ClientVersion      string             `json:"clientVersion,omitempty"`
 }

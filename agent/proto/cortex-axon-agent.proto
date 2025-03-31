@@ -86,6 +86,7 @@ message ListHandlersResponse {
 
 message DispatchRequest {
   string dispatch_id = 1;
+  string client_version = 2;
 }
 
 message DispatchMessage {
