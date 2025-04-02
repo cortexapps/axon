@@ -26,6 +26,7 @@ type AgentConfig struct {
 	IntegrationAlias  string
 	HttpServerPort    int
 	WebhookServerPort int
+	SnykBrokerPort    int
 	EnableApiProxy    bool
 	FailWaitTime      time.Duration
 	VerboseOutput     bool
