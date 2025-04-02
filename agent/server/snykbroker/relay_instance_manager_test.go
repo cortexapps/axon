@@ -54,7 +54,7 @@ func TestRelayRestartServer(t *testing.T) {
 	httpHandler := (mgr.RelayInstanceManager).(cortex_http.RegisterableHandler)
 
 	mux := http.NewServeMux()
-	httpHandler.RegisterRoutes(mux)	
+	httpHandler.RegisterRoutes(mux)
 	mux.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -75,7 +75,7 @@ func TestRelayReRegisterServer(t *testing.T) {
 	httpHandler := (mgr.RelayInstanceManager).(cortex_http.RegisterableHandler)
 
 	mux := http.NewServeMux()
-	httpHandler.RegisterRoutes(mux)	
+	httpHandler.RegisterRoutes(mux)
 	mux.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -94,12 +94,12 @@ func (w *wrappedRelayInstanceManager) Instance() *relayInstanceManager {
 
 func createTestRelayInstanceManager(t *testing.T, controller *gomock.Controller, expectedError error) *wrappedRelayInstanceManager {
 	envVars := map[string]string{
-		"ACCEPT_FILE_DIR":     "./accept_files",
-		"GITHUB_TOKEN":        "the-token",
-		"GITHUB_API_ROOT":     "https://api.github.com",
-		"GITHUB_GRAPHQL_ROOT": "https://api.github.com/graphql",
-		"SNYK_BROKER_PATH":    "sleep",
-		"SNYK_BROKER_ARGS":    "60",
+		"ACCEPT_FILE_DIR":  "./accept_files",
+		"GITHUB_TOKEN":     "the-token",
+		"GITHUB_API":       "https://api.github.com",
+		"GITHUB_GRAPHQL":   "https://api.github.com/graphql",
+		"SNYK_BROKER_PATH": "sleep",
+		"SNYK_BROKER_ARGS": "60",
 	}
 
 	common.ApplyEnv(envVars)

@@ -37,8 +37,8 @@ func TestEmptyAcceptFile(t *testing.T) {
 func TestGithubDefaultAcceptFile(t *testing.T) {
 
 	os.Setenv("GITHUB_TOKEN", "the-github-token")
-	os.Setenv("GITHUB_API_ROOT", "foo.github.com")
-	os.Setenv("GITHUB_GRAPHQL_ROOT", "foo.github.com/graphql")
+	os.Setenv("GITHUB_API", "foo.github.com")
+	os.Setenv("GITHUB_GRAPHQL", "foo.github.com/graphql")
 
 	setAcceptFileDir(t)
 
@@ -145,6 +145,9 @@ func loadAcceptFile(t *testing.T, integration Integration) (string, error) {
 	}
 	return ii.AcceptFile()
 }
+func init() {
+	setAcceptFileDir(&testing.T{})
+}
 
 func TestLoadIntegrationAcceptFileSuccess(t *testing.T) {
 
@@ -165,6 +168,39 @@ func TestLoadIntegrationAcceptFileMissingVars(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "GITHUB_TOKEN")
 	require.Empty(t, acceptFile)
+}
+
+func TestLoadIntegrationAcceptFilePoolVars(t *testing.T) {
+	os.Setenv("GITHUB_TOKEN_POOL", "its-mah-token,its-mah-other-token")
+	os.Setenv("GITHUB_API", "github.com")
+	os.Setenv("GITHUB_GRAPHQL", "github.com/graphql")
+
+	acceptFile, err := loadAcceptFile(t, IntegrationGithub)
+	require.NoError(t, err)
+	contents, err := os.ReadFile(acceptFile)
+	require.NoError(t, err)
+	require.Contains(t, string(contents), "GITHUB_TOKEN")
+	require.NotContains(t, string(contents), "GITHUB_TOKEN_POOL")
+}
+
+func TestLoadValidatinParams(t *testing.T) {
+	ii := IntegrationInfo{
+		Integration: IntegrationGithub,
+	}
+
+	validationParams := ii.GetValidationConfig()
+	require.NotNil(t, validationParams)
+	require.Equal(t, "https://$GITHUB_API/user", validationParams.URL)
+}
+func TestLoadValidatinParamsSubtype(t *testing.T) {
+	ii := IntegrationInfo{
+		Integration: IntegrationGithub,
+		Subtype:     "app",
+	}
+
+	validationParams := ii.GetValidationConfig()
+	require.NotNil(t, validationParams)
+	require.Equal(t, "https://$GITHUB_API/user", validationParams.URL)
 }
 
 func writeTempFile(t *testing.T, contents string) string {

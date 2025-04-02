@@ -234,6 +234,20 @@ func (r *relayInstanceManager) Start() error {
 			"PORT":              "7343",
 		}
 
+		validationConfig := r.integrationInfo.GetValidationConfig()
+		if validationConfig != nil {
+			brokerEnv["BROKER_CLIENT_VALIDATION_URL"] = validationConfig.URL
+			if validationConfig.Method != "" {
+				brokerEnv["BROKER_CLIENT_VALIDATION_METHOD"] = validationConfig.Method
+			}
+			switch validationConfig.Auth.Type {
+			case "header":
+				brokerEnv["BROKER_CLIENT_VALIDATION_AUTHORIZATION_HEADER"] = validationConfig.Auth.Value
+			case "basic":
+				brokerEnv["BROKER_CLIENT_VALIDATION_BASIC_AUTH"] = validationConfig.Auth.Value
+			}
+		}
+
 		if r.config.VerboseOutput {
 			brokerEnv["LOG_LEVEL"] = "debug"
 		}

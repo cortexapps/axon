@@ -92,6 +92,10 @@
                 "GITHUB_API": "api.github.com",
                 "GITHUB_GRAPHQL": "api.github.com/graphql",
                 "JIRA_API": "cortex1.atlassian.net",
+                "BROKER_CLIENT_VALIDATION_URL": "https://$GITHUB_API_ROOT/user",
+                "BROKER_CLIENT_VALIDATION_AUTHORIZATION_HEADER": "bearer $GITHUB_TOKEN"
+               
+                // "BROKER_CLIENT_VALIDATION_BASIC_AUTH": "$JIRA_USERNAME:$JIRA_PASSWORD"
             }        
         },
 

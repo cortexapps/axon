@@ -74,7 +74,7 @@ Generally the naming works like:
 
 | Integration    | Environment Variables                                                                                               |
 |----------------|---------------------------------------------------------------------------------------------------------------------|
-| **GitHub**     | `GITHUB_API_ROOT=api.github.com`, `GITHUB_GRAPHQL_ROOT=api.github.com/graphql`, `GITHUB_TOKEN`                |
+| **GitHub**     | `GITHUB_API=api.github.com`, `GITHUB_GRAPHQL=api.github.com/graphql`, `GITHUB_TOKEN`                |
 | **GitHub App** | Arg `-s app`; `GITHUB_API=https://myapp.github.com/api/v3`, `GITHUB_GRAPHQL=https://myapp.github.com/api/graphql`, `GITHUB_TOKEN` |
 | **Prometheus** | `PROMETHEUS_API=http://mycompany.prometheus.internal`, `PROMETHEUS_USERNAME`, `PROMETHEUS_PASSWORD`                 |
 | **Gitlab**     | `GITLAB_API=https://gitlab.com`, `GITLAB_TOKEN`                                                                     |
