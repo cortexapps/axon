@@ -40,6 +40,28 @@ func TestManagerUnauthorized(t *testing.T) {
 
 }
 
+func TestApplyValidationConfig(t *testing.T) {
+
+	validationConfig := &common.ValidationConfig{
+		URL:    "https://api.github.com/user",
+		Method: "POST",
+		Auth: common.Auth{
+			Type:  "header",
+			Value: "bearer the-token",
+		},
+	}
+
+	envVars := map[string]string{}
+
+	mgr := &relayInstanceManager{}
+
+	mgr.applyClientValidationConfig(validationConfig, envVars)
+	assert.Equal(t, "https://api.github.com/user", envVars["BROKER_CLIENT_VALIDATION_URL"])
+	assert.Equal(t, "POST", envVars["BROKER_CLIENT_VALIDATION_METHOD"])
+	assert.Equal(t, "bearer the-token", envVars["BROKER_CLIENT_VALIDATION_AUTHORIZATION_HEADER"])
+
+}
+
 // POST request successfully restarts supervisor and returns 200 OK
 func TestRelayRestartServer(t *testing.T) {
 	ctrl := gomock.NewController(t)

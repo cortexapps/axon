@@ -1,0 +1,19 @@
+{
+    "validation": [
+        {            
+            "url": "$JIRA_API/rest/api/2/myself",
+            "auth": {
+                "type": "basic",
+                "value": "$JIRA_USERNAME:$JIRA_PASSWORD"
+            }
+        },
+        { 
+            "subtype": "bearer",           
+            "url": "$JIRA_API/rest/api/2/myself",
+            "auth": {
+                "type": "header",
+                "value": "Bearer $JIRA_TOKEN"
+            }
+        }
+    ]
+}

@@ -28,7 +28,6 @@ const (
 )
 
 var subtypes = map[Integration][]string{
-	IntegrationGithub:    {"app"},
 	IntegrationJira:      {"bearer"},
 	IntegrationBitbucket: {"basic"},
 }

@@ -235,18 +235,7 @@ func (r *relayInstanceManager) Start() error {
 		}
 
 		validationConfig := r.integrationInfo.GetValidationConfig()
-		if validationConfig != nil {
-			brokerEnv["BROKER_CLIENT_VALIDATION_URL"] = validationConfig.URL
-			if validationConfig.Method != "" {
-				brokerEnv["BROKER_CLIENT_VALIDATION_METHOD"] = validationConfig.Method
-			}
-			switch validationConfig.Auth.Type {
-			case "header":
-				brokerEnv["BROKER_CLIENT_VALIDATION_AUTHORIZATION_HEADER"] = validationConfig.Auth.Value
-			case "basic":
-				brokerEnv["BROKER_CLIENT_VALIDATION_BASIC_AUTH"] = validationConfig.Auth.Value
-			}
-		}
+		r.applyClientValidationConfig(validationConfig, brokerEnv)
 
 		if r.config.VerboseOutput {
 			brokerEnv["LOG_LEVEL"] = "debug"
@@ -278,6 +267,21 @@ func (r *relayInstanceManager) Start() error {
 	case <-time.After(r.config.FailWaitTime):
 	}
 	return err
+}
+
+func (r *relayInstanceManager) applyClientValidationConfig(validationConfig *common.ValidationConfig, brokerEnv map[string]string) {
+	if validationConfig != nil {
+		brokerEnv["BROKER_CLIENT_VALIDATION_URL"] = validationConfig.URL
+		if validationConfig.Method != "" {
+			brokerEnv["BROKER_CLIENT_VALIDATION_METHOD"] = validationConfig.Method
+		}
+		switch validationConfig.Auth.Type {
+		case "header":
+			brokerEnv["BROKER_CLIENT_VALIDATION_AUTHORIZATION_HEADER"] = validationConfig.Auth.Value
+		case "basic":
+			brokerEnv["BROKER_CLIENT_VALIDATION_BASIC_AUTH"] = validationConfig.Auth.Value
+		}
+	}
 }
 
 func (r *relayInstanceManager) Close() error {
