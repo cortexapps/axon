@@ -1,0 +1,11 @@
+{
+    "validation": [
+        {
+            "url": "$GITHUB_API/user",
+            "auth": {
+                "type": "header",
+                "value": "bearer $GITHUB_TOKEN"
+            }
+        }
+    ]
+}

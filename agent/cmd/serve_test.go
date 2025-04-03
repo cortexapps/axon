@@ -54,15 +54,15 @@ func TestBuildServeStackLive(t *testing.T) {
 func TestBuildRelayStack(t *testing.T) {
 
 	envVars := map[string]string{
-		"DRYRUN":              "true",
-		"PORT":                "0",
-		"BROKER_SERVER_URL":   "http://broker.cortex.io",
-		"BROKER_TOKEN":        "abcd1234",
-		"SNYK_BROKER_PATH":    "bash",
-		"ACCEPT_FILE_DIR":     "../server/snykbroker/accept_files",
-		"GITHUB_TOKEN":        "the-token",
-		"GITHUB_API_ROOT":     "api.github.com",
-		"GITHUB_GRAPHQL_ROOT": "api.github.com/graphql",
+		"DRYRUN":            "true",
+		"PORT":              "0",
+		"BROKER_SERVER_URL": "http://broker.cortex.io",
+		"BROKER_TOKEN":      "abcd1234",
+		"SNYK_BROKER_PATH":  "bash",
+		"ACCEPT_FILE_DIR":   "../server/snykbroker/accept_files",
+		"GITHUB_TOKEN":      "the-token",
+		"GITHUB_API":        "api.github.com",
+		"GITHUB_GRAPHQL":    "api.github.com/graphql",
 	}
 
 	common.ApplyEnv(envVars)

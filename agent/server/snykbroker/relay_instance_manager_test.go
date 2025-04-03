@@ -1,6 +1,7 @@
 package snykbroker
 
 import (
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -40,6 +41,28 @@ func TestManagerUnauthorized(t *testing.T) {
 
 }
 
+func TestApplyValidationConfig(t *testing.T) {
+
+	validationConfig := &common.ValidationConfig{
+		URL:    "https://api.github.com/user",
+		Method: "POST",
+		Auth: common.Auth{
+			Type:  "header",
+			Value: "bearer the-token",
+		},
+	}
+
+	envVars := map[string]string{}
+
+	mgr := &relayInstanceManager{}
+
+	mgr.applyClientValidationConfig(validationConfig, envVars)
+	assert.Equal(t, "https://api.github.com/user", envVars["BROKER_CLIENT_VALIDATION_URL"])
+	assert.Equal(t, "POST", envVars["BROKER_CLIENT_VALIDATION_METHOD"])
+	assert.Equal(t, "bearer the-token", envVars["BROKER_CLIENT_VALIDATION_AUTHORIZATION_HEADER"])
+
+}
+
 // POST request successfully restarts supervisor and returns 200 OK
 func TestRelayRestartServer(t *testing.T) {
 	ctrl := gomock.NewController(t)
@@ -54,7 +77,7 @@ func TestRelayRestartServer(t *testing.T) {
 	httpHandler := (mgr.RelayInstanceManager).(cortex_http.RegisterableHandler)
 
 	mux := http.NewServeMux()
-	httpHandler.RegisterRoutes(mux)	
+	httpHandler.RegisterRoutes(mux)
 	mux.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -75,12 +98,65 @@ func TestRelayReRegisterServer(t *testing.T) {
 	httpHandler := (mgr.RelayInstanceManager).(cortex_http.RegisterableHandler)
 
 	mux := http.NewServeMux()
-	httpHandler.RegisterRoutes(mux)	
+	httpHandler.RegisterRoutes(mux)
 	mux.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, 1, int(mgr.Instance().startCount.Load()))
 
+}
+
+func TestSystemCheck(t *testing.T) {
+
+	jsonPayload := `
+			[
+			{
+				"brokerClientValidationUrl": "https://api.github.com/user",
+				"brokerClientValidationMethod": "GET",
+				"brokerClientValidationTimeoutMs": 5000,
+				"brokerClientValidationUrlStatusCode": 401,
+				"ok": false,
+				"error": "Failed due to invalid credentials",
+				"maskedCredentials": "ghp***sIX"
+			},
+			{
+				"brokerClientValidationUrl": "https://api.github.com/user",
+				"brokerClientValidationMethod": "GET",
+				"brokerClientValidationTimeoutMs": 5000,
+				"brokerClientValidationUrlStatusCode": 200,
+				"ok": true,
+				"maskedCredentials": "ghp***ICu"
+			}
+			]
+	`
+
+	// Create a mock HTTP server
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/systemcheck" {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(jsonPayload))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer mockServer.Close()
+
+	mgr := &relayInstanceManager{
+		config: config.AgentConfig{
+			SnykBrokerPort: mockServer.Listener.Addr().(*net.TCPAddr).Port,
+		},
+	}
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/__axon/broker/systemcheck", nil)
+
+	mux := http.NewServeMux()
+	mgr.RegisterRoutes(mux)
+	mux.ServeHTTP(w, req)
+
+	// Verify the response
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, jsonPayload, w.Body.String())
 }
 
 type wrappedRelayInstanceManager struct {
@@ -94,12 +170,12 @@ func (w *wrappedRelayInstanceManager) Instance() *relayInstanceManager {
 
 func createTestRelayInstanceManager(t *testing.T, controller *gomock.Controller, expectedError error) *wrappedRelayInstanceManager {
 	envVars := map[string]string{
-		"ACCEPT_FILE_DIR":     "./accept_files",
-		"GITHUB_TOKEN":        "the-token",
-		"GITHUB_API_ROOT":     "https://api.github.com",
-		"GITHUB_GRAPHQL_ROOT": "https://api.github.com/graphql",
-		"SNYK_BROKER_PATH":    "sleep",
-		"SNYK_BROKER_ARGS":    "60",
+		"ACCEPT_FILE_DIR":  "./accept_files",
+		"GITHUB_TOKEN":     "the-token",
+		"GITHUB_API":       "https://api.github.com",
+		"GITHUB_GRAPHQL":   "https://api.github.com/graphql",
+		"SNYK_BROKER_PATH": "sleep",
+		"SNYK_BROKER_ARGS": "60",
 	}
 
 	common.ApplyEnv(envVars)

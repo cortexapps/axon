@@ -26,6 +26,7 @@ type AgentConfig struct {
 	IntegrationAlias  string
 	HttpServerPort    int
 	WebhookServerPort int
+	SnykBrokerPort    int
 	EnableApiProxy    bool
 	FailWaitTime      time.Duration
 	VerboseOutput     bool
@@ -105,6 +106,15 @@ func NewAgentEnvConfig() AgentConfig {
 		httpPort = p
 	}
 
+	snykBrokerPort := 0
+	if snykBrokerPortStr := os.Getenv("SNYK_BROKER_PORT"); snykBrokerPortStr != "" {
+		p, err := strconv.Atoi(snykBrokerPortStr)
+		if err != nil {
+			panic(err)
+		}
+		snykBrokerPort = p
+	}
+
 	dryRun := false
 	if dryRunEnv := os.Getenv("DRYRUN"); dryRunEnv != "" {
 		dryRun = dryRunEnv == "true" || dryRunEnv == "1"
@@ -146,6 +156,7 @@ func NewAgentEnvConfig() AgentConfig {
 		IntegrationAlias:  identifier,
 		HttpServerPort:    httpPort,
 		WebhookServerPort: WebhookServerPort,
+		SnykBrokerPort:    snykBrokerPort,
 		EnableApiProxy:    true,
 		FailWaitTime:      time.Second * 2,
 	}

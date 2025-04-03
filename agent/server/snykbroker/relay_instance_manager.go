@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -18,6 +19,7 @@ import (
 )
 
 const defaultSnykBroker = "snyk-broker"
+const brokerPort = 7343
 
 type RelayInstanceManager interface {
 	Start() error
@@ -66,6 +68,7 @@ func NewRelayInstanceManager(
 func (r *relayInstanceManager) RegisterRoutes(mux *http.ServeMux) error {
 	mux.HandleFunc(fmt.Sprintf("%s/broker/restart", cortexHttp.AxonPathRoot), r.handleRestart)
 	mux.HandleFunc(fmt.Sprintf("%s/broker/reregister", cortexHttp.AxonPathRoot), r.handleReregister)
+	mux.HandleFunc(fmt.Sprintf("%s/broker/systemcheck", cortexHttp.AxonPathRoot), r.handleSystemCheck)
 	return nil
 }
 
@@ -103,6 +106,41 @@ func (r *relayInstanceManager) handleReregister(w http.ResponseWriter, req *http
 		w.Write([]byte("Unable to reregister"))
 		return
 	}
+}
+
+func (r *relayInstanceManager) getSnykBrokerPort() int {
+	if r.config.SnykBrokerPort == 0 {
+		return brokerPort
+	}
+	return r.config.SnykBrokerPort
+}
+
+func (r *relayInstanceManager) handleSystemCheck(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	resp, err := http.Get(fmt.Sprintf("http://localhost:%d/systemcheck", r.getSnykBrokerPort()))
+	if err != nil {
+		r.logger.Error("Unable to get system check", zap.Error(err))
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte("Unable to get system check"))
+		return
+	}
+	defer resp.Body.Close()
+	for k, v := range resp.Header {
+		w.Header().Set(k, strings.Join(v, ","))
+	}
+	w.WriteHeader(resp.StatusCode)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		r.logger.Error("Unable to read system check response", zap.Error(err))
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	w.Write(body)
+
 }
 
 var errSkipBroker = errors.New("NoBrokerToken")
@@ -231,8 +269,11 @@ func (r *relayInstanceManager) Start() error {
 			"ACCEPT":            acceptFile,
 			"BROKER_SERVER_URL": uri,
 			"BROKER_TOKEN":      token,
-			"PORT":              "7343",
+			"PORT":              fmt.Sprintf("%d", r.getSnykBrokerPort()),
 		}
+
+		validationConfig := r.integrationInfo.GetValidationConfig()
+		r.applyClientValidationConfig(validationConfig, brokerEnv)
 
 		if r.config.VerboseOutput {
 			brokerEnv["LOG_LEVEL"] = "debug"
@@ -264,6 +305,21 @@ func (r *relayInstanceManager) Start() error {
 	case <-time.After(r.config.FailWaitTime):
 	}
 	return err
+}
+
+func (r *relayInstanceManager) applyClientValidationConfig(validationConfig *common.ValidationConfig, brokerEnv map[string]string) {
+	if validationConfig != nil {
+		brokerEnv["BROKER_CLIENT_VALIDATION_URL"] = validationConfig.URL
+		if validationConfig.Method != "" {
+			brokerEnv["BROKER_CLIENT_VALIDATION_METHOD"] = validationConfig.Method
+		}
+		switch validationConfig.Auth.Type {
+		case "header":
+			brokerEnv["BROKER_CLIENT_VALIDATION_AUTHORIZATION_HEADER"] = validationConfig.Auth.Value
+		case "basic":
+			brokerEnv["BROKER_CLIENT_VALIDATION_BASIC_AUTH"] = validationConfig.Auth.Value
+		}
+	}
 }
 
 func (r *relayInstanceManager) Close() error {

@@ -1,0 +1,11 @@
+{
+    "validation": [
+        {
+            "url": "$GITLAB_API/api/v3/user",
+            "auth": {
+                "type": "header",
+                "value": "bearer $GITLAB_TOKEN"
+            }
+        }
+    ]
+}

@@ -24,12 +24,10 @@ type Supervisor struct {
 
 	executable string
 	args       []string
-	cmd        *exec.Cmd
 	env        map[string]string
 	done       chan struct{}
 	stopFunc   func()
 	pid        int
-	killed     bool
 	runCount   int
 	lastError  error
 }

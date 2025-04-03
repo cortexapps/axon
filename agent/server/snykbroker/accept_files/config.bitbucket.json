@@ -1,0 +1,19 @@
+{
+    "validation": [
+        {      
+            "subtype": "basic",     
+            "url": "$BITBUCKET_API/rest/api/1.0/projects",
+            "auth": {
+                "type": "basic",
+                "value": "$BITBUCKET_USERNAME:$BITBUCKET_PASSWORD"
+            }
+        },
+        { 
+            "url": "$BITBUCKET_API/rest/api/1.0/projects",            
+            "auth": {
+                "type": "header",
+                "value": "Bearer $BITBUCKET_TOKEN"
+            }
+        }
+    ]
+}

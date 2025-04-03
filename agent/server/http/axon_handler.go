@@ -50,7 +50,7 @@ func (h *axonHandler) RegisterRoutes(mux *http.ServeMux) error {
 	mux.HandleFunc(AxonPathRoot+"/healthcheck", h.healthcheck)
 	mux.HandleFunc(AxonPathRoot+"/info", h.info)
 	mux.HandleFunc(AxonPathRoot+"/handlers", h.listHandlers)
-	mux.HandleFunc(AxonPathRoot+"/handlers/{handler}", h.getHandler)	
+	mux.HandleFunc(AxonPathRoot+"/handlers/{handler}", h.getHandler)
 	return nil
 }
 
@@ -73,7 +73,6 @@ func (h *axonHandler) returnJson(obj interface{}, w http.ResponseWriter) {
 }
 
 func (h *axonHandler) healthcheck(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusOK)
 	result := map[string]interface{}{
 		"OK": true,
 	}

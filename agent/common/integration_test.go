@@ -37,8 +37,8 @@ func TestEmptyAcceptFile(t *testing.T) {
 func TestGithubDefaultAcceptFile(t *testing.T) {
 
 	os.Setenv("GITHUB_TOKEN", "the-github-token")
-	os.Setenv("GITHUB_API_ROOT", "foo.github.com")
-	os.Setenv("GITHUB_GRAPHQL_ROOT", "foo.github.com/graphql")
+	os.Setenv("GITHUB_API", "foo.github.com")
+	os.Setenv("GITHUB_GRAPHQL", "foo.github.com/graphql")
 
 	setAcceptFileDir(t)
 
@@ -51,27 +51,6 @@ func TestGithubDefaultAcceptFile(t *testing.T) {
 	require.NoError(t, err)
 	_, err = os.Stat(resultPath)
 	require.NoError(t, err)
-}
-
-func TestGithubDefaultAcceptFileSubtypeExists(t *testing.T) {
-
-	os.Setenv("GITHUB_TOKEN", "the-github-token")
-	os.Setenv("GITHUB_API", "https://foo.github.com")
-	os.Setenv("GITHUB_GRAPHQL", "https://foo.github.com/graphql")
-
-	setAcceptFileDir(t)
-
-	info := IntegrationInfo{
-		Integration: IntegrationGithub,
-		Subtype:     "app",
-		Alias:       fmt.Sprintf("%v", time.Now().UnixMilli()),
-	}
-
-	resultPath, err := info.AcceptFile()
-	require.NoError(t, err)
-	_, err = os.Stat(resultPath)
-	require.NoError(t, err)
-
 }
 
 func TestGithubDefaultAcceptFileSubtypeInvalid(t *testing.T) {
@@ -145,6 +124,9 @@ func loadAcceptFile(t *testing.T, integration Integration) (string, error) {
 	}
 	return ii.AcceptFile()
 }
+func init() {
+	setAcceptFileDir(&testing.T{})
+}
 
 func TestLoadIntegrationAcceptFileSuccess(t *testing.T) {
 
@@ -165,6 +147,83 @@ func TestLoadIntegrationAcceptFileMissingVars(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "GITHUB_TOKEN")
 	require.Empty(t, acceptFile)
+}
+
+func TestLoadIntegrationAcceptFilePoolVars(t *testing.T) {
+	os.Setenv("GITHUB_TOKEN_POOL", "its-mah-token,its-mah-other-token")
+	os.Setenv("GITHUB_API", "github.com")
+	os.Setenv("GITHUB_GRAPHQL", "github.com/graphql")
+
+	acceptFile, err := loadAcceptFile(t, IntegrationGithub)
+	require.NoError(t, err)
+	contents, err := os.ReadFile(acceptFile)
+	require.NoError(t, err)
+	require.Contains(t, string(contents), "GITHUB_TOKEN")
+	require.NotContains(t, string(contents), "GITHUB_TOKEN_POOL")
+}
+
+func TestLoadValidationParams(t *testing.T) {
+	ii := IntegrationInfo{
+		Integration: IntegrationGithub,
+	}
+
+	validationParams := ii.GetValidationConfig()
+	require.NotNil(t, validationParams)
+	require.Equal(t, "$GITHUB_API/user", validationParams.URL)
+}
+func TestLoadValidationParamsSubtype(t *testing.T) {
+	ii := IntegrationInfo{
+		Integration: IntegrationGithub,
+		Subtype:     "app",
+	}
+
+	validationParams := ii.GetValidationConfig()
+	require.NotNil(t, validationParams)
+	require.Equal(t, "$GITHUB_API/user", validationParams.URL)
+}
+
+func TestLoadValidationParamsJiraSubtype(t *testing.T) {
+
+	ii := IntegrationInfo{
+		Integration: IntegrationJira,
+	}
+
+	validationParams := ii.GetValidationConfig()
+	require.NotNil(t, validationParams)
+	require.Equal(t, "basic", validationParams.Auth.Type)
+	require.Equal(t, "$JIRA_USERNAME:$JIRA_PASSWORD", validationParams.Auth.Value)
+
+	ii = IntegrationInfo{
+		Integration: IntegrationJira,
+		Subtype:     "bearer",
+	}
+
+	validationParams = ii.GetValidationConfig()
+	require.NotNil(t, validationParams)
+	require.Equal(t, "header", validationParams.Auth.Type)
+	require.Equal(t, "Bearer $JIRA_TOKEN", validationParams.Auth.Value)
+}
+
+func TestLoadValidationParamsBitbucketSubtype(t *testing.T) {
+
+	ii := IntegrationInfo{
+		Integration: IntegrationBitbucket,
+		Subtype:     "basic",
+	}
+
+	validationParams := ii.GetValidationConfig()
+	require.NotNil(t, validationParams)
+	require.Equal(t, "basic", validationParams.Auth.Type)
+	require.Equal(t, "$BITBUCKET_USERNAME:$BITBUCKET_PASSWORD", validationParams.Auth.Value)
+
+	ii = IntegrationInfo{
+		Integration: IntegrationBitbucket,
+	}
+
+	validationParams = ii.GetValidationConfig()
+	require.NotNil(t, validationParams)
+	require.Equal(t, "header", validationParams.Auth.Type)
+	require.Equal(t, "Bearer $BITBUCKET_TOKEN", validationParams.Auth.Value)
 }
 
 func writeTempFile(t *testing.T, contents string) string {

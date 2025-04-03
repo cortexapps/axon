@@ -28,7 +28,6 @@ const (
 )
 
 var subtypes = map[Integration][]string{
-	IntegrationGithub:    {"app"},
 	IntegrationJira:      {"bearer"},
 	IntegrationBitbucket: {"basic"},
 }
@@ -180,6 +179,73 @@ func (ii IntegrationInfo) ValidateSubtype() (string, error) {
 	return "", fmt.Errorf("integration %s does not support subtype %s, allowed values are: %v", ii.Integration, ii.Subtype, allowedSubtypes)
 }
 
+func (ii IntegrationInfo) GetValidationConfig() *ValidationConfig {
+	if ii.Integration == IntegrationCustom {
+		return nil
+	}
+
+	selector := fmt.Sprintf("config.%s.json", ii.Integration) // config.<integration>.<subtype>
+	contents, err := ii.getIntegrationFileContents(selector)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			fmt.Println("Error reading integration file:", err)
+		}
+		return nil
+	}
+
+	var config IntegrationConfig
+	if err := json.Unmarshal([]byte(contents), &config); err != nil {
+		fmt.Println("Error unmarshalling integration file:", err)
+		return nil
+	}
+	validationsBySubtype := make(map[string]ValidationConfig)
+	for _, v := range config.Validation {
+		validationsBySubtype[v.Subtype] = v
+	}
+	if v, ok := validationsBySubtype[ii.Subtype]; ok {
+		return &v
+	}
+	if v, ok := validationsBySubtype[""]; ok {
+		return &v
+	}
+	return nil
+}
+
+type IntegrationConfig struct {
+	Validation []ValidationConfig `json:"validation"`
+}
+type ValidationConfig struct {
+	Subtype string `json:"subtype,omitempty"`
+	URL     string `json:"url"`
+	Method  string `json:"method,omitempty"`
+	Auth    Auth   `json:"auth"`
+}
+
+type Auth struct {
+	Type  string `json:"type"`
+	Value string `json:"value"`
+}
+
+type Config struct {
+	Validation ValidationConfig `json:"$validation"`
+}
+
+func (ii IntegrationInfo) getIntegrationFileContents(fileName string) (string, error) {
+	acceptFileDir := os.Getenv("ACCEPT_FILE_DIR")
+
+	if acceptFileDir == "" {
+		acceptFileDir = "server/snykbroker/accept_files"
+	}
+
+	fullPath := path.Join(acceptFileDir, fileName)
+	contents, err := os.ReadFile(fullPath)
+
+	if err != nil {
+		return "", err
+	}
+	return string(contents), nil
+}
+
 func (ii IntegrationInfo) getIntegrationAcceptFile() (string, error) {
 
 	if ii.Integration == IntegrationCustom {
@@ -197,20 +263,10 @@ func (ii IntegrationInfo) getIntegrationAcceptFile() (string, error) {
 
 	fileName := fmt.Sprintf("accept.%s.json", selector)
 
-	acceptFileDir := os.Getenv("ACCEPT_FILE_DIR")
-
-	if acceptFileDir == "" {
-		acceptFileDir = "server/snykbroker/accept_files"
-	}
-
-	fullPath := path.Join(acceptFileDir, fileName)
-	contents, err := os.ReadFile(fullPath)
-
+	strContent, err := ii.getIntegrationFileContents(fileName)
 	if err != nil {
 		return "", err
 	}
-
-	strContent := string(contents)
 	if err := ii.ensureAcceptFileVars(strContent); err != nil {
 		return "", err
 	}
@@ -224,7 +280,7 @@ func (ii IntegrationInfo) ensureAcceptFileVars(content string) error {
 
 	for _, match := range varMatch {
 		envVar := match[1]
-		if os.Getenv(envVar) == "" {
+		if os.Getenv(envVar) == "" && os.Getenv(envVar+"_POOL") == "" {
 			return fmt.Errorf("missing required environment variable %q for integration %s", envVar, ii.Integration.String())
 		}
 	}
