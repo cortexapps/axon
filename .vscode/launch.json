@@ -88,7 +88,9 @@
             "env": {
                 "SCAFFOLD_DIR": "${workspaceFolder}/scaffold",
                 "SCAFFOLD_DOCKER_IMAGE": "cortex-axon-agent:local",
-                "PORT" : "7399",                
+                "PORT" : "7399",
+                "GITHUB_API": "api.github.com",
+                "GITHUB_GRAPHQL": "api.github.com/graphql",
             }        
         },
 

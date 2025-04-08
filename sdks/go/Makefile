@@ -4,7 +4,7 @@ GOROOT ?= $(shell go env GOROOT)
 GOPATH ?= $(shell go env GOPATH)
 
 mockgen:
-	@if ! command -v $(GOPATH)/bin/mockgen >/dev/null; then echo "Installing mockgen..."; go install go.uber.org/mock/mockgen@latest; fi
+	@if ! command -v $(GOPATH)/bin/mockgen >/dev/null; then echo "Installing mockgen..."; go install go.uber.org/mock/mockgen@v0.5.0; fi
 .PHONY: mockgen
 
 mock_axon/mocks.go: $(wildcard .generated/proto/github.com/cortexapps/axon/*.go)
