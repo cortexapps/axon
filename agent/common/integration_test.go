@@ -141,11 +141,11 @@ func TestLoadIntegrationAcceptFileSuccess(t *testing.T) {
 
 func TestLoadIntegrationAcceptFileMissingVars(t *testing.T) {
 	os.Setenv("GITHUB_TOKEN", "")
-	os.Setenv("GITHUB_SERVER", "")
+	os.Setenv("GITHUB_API", "")
 
 	acceptFile, err := loadAcceptFile(t, IntegrationGithub)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "GITHUB_TOKEN")
+	require.Contains(t, err.Error(), "GITHUB_API")
 	require.Empty(t, acceptFile)
 }
 
