@@ -56,7 +56,7 @@ func ParseIntegration(s string) (Integration, error) {
 }
 
 func ValidIntegrations() []Integration {
-	return []Integration{IntegrationGithub, IntegrationSlack, IntegrationJira, IntegrationGitlab, IntegrationAws, IntegrationSonarqube, IntegrationPrometheus}
+	return []Integration{IntegrationGithub, IntegrationJira, IntegrationGitlab, IntegrationBitbucket, IntegrationSonarqube, IntegrationPrometheus}
 }
 
 type IntegrationInfo struct {
