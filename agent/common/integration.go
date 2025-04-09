@@ -9,6 +9,7 @@ import (
 	"os"
 	"path"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -56,7 +57,7 @@ func ParseIntegration(s string) (Integration, error) {
 }
 
 func ValidIntegrations() []Integration {
-	return []Integration{IntegrationGithub, IntegrationSlack, IntegrationJira, IntegrationGitlab, IntegrationAws, IntegrationSonarqube, IntegrationPrometheus}
+	return []Integration{IntegrationGithub, IntegrationJira, IntegrationGitlab, IntegrationBitbucket, IntegrationSonarqube, IntegrationPrometheus}
 }
 
 type IntegrationInfo struct {
@@ -278,8 +279,17 @@ var reContentVars = regexp.MustCompile(`\$\{(.*?)\}`)
 func (ii IntegrationInfo) ensureAcceptFileVars(content string) error {
 	varMatch := reContentVars.FindAllStringSubmatch(content, -1)
 
+	envVars := []string{}
+
+	// sort these so they have a stable order
+
 	for _, match := range varMatch {
-		envVar := match[1]
+		envVars = append(envVars, match[1])
+	}
+
+	sort.Strings(envVars)
+
+	for _, envVar := range envVars {
 		if os.Getenv(envVar) == "" && os.Getenv(envVar+"_POOL") == "" {
 			return fmt.Errorf("missing required environment variable %q for integration %s", envVar, ii.Integration.String())
 		}
