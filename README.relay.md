@@ -36,8 +36,8 @@ services:
     image: ghcr.io/cortexapps/cortex-axon-agent:latest
     env_file: .env
     env:
-      - GITHUB_API_ROOT=api.github.com
-      - GITHUB_GRAPHQL_ROOT=api.github.com
+      - GITHUB_API=api.github.com
+      - GITHUB_GRAPHQL=api.github.com
     command: [
       "relay",
       "-i", "github",
@@ -65,7 +65,7 @@ is not found, the start will fail with an error message indicating the missing v
 Generally the naming works like:
 
 * `*_API` - the root URL for the API, such as `https://api.github.com`
-* `*_API_ROOT` - just the host and root path for the integration such as `mycompany.github.com/api/v3`
+* `*_API` - just the host and root path for the integration such as `mycompany.github.com/api/v3`
 * `*_HOST` - just the domain name, such as `mycompany.github.com`
 
 
@@ -79,6 +79,9 @@ Generally the naming works like:
 | **Prometheus** | `PROMETHEUS_API=http://mycompany.prometheus.internal`, `PROMETHEUS_USERNAME`, `PROMETHEUS_PASSWORD`                 |
 | **Gitlab**     | `GITLAB_API=https://gitlab.com`, `GITLAB_TOKEN`                                                                     |
 | **Sonarqube**  | `SONARQUBE_API=https://sonarqube.mycompany.com`, `SONARQUBE_TOKEN`                                                 |
+| **Bitbucket Cloud**  | `BITBUCKET_API=https://api.bitbucket.org`, `BITBUCKET_TOKEN`                    |
+| **Bitbucket Hosted**  | `BITBUCKET_API=https://bitbucket.mycompany.com`, `BITBUCKET_USERNAME`, `BITBUCKET_PASSWORD`                |
+
 ## How it works
 
 Internally, Cortex Axon uses an open-source project published by Snyk called [Snyk Broker](https://docs.snyk.io/enterprise-setup/snyk-broker). 
