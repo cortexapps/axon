@@ -19,7 +19,7 @@ func TestRegisterUnregisterHandler(t *testing.T) {
 	defer controller.Finish()
 	agent, mock := createAgent(controller)
 
-	testHandler := func(ctx HandlerContext) interface{} {
+	testHandler := func(ctx HandlerContext) error {
 		return nil
 	}
 
@@ -71,7 +71,7 @@ func TestInvokeHandler(t *testing.T) {
 
 	called := false
 
-	theHandler := func(ctx HandlerContext) interface{} {
+	theHandler := func(ctx HandlerContext) error {
 		called = true
 		return nil
 	}
@@ -88,7 +88,7 @@ func TestInvokeHandlerWithTimeout(t *testing.T) {
 
 	called := false
 
-	theHandler := func(ctx HandlerContext) interface{} {
+	theHandler := func(ctx HandlerContext) error {
 		called = true
 		return nil
 	}
@@ -105,7 +105,7 @@ func TestInvokeHandlerWithTimeoutTriggered(t *testing.T) {
 
 	called := false
 
-	theHandler := func(ctx HandlerContext) interface{} {
+	theHandler := func(ctx HandlerContext) error {
 		called = true
 		time.Sleep(time.Millisecond * 10)
 		return nil
@@ -127,7 +127,7 @@ func TestInvokeHandlerWithPanic(t *testing.T) {
 
 	called := false
 
-	theHandler := func(ctx HandlerContext) interface{} {
+	theHandler := func(ctx HandlerContext) error {
 		called = true
 		panic("ohnoes")
 	}
@@ -142,17 +142,39 @@ func TestInvokeHandlerWithPanic(t *testing.T) {
 
 }
 
+func TestInvokeHandlerWithError(t *testing.T) {
+	controller := gomock.NewController(t)
+	defer controller.Finish()
+
+	called := false
+
+	theHandler := func(ctx HandlerContext) error {
+		called = true
+		return fmt.Errorf("ohnoes")
+	}
+
+	executeHandlerHelper(t, controller, theHandler, 1, func(req *pb.ReportInvocationRequest) {
+		reportedErr := req.GetError()
+		require.NotNil(t, reportedErr)
+		require.Equal(t, "ohnoes", reportedErr.Message)
+		require.Equal(t, "unexpected", reportedErr.Code)
+	})
+
+	require.True(t, called)
+
+}
+
 func TestInvokeHandlerApiCall(t *testing.T) {
 	controller := gomock.NewController(t)
 	defer controller.Finish()
 
 	called := false
 
-	theHandler := func(ctx HandlerContext) interface{} {
+	theHandler := func(ctx HandlerContext) (any, error) {
 		called = true
 		resp, err := ctx.CortexJsonApiCall("GET", "/api/v1/test", "")
 		require.NoError(t, err)
-		return fmt.Sprintf("%v", resp.StatusCode)
+		return fmt.Sprintf("%v", resp.StatusCode), nil
 	}
 
 	executeHandlerHelper(t, controller, theHandler, 1, func(req *pb.ReportInvocationRequest) {
@@ -176,6 +198,29 @@ func TestInvokeHandlerApiCall(t *testing.T) {
 
 }
 
+func TestInvokeHandlerApiCallWithError(t *testing.T) {
+	controller := gomock.NewController(t)
+	defer controller.Finish()
+
+	called := false
+
+	theHandler := func(ctx HandlerContext) (any, error) {
+		called = true
+		return nil, fmt.Errorf("ohnoes")
+	}
+
+	executeHandlerHelper(t, controller, theHandler, 1, func(req *pb.ReportInvocationRequest) {
+		reportedErr := req.GetError()
+		require.NotNil(t, reportedErr)
+		require.Nil(t, req.GetResult())
+	}, func(mock *mockGrpcClient) {
+
+	})
+
+	require.True(t, called)
+
+}
+
 //
 // Helpers
 //
@@ -191,7 +236,7 @@ func createAgent(controller *gomock.Controller) (*Agent, *mockGrpcClient) {
 
 type agentCallback func(*mockGrpcClient)
 
-func executeHandlerHelper(t *testing.T, controller *gomock.Controller, handler Handler, timeoutMs int, reportCallback func(*pb.ReportInvocationRequest), callback ...agentCallback) error {
+func executeHandlerHelper(t *testing.T, controller *gomock.Controller, handler any, timeoutMs int, reportCallback func(*pb.ReportInvocationRequest), callback ...agentCallback) error {
 
 	agent, mock := createAgent(controller)
 	id := fmt.Sprintf("%d", time.Now().UnixNano())
@@ -234,7 +279,17 @@ func executeHandlerHelper(t *testing.T, controller *gomock.Controller, handler H
 		options = append(options, WithTimeout(time.Duration(timeoutMs)*time.Millisecond))
 	}
 
-	h, err := agent.RegisterHandler(handler, options...)
+	var h string
+	var err error
+
+	if hFunc, ok := handler.(Handler); ok {
+		h, err = agent.RegisterHandler(hFunc, options...)
+	} else if ihFunc, ok := handler.(InvocableHandler); ok {
+		h, err = agent.RegisterInvocableHandler(ihFunc, options...)
+	} else {
+		panic("unexpected handler type: " + fmt.Sprintf("%T", handler))
+	}
+
 	require.NoError(t, err)
 	require.NotEmpty(t, h)
 

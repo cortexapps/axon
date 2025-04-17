@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	pb "github.com/cortexapps/axon/.generated/proto/github.com/cortexapps/axon"
@@ -17,28 +18,30 @@ type Manager interface {
 	ClearHandlers(id string)
 	Start(id string) error
 	Stop(id string) error
-	Trigger(handler HandlerInvoke) error
+	Trigger(handler Invocable) error
 	GetByTag(tag string) HandlerEntry
-	Dequeue(ctx context.Context, id string, waitTime time.Duration) (*pb.DispatchHandlerInvoke, error)
+	Dequeue(ctx context.Context, id string, waitTime time.Duration) (Invocable, error)
 	Close() error
 	IsFinished() bool
 }
 
 type handlerManager struct {
-	logger         *zap.Logger
-	dispatchQueues map[string]chan *pb.DispatchHandlerInvoke
-	handlers       map[string]HandlerEntry
-	cron           cron.Cron
-	done           chan struct{}
-	finished       bool
+	logger              *zap.Logger
+	dispatchQueues      map[string]chan Invocable
+	outstandingRequests map[string]Invocable
+	handlers            map[string]HandlerEntry
+	cron                cron.Cron
+	done                chan struct{}
+	finished            bool
 }
 
 func NewHandlerManager(logger *zap.Logger, cron cron.Cron) Manager {
 	mgr := &handlerManager{
-		logger:         logger.Named("handler-manager"),
-		handlers:       make(map[string]HandlerEntry),
-		dispatchQueues: make(map[string]chan *pb.DispatchHandlerInvoke),
-		cron:           cron,
+		logger:              logger.Named("handler-manager"),
+		handlers:            make(map[string]HandlerEntry),
+		dispatchQueues:      make(map[string]chan Invocable),
+		cron:                cron,
+		outstandingRequests: make(map[string]Invocable),
 	}
 	return mgr
 }
@@ -102,6 +105,8 @@ func (s *handlerManager) createEntry(
 
 		case pb.HandlerInvokeType_WEBHOOK:
 			return NewWebhookHandlerEntry(s, s.logger, dispatchId, name, timeout, options...)
+		case pb.HandlerInvokeType_INVOKE:
+			return NewInvokeHandlerEntry(s, s.logger, dispatchId, name, timeout, options...)
 		}
 	}
 	s.logger.Error("handler type not supported", zap.String("handler", name))
@@ -150,7 +155,7 @@ func (s *handlerManager) removeHandler(entry HandlerEntry) {
 	delete(s.handlers, entry.Id())
 }
 
-func (s *handlerManager) Dequeue(ctx context.Context, dispatchId string, waitTime time.Duration) (*pb.DispatchHandlerInvoke, error) {
+func (s *handlerManager) Dequeue(ctx context.Context, dispatchId string, waitTime time.Duration) (Invocable, error) {
 	queue := s.getDispatchQueue(dispatchId)
 	select {
 	case <-time.After(waitTime):
@@ -163,46 +168,60 @@ func (s *handlerManager) Dequeue(ctx context.Context, dispatchId string, waitTim
 	}
 }
 
-func (s *handlerManager) Trigger(handler HandlerInvoke) error {
-	reasonStr := handler.Reason.String()
+func (s *handlerManager) Trigger(handler Invocable) error {
 
-	entry := s.handlers[handler.Id]
+	handlerName := handler.GetEntry().Name()
+	entry := s.handlers[handler.GetEntry().Id()]
 
 	if entry == nil {
-		s.logger.Error("handler not found", zap.String("handler", handler.Name))
-		return fmt.Errorf("handler not found: %s", handler.Name)
+		s.logger.Error("handler not found", zap.String("handler", handlerName))
+		return fmt.Errorf("handler not found: %s", handlerName)
 	}
+
+	message := handler
+
+	reasonStr := message.GetReason().String()
 
 	if !entry.IsActive() {
-		s.logger.Warn("handler is not active", zap.String("handler", handler.Name))
-		return fmt.Errorf("cannot trigger non-started handler: %s", handler.Name)
+		s.logger.Warn("handler is not active", zap.String("handler", handlerName))
+		return fmt.Errorf("cannot trigger non-started handler: %s", handlerName)
 	}
 
-	s.logger.Info("Triggering handler",
-		zap.String("handler-id", handler.Id),
-		zap.String("handler", handler.Name),
+	logger := s.logger.With(
+		zap.String("handler-id", entry.Id()),
+		zap.String("handler", handlerName),
 		zap.String("reason", reasonStr),
 	)
 
-	entry.OnTrigger(handler.Reason)
+	logger.Info("Triggering handler")
+	contextWithTimeout, cancel := context.WithTimeout(context.Background(), message.GetEntry().Timeout())
+	handler.Start(contextWithTimeout)
+
+	entry.OnTrigger(message.GetReason())
 
 	queue := s.getDispatchQueue(entry.DispatchId())
-	queue <- &pb.DispatchHandlerInvoke{
-		DispatchId:  entry.DispatchId(),
-		HandlerId:   entry.Id(),
-		HandlerName: entry.Name(),
-		Reason:      handler.Reason,
-		Args:        handler.Args,
-		TimeoutMs:   int32(entry.Timeout().Milliseconds()),
-	}
+	queue <- message
+
+	go func() {
+		defer cancel()
+		<-message.Done()
+		result, err := message.GetResult()
+		if err != nil {
+			logger.Error("handler error", zap.Error(err))
+		} else {
+			logger.Info("Handler completed", zap.Int("result-length", len(result)))
+		}
+
+	}()
+
 	return nil
 }
 
-func (s *handlerManager) getDispatchQueue(DispatchId string) chan *pb.DispatchHandlerInvoke {
+func (s *handlerManager) getDispatchQueue(DispatchId string) chan Invocable {
 
 	queue, ok := s.dispatchQueues[DispatchId]
 	if !ok {
-		queue = make(chan *pb.DispatchHandlerInvoke, 100)
+		queue = make(chan Invocable, 100)
 		s.dispatchQueues[DispatchId] = queue
 	}
 	return queue
@@ -223,4 +242,25 @@ func (s *handlerManager) GetByTag(tag string) HandlerEntry {
 		}
 	}
 	return nil
+}
+
+func TriggerInvoke(context context.Context, manager Manager, handlerName string, body string) (string, error) {
+
+	entry := manager.GetByTag(handlerName)
+	if entry == nil {
+		return "", os.ErrNotExist
+	}
+
+	handlerInvoke := NewInvokeHandlerInvoke(entry, body)
+
+	handlerInvoke.Start(context)
+
+	err := manager.Trigger(handlerInvoke)
+
+	if err != nil {
+		return "", err
+	}
+
+	<-handlerInvoke.Done()
+	return handlerInvoke.GetResult()
 }

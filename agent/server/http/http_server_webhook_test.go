@@ -60,12 +60,12 @@ func TestHandleWebhook(t *testing.T) {
 	assert.NotNil(t, manager.GetByTag("my-webhook-id").LastInvoked())
 	handlerInvocation, err := manager.Dequeue(context.Background(), "1", 500*time.Millisecond)
 	require.NoError(t, err)
-	require.Equal(t, "test", handlerInvocation.HandlerName)
+	require.Equal(t, "test", handlerInvocation.GetEntry().Name())
 
 	expected := map[string]string{
 		"body":         "payload",
 		"content-type": "application/json",
 		"url":          "/webhook/my-webhook-id",
 	}
-	require.Equal(t, expected, handlerInvocation.Args)
+	require.Equal(t, expected, handlerInvocation.ToDispatchInvoke().Args)
 }

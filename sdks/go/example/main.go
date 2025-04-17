@@ -16,17 +16,31 @@ func main() {
 	// create our agent client and register a handler
 	agentClient := axon.NewAxonAgent()
 
-	// this handler will be invoked every 1 second
+	// this handler will be invoked every 5 seconds
 	_, err := agentClient.RegisterHandler(myExampleIntervalHandler,
 		axon.WithTimeout(time.Minute),
 		axon.WithInvokeOption(
-			pb.HandlerInvokeType_RUN_INTERVAL, "1s",
+			pb.HandlerInvokeType_RUN_INTERVAL, "5s",
 		),
 	)
 
-	_, err = agentClient.RegisterHandler(myExampleWebhooklHandler,
+	if err != nil {
+		log.Fatalf("Error registering handler: %v", err)
+	}
+
+	_, err = agentClient.RegisterHandler(myExampleWebhookHandler,
 		axon.WithInvokeOption(
 			pb.HandlerInvokeType_WEBHOOK, "my-webhook-id",
+		),
+	)
+
+	if err != nil {
+		log.Fatalf("Error registering handler: %v", err)
+	}
+
+	_, err = agentClient.RegisterInvocableHandler(myExampleInvokeHandler,
+		axon.WithInvokeOption(
+			pb.HandlerInvokeType_INVOKE, "",
 		),
 	)
 
@@ -41,7 +55,7 @@ func main() {
 }
 
 // Here we have our example handler that will be called every one second
-func myExampleIntervalHandler(ctx axon.HandlerContext) interface{} {
+func myExampleIntervalHandler(ctx axon.HandlerContext) error {
 
 	// here you would do some operations that then push data to the cortex api
 	//
@@ -87,11 +101,25 @@ func myExampleIntervalHandler(ctx axon.HandlerContext) interface{} {
 }
 
 // Here we have our example handler that will be called every one second
-func myExampleWebhooklHandler(ctx axon.HandlerContext) interface{} {
+func myExampleWebhookHandler(ctx axon.HandlerContext) error {
 
 	body := ctx.Args()["body"]
 	contentType := ctx.Args()["content-type"]
 
 	ctx.Logger().Info("Hello from myExampleIntervalHandler!", zap.String("body", body), zap.String("content-type", contentType))
 	return nil
+}
+
+// Here is a handler that can be invoked from server side, must return string or nil
+func myExampleInvokeHandler(ctx axon.HandlerContext) (any, error) {
+	result := map[string]any{
+		"message": "Hello from myExampleInvokeHandler!",
+	}
+
+	json, err := json.Marshal(result)
+	if err != nil {
+		ctx.Logger().Error("Error marshalling json", zap.Error(err))
+		return nil, err
+	}
+	return string(json), nil
 }

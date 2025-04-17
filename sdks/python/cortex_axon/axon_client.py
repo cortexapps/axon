@@ -7,7 +7,6 @@ from typing import Any, Optional
 from urllib.parse import quote_plus, urlencode
 
 import grpc
-from agentversion import AGENT_VERSION
 
 from generated import (
     common_pb2,
@@ -17,6 +16,7 @@ from generated import (
     cortex_axon_agent_pb2_grpc,
 )
 
+from .agentversion import AGENT_VERSION
 from .handler import (
     CortexAnnotation,
     cortex_scheduled,
@@ -38,6 +38,7 @@ class CortexRequestException(IOError):
 class CortexHTTPError(CortexRequestException):
     """An HTTP error occurred."""
 
+
 class CortexResponse:
     """
     A class to represent the response from a Cortex API call.
@@ -51,6 +52,7 @@ class CortexResponse:
     headers : Dict[str, str]
         The headers of the response.
     """
+
     def __init__(self, status_code: int, text: str, headers: dict[str, str]):
         """
         Constructs all the necessary attributes for the CortexResponse object.
@@ -107,6 +109,7 @@ class CortexResponse:
             return False
         return True
 
+
 def _client_message_iterator(initial_message: cortex_axon_agent_pb2.DispatchRequest):
     blocking_queue = queue.Queue()
     blocking_queue.put(initial_message)
@@ -127,13 +130,14 @@ class AxonClient:
     ):
         self.id = str(datetime.now().timestamp())
         self.agent_hostport = f"{agent_host}:{agent_port}"
-        
+
         cortex_api_host = cortex_host or agent_host
         cortex_api_port = cortex_port or agent_port
         self.cortex_hostport = f"{cortex_api_host}:{cortex_api_port}"
 
         self.cortex_channel = grpc.insecure_channel(self.cortex_hostport)
-        self.cortex_stub = cortex_api_pb2_grpc.CortexApiStub(self.cortex_channel)
+        self.cortex_stub = cortex_api_pb2_grpc.CortexApiStub(
+            self.cortex_channel)
 
         self.agent_channel = None
         self.agent_stub = None
@@ -141,7 +145,8 @@ class AxonClient:
         if not scope and not handlers:
             raise ValueError("One of scope (globals()) or handlers required")
 
-        self.handlers = handlers or (find_annotated_methods(cortex_scheduled, scope) + find_annotated_methods(cortex_webhook, scope))
+        self.handlers = handlers or (find_annotated_methods(
+            cortex_scheduled, scope) + find_annotated_methods(cortex_webhook, scope))
 
     def _get_stub(self):
         if not self.agent_stub:
@@ -199,7 +204,8 @@ class AxonClient:
                     if response.type == cortex_axon_agent_pb2.DISPATCH_MESSAGE_INVOKE:
                         invoke = response.invoke
                         args = invoke.args
-                        handler_to_invoke = self._find_handler(invoke.handler_name)
+                        handler_to_invoke = self._find_handler(
+                            invoke.handler_name)
                         if not handler_to_invoke:
                             print(f"Unknown handler: {response.handler_name}")
                             continue
@@ -219,12 +225,13 @@ class AxonClient:
                                 (datetime.now() - now).total_seconds() * 1000
                             )
                             if result:
-                                handler_result = cortex_axon_agent_pb2.ReportInvocationRequest_Result(
+                                handler_result = cortex_axon_agent_pb2.InvokeResult(
                                     value=str(result)
                                 )
 
                         except Exception as e:
-                            print(f"Error calling handler {invoke.handler_name}")
+                            print(
+                                f"Error calling handler {invoke.handler_name}")
                             print(e)
                             traceback.print_exc()
                             handler_err = common_pb2.Error(
@@ -239,7 +246,8 @@ class AxonClient:
                             error=handler_err,
                             logs=ctx.logs,
                         )
-                        report_response = self.agent_stub.ReportInvocation(invoke_info)
+                        report_response = self.agent_stub.ReportInvocation(
+                            invoke_info)
 
                         if report_response.error and report_response.error.code:
                             print(

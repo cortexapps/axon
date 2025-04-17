@@ -92,7 +92,7 @@ func createAxonAgent(
 	return agent
 }
 
-func createHttpServer(lifecycle fx.Lifecycle, config config.AgentConfig, logger *zap.Logger) cortexHttp.Server {
+func createHttpServer(lifecycle fx.Lifecycle, config config.AgentConfig, logger *zap.Logger, handlerManager handler.Manager) cortexHttp.Server {
 	httpServer := cortexHttp.NewHttpServer(logger)
 
 	if config.EnableApiProxy {
@@ -100,7 +100,7 @@ func createHttpServer(lifecycle fx.Lifecycle, config config.AgentConfig, logger 
 		httpServer.RegisterHandler(proxy)
 	}
 
-	axonHandler := cortexHttp.NewAxonHandler(config, logger)
+	axonHandler := cortexHttp.NewAxonHandler(config, logger, handlerManager)
 	httpServer.RegisterHandler(axonHandler)
 
 	lifecycle.Append(fx.Hook{

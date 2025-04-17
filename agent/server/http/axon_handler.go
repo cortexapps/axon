@@ -8,6 +8,7 @@ import (
 
 	pb "github.com/cortexapps/axon/.generated/proto/github.com/cortexapps/axon"
 	"github.com/cortexapps/axon/config"
+	"github.com/cortexapps/axon/server/handler"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -17,16 +18,18 @@ const AxonPathRoot = "/__axon"
 
 type axonHandler struct {
 	io.Closer
-	config config.AgentConfig
-	logger *zap.Logger
-	client pb.AxonAgentClient
+	config         config.AgentConfig
+	logger         *zap.Logger
+	client         pb.AxonAgentClient
+	handlerManager handler.Manager
 }
 
-func NewAxonHandler(config config.AgentConfig, logger *zap.Logger) RegisterableHandler {
+func NewAxonHandler(config config.AgentConfig, logger *zap.Logger, handlerManager handler.Manager) RegisterableHandler {
 
 	handler := &axonHandler{
-		config: config,
-		logger: logger,
+		config:         config,
+		logger:         logger,
+		handlerManager: handlerManager,
 	}
 	return handler
 }
@@ -51,6 +54,7 @@ func (h *axonHandler) RegisterRoutes(mux *http.ServeMux) error {
 	mux.HandleFunc(AxonPathRoot+"/info", h.info)
 	mux.HandleFunc(AxonPathRoot+"/handlers", h.listHandlers)
 	mux.HandleFunc(AxonPathRoot+"/handlers/{handler}", h.getHandler)
+	mux.HandleFunc(AxonPathRoot+"/handlers/{handler}/invoke", h.invokeHandler)
 	return nil
 }
 
@@ -158,6 +162,43 @@ func (h *axonHandler) getHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	h.returnJson(result.History, w)
 
+}
+
+func (h *axonHandler) invokeHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	if h.handlerManager == nil {
+		h.logger.Error("No handler manager")
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	handlerName := r.PathValue("handler")
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		h.logger.Error("Failed to read body", zap.Error(err))
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	result, err := handler.TriggerInvoke(r.Context(), h.handlerManager, handlerName, string(bodyBytes))
+
+	if err != nil {
+		h.logger.Error("Handler failed", zap.Error(err))
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(err.Error()))
+		return
+	}
+
+	if len(result) > 0 {
+		w.Header().Add("Content-Type", "application/json")
+		w.Write([]byte(result))
+	}
+
+	w.WriteHeader(http.StatusOK)
 }
 
 func (h *axonHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {

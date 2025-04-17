@@ -66,7 +66,7 @@ func NewAxonAgent(options ...Option) *Agent {
 	return a
 }
 
-func (a *Agent) getHandlerName(handler Handler) string {
+func (a *Agent) getHandlerName(handler any) string {
 	name := runtime.FuncForPC(reflect.ValueOf(handler).Pointer()).Name()
 	parts := strings.Split(name, ".")
 	return parts[len(parts)-1]
@@ -100,13 +100,14 @@ func WithInvokeOption(invokeType pb.HandlerInvokeType, value string) RegisterHan
 	}
 }
 
-type Handler func(HandlerContext) interface{}
+type Handler = func(HandlerContext) error
+type InvocableHandler = func(HandlerContext) (any, error)
 
 type handlerInfo struct {
 	dispatchId string
 	name       string
 	options    []*pb.HandlerOption
-	handler    Handler
+	handler    any
 	timeout    time.Duration
 }
 
@@ -127,6 +128,34 @@ func (a *Agent) RegisterHandler(handler Handler, invokeOptions ...RegisterHandle
 	for _, opt := range invokeOptions {
 		opt(opts)
 	}
+
+	info := &handlerInfo{
+		dispatchId: a.DispatchId,
+		name:       name,
+		options:    opts.handlerOptions,
+		handler:    handler,
+		timeout:    opts.timeout,
+	}
+	a.handlers = append(a.handlers, info)
+	return a.registerHandler(info)
+}
+
+func (a *Agent) RegisterInvocableHandler(handler InvocableHandler, invokeOptions ...RegisterHandlerOption) (string, error) {
+
+	name := a.getHandlerName(handler)
+
+	for _, h := range a.handlers {
+		if h.name == name {
+			return "", fmt.Errorf("handler %s already registered", name)
+		}
+	}
+
+	opts := &registerHandlerOptions{}
+
+	for _, opt := range invokeOptions {
+		opt(opts)
+	}
+	opts.handlerOptions = nil
 
 	info := &handlerInfo{
 		dispatchId: a.DispatchId,
@@ -298,10 +327,11 @@ func (a *Agent) setReportError(report *pb.ReportInvocationRequest, code string, 
 	}
 }
 
-func (a *Agent) setReportResult(report *pb.ReportInvocationRequest, result interface{}) {
+func (a *Agent) setReportResult(report *pb.ReportInvocationRequest, result any) {
 	if result == nil {
 		return
 	}
+
 	report.Message = &pb.ReportInvocationRequest_Result{
 		Result: &pb.InvokeResult{
 			Value: fmt.Sprintf("%v", result),
@@ -391,7 +421,7 @@ func (a *Agent) invokeHandler(ctx context.Context, invoke *pb.DispatchHandlerInv
 		loggerFromCore := zap.New(wrapped)
 
 		handlerContext := NewHandlerContext(invoke, ctx, apiStub, loggerFromCore)
-		result, duration, err := a.executeHandlerWithRecover(handlerInfo.handler, handlerContext)
+		result, duration, err := a.executeHandlerWithRecover(handlerInfo, handlerContext)
 		report.DurationMs = int32(duration.Milliseconds())
 
 		if err != nil {
@@ -429,17 +459,28 @@ func (a *Agent) invokeHandler(ctx context.Context, invoke *pb.DispatchHandlerInv
 	}
 }
 
-func (a *Agent) executeHandlerWithRecover(handler Handler, ctx HandlerContext) (result interface{}, d time.Duration, err error) {
+func (a *Agent) executeHandlerWithRecover(handler *handlerInfo, ctx HandlerContext) (result any, d time.Duration, err error) {
 	// on a panic, we should recover and log the error
 	now := time.Now()
+	err = nil
 	defer func() {
 		d = time.Since(now)
-		err = nil
 		if r := recover(); r != nil {
 			a.logger.Error("panic in handler", zap.Any("panic", r))
 			err = fmt.Errorf("panic in handler: %v", r)
 		}
 	}()
-	result = handler(ctx)
-	return result, d, nil
+
+	switch handler.handler.(type) {
+	case Handler:
+		h := handler.handler.(Handler)
+		err = h(ctx)
+	case InvocableHandler:
+		h := handler.handler.(InvocableHandler)
+		result, err = h(ctx)
+	default:
+		err = fmt.Errorf("unknown handler type: %T", handler.handler)
+	}
+
+	return result, d, err
 }

@@ -31,13 +31,17 @@ class CortexAnnotation:
     def get_handler_options(self) -> list[cortex_axon_agent_pb2.HandlerOption]:
         pass
 
+
 class CortexScheduled(CortexAnnotation):
     def __init__(
         self,
-        interval: str = None, # interval is a string that represents a time duration, eg "5s" or "3h"
-        cron: str = None, # cron is a string that represents a cron expression, eg "* * * * *"
-        run_now: bool = True, # run_now is a boolean that determines if the handler should be run immediately
-        timeout_ms: int = 0, # timeout_ms is an integer that represents the timeout in milliseconds
+        # interval is a string that represents a time duration, eg "5s" or "3h"
+        interval: str = None,
+        cron: str = None,  # cron is a string that represents a cron expression, eg "* * * * *"
+        # run_now is a boolean that determines if the handler should be run immediately
+        run_now: bool = True,
+        # timeout_ms is an integer that represents the timeout in milliseconds
+        timeout_ms: int = 0,
     ):
         super().__init__(timeout_ms)
         self.interval = interval
@@ -87,6 +91,40 @@ class CortexWebhook(CortexAnnotation):
             )
         ]
 
+
+class CortexHandler(CortexAnnotation):
+    def __init__(self, timeout_ms: int = 0):
+        super().__init__(timeout_ms)
+
+    def get_handler_options(self) -> list[cortex_axon_agent_pb2.HandlerOption]:
+        return [
+            cortex_axon_agent_pb2.HandlerOption(
+                invoke=cortex_axon_agent_pb2.HandlerInvokeOption(
+                    type=cortex_axon_agent_pb2.INVOKE
+                )
+            )
+        ]
+
+
+def cortex_handler(*a, **k):
+    handler = CortexHandler()
+    name = cortex_handler.__name__
+
+    def real_decorator(f):
+        @functools.wraps(f)
+        def wrapper(*args, **kwargs):
+            retval = f(*args, **kwargs)
+            return retval
+
+        existing = getattr(f, name, None)
+        if existing:
+            raise ValueError(f'Attribute type ${name} already exists')
+        setattr(wrapper, name, handler)
+        return wrapper
+
+    return real_decorator
+
+
 def cortex_scheduled(*a, **k):
 
     interval = k.get("interval")
@@ -112,6 +150,7 @@ def cortex_scheduled(*a, **k):
 
     return real_decorator
 
+
 def cortex_webhook(*a, **k):
     id = k.get("id")
     handler = CortexWebhook(id=id)
@@ -130,6 +169,7 @@ def cortex_webhook(*a, **k):
         return wrapper
 
     return real_decorator
+
 
 def find_annotated_methods(type, scope: dict):
     handlers = []

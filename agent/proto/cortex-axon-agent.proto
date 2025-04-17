@@ -10,7 +10,6 @@ service AxonAgent {
   rpc UnregisterHandler(UnregisterHandlerRequest) returns (UnregisterHandlerResponse);
   rpc ListHandlers(ListHandlersRequest) returns (ListHandlersResponse);
   rpc GetHandlerHistory(GetHandlerHistoryRequest) returns (GetHandlerHistoryResponse);
-
   rpc Dispatch (stream DispatchRequest) returns (stream DispatchMessage);  
   rpc ReportInvocation(ReportInvocationRequest) returns (ReportInvocationResponse);
 }
@@ -30,7 +29,7 @@ message RegisterHandlerRequest {
 
 
 enum HandlerInvokeType {
-  NONE = 0;
+  INVOKE = 0;
   RUN_NOW = 1;
   CRON_SCHEDULE = 2;
   RUN_INTERVAL = 3;
@@ -142,7 +141,6 @@ message ReportInvocationResponse {
 message InvokeResult {
   string value = 10;  
 }
-
 
 // 
 // History

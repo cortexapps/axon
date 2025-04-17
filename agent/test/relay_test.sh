@@ -51,9 +51,9 @@ fi
 
 COUNTER=30
 SNYK_STATUS=$(get_container_status test-snyk-broker-1)
-NEURON_STATUS=$(get_container_status test-axon-relay-1)
+AXON_STATUS=$(get_container_status test-axon-relay-1)
     
-while [ "$SNYK_STATUS" != "running" ] || [ "$NEURON_STATUS" != "running" ]; do
+while [ "$SNYK_STATUS" != "running" ] || [ "$AXON_STATUS" != "running" ]; do
     
     if [ $COUNTER -eq 0 ]; then
         echo "Containers did not start in time"
@@ -64,7 +64,7 @@ while [ "$SNYK_STATUS" != "running" ] || [ "$NEURON_STATUS" != "running" ]; do
     echo "Waiting for containers to start"
     sleep 1
     SNYK_STATUS=$(get_container_status test-snyk-broker-1)
-    NEURON_STATUS=$(get_container_status test-axon-relay-1)
+    AXON_STATUS=$(get_container_status test-axon-relay-1)
     COUNTER=$((COUNTER-1))
 done
 

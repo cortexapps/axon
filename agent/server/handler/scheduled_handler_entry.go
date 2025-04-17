@@ -22,14 +22,8 @@ type ScheduledHandlerEntry struct {
 	finished bool
 }
 
-func NewScheduledHandlerInvoke(entry HandlerEntry, reason pb.HandlerInvokeType) HandlerInvoke {
-	invoke := HandlerInvoke{
-		Id:      entry.Id(),
-		Name:    entry.Name(),
-		Reason:  reason,
-		Args:    make(map[string]string),
-		Timeout: entry.Timeout(),
-	}
+func NewScheduledHandlerInvoke(entry HandlerEntry, reason pb.HandlerInvokeType) Invocable {
+	invoke := NewHandlerInvoke(entry, reason, map[string]string{})
 
 	if invoke.Timeout == 0 {
 		invoke.Timeout = defaultTimeout
