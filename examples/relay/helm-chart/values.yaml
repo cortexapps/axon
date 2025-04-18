@@ -1,0 +1,26 @@
+
+relay:
+  integration: # REQUIRED
+  alias: # REQUIRED
+  subtype:   # OPTIONAL
+  env:
+    # TODO: Replace these with the values for the selected
+    # integration and subtype, see reference here: 
+    # https://github.com/cortexapps/axon/blob/main/README.relay.md#environment-variables-summary
+    #
+    # GITHUB_API: "https://api.github.com"
+    # GITHUB_GRAPHQL_API: "https://api.github.com/graphql"
+
+replicaCount: 2
+
+image:
+  repository: ghcr.io/cortexapps/cortex-axon-agent
+  tag: latest
+
+resources:
+  limits:
+    memory: "512Mi"
+    cpu: "500m"
+  requests:
+    memory: "256Mi"
+    cpu: "250m"

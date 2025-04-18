@@ -37,7 +37,7 @@ services:
     env_file: .env
     env:
       - GITHUB_API=api.github.com
-      - GITHUB_GRAPHQL=api.github.com
+      - GITHUB_GRAPHQL=api.github.com/graphql
     command: [
       "relay",
       "-i", "github",

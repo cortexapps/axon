@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: axon-config-{{ .Values.relay.integration }}.{{ .Values.relay.alias }}
+  labels:
+    app: {{ .Chart.Name }}-{{ .Values.relay.integration }}.{{ .Values.relay.alias }}
+data:
+  {{- range $key, $value := .Values.relay.env }}
+  {{ $key }}: "{{ $value }}"
+  {{- end }}
+  
