@@ -18,29 +18,21 @@ Axon is composed of:
 
 ## Accessing internal services with Axon Relay
 
-With Axon you can use your internal Github installation to access your internal services. The Cortex Axon agent will contact the Cortex cloud and establish a secure connection, which will be then used to route requests from there to your internal services.
+Axon Relay allows you to access internal services from the Cortex cloud.  This is useful if you have internal services that you want to access from the Cortex cloud, but don't want to open up firewall ports or share access keys.
+
+To enable this, you run the lightweight Axon Relay agent in your environment, which will listen for requests from the Cortex cloud.  The Relay agent will then forward these requests to the internal service, and return the response back to the Cortex cloud.
+
+Axon Relay currently supports access to:
+
+* Github
+* Gitlab
+* Bitbucket
+* Jira
+* SonarQube
+* Prometheus
 
 For details on Relay, see [here](README.relay.md).
 
-### Setting up the Cortex Relay configuration 
-
-1. Go to your Cortex [GitHub settings page](https://app.getcortexapp.com/admin/settings/github) 
-2. Choose "Add Configuration", then "Relay".  Choose your alias name, for example `github-relay` or any unused name.
-3. Click "Save"
-4. On your machine, create a file called `.env` with the following contents, assuming you are using the public Github API, then launch the Docker container
-
-```
-CORTEX_API_TOKEN=your_cortex_token
-GITHUB_TOKEN=your_github_token
-```
-
-5. Launch the Docker container with the following command: 
-
-```
-docker run --env-file .env ghcr.io/cortexapps/cortex-axon-agent:latest relay -i github -a github-relay
-```
-
-For details on Relay, see [here](README.relay.md).
 
 ## Writing Handlers
 
