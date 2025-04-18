@@ -45,7 +45,7 @@ generated/cortex_api_pb2.py generated/cortex_api_pb2_grpc.py: ../../agent/proto/
 	    protoc --proto-path=$(dir $<) $^
 
 example:
-	poetry run python example/main.py
+	poetry run example
 
 clean:
 	rm -rf generated

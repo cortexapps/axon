@@ -18,18 +18,16 @@ type WebhookHandlerEntry struct {
 	logger    *zap.Logger
 }
 
-func NewWebhookHandlerInvoke(entry HandlerEntry, url *url.URL, payload string, contentType string) HandlerInvoke {
-	invoke := HandlerInvoke{
-		Id:     entry.Id(),
-		Name:   entry.Name(),
-		Reason: pb.HandlerInvokeType_WEBHOOK,
-		Args: map[string]string{
+func NewWebhookHandlerInvoke(entry HandlerEntry, url *url.URL, payload string, contentType string) Invocable {
+	invoke := NewHandlerInvoke(
+		entry,
+		pb.HandlerInvokeType_WEBHOOK,
+		map[string]string{
 			"body":         string(payload),
 			"content-type": contentType,
 			"url":          url.String(),
 		},
-		Timeout: entry.Timeout(),
-	}
+	)
 
 	if invoke.Timeout == 0 {
 		invoke.Timeout = defaultTimeout

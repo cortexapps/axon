@@ -37,7 +37,7 @@ func main() {
 }
 
 // Here we have our example handler that will be called every one second
-func myEvDataIngester(ctx axon.HandlerContext) interface{} {
+func myEvDataIngester(ctx axon.HandlerContext) error {
 
 	// token means more rows, see
 	//
@@ -95,7 +95,7 @@ func myEvDataIngester(ctx axon.HandlerContext) interface{} {
 type evCortexSync struct {
 	seenEntities   map[string]string
 	entityTemplate *template.Template
-	axonContext  axon.HandlerContext
+	axonContext    axon.HandlerContext
 	runKey         string
 	logger         *zap.Logger
 }
@@ -103,7 +103,7 @@ type evCortexSync struct {
 func newEvCortexSync(ctx axon.HandlerContext) *evCortexSync {
 	return &evCortexSync{
 		seenEntities:   make(map[string]string),
-		axonContext:  ctx,
+		axonContext:    ctx,
 		entityTemplate: template.Must(template.New("entity").Parse(entityTemplate)),
 		runKey:         time.Now().Format(time.RFC3339),
 		logger:         ctx.Logger(),

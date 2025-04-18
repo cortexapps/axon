@@ -15,10 +15,17 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-type clientCallback func(m *pb.DispatchMessage) (bool, error)
+type clientCallback func(m *pb.DispatchMessage) (clientResult, error)
+
+type clientResult struct {
+	done   bool
+	err    error
+	result string
+}
 
 type testAxonClient struct {
 	client     pb.AxonAgentClient
+	conn       *grpc.ClientConn
 	dispatchId string
 	callback   clientCallback
 	finished   bool
@@ -33,6 +40,7 @@ func NewTestAxonClient(t *testing.T, port int32, callback clientCallback) *testA
 
 	return &testAxonClient{
 		client:     client,
+		conn:       conn,
 		dispatchId: fmt.Sprintf("%v", time.Now().UnixNano()),
 		callback:   callback,
 		t:          t,
@@ -78,28 +86,21 @@ func (c *testAxonClient) Run(ctx context.Context) error {
 		return err
 	}
 
-	//log wheterh c is finished or not
-
-	logger.Info("is c finished ", zap.Bool("finished", c.finished))
 	for !c.finished {
 		m, err := stream.Recv()
 
-		logger.Error("error from stream is ", zap.Error(err))
 		if err != nil {
+			logger.Error("error from stream is ", zap.Error(err))
 			return err
 		}
 		start := time.Now()
 
-		logger.Info("Making the callback call")
-		exit, err := c.callback(m)
+		result, err := c.callback(m)
 
-		if err == io.EOF || exit {
-
+		if err == io.EOF || result.done {
 			return nil
-
 		}
 
-		logger.Info("inside the !c finished loop")
 		end := time.Now()
 		invoke := m.GetInvoke()
 		if invoke != nil {
@@ -116,6 +117,12 @@ func (c *testAxonClient) Run(ctx context.Context) error {
 						Message: err.Error(),
 					},
 				}
+			} else {
+				report.Message = &pb.ReportInvocationRequest_Result{
+					Result: &pb.InvokeResult{
+						Value: result.result,
+					},
+				}
 			}
 
 			_, err = c.client.ReportInvocation(ctx, report)
@@ -127,6 +134,7 @@ func (c *testAxonClient) Run(ctx context.Context) error {
 
 func (c *testAxonClient) Close() {
 	c.finished = true
+	c.conn.Close()
 }
 
 func (c *testAxonClient) ListHandlers(ctx context.Context) ([]*pb.HandlerInfo, error) {

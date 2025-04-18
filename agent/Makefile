@@ -34,9 +34,9 @@ $(GENERATED_PATH)/%.pb.go: proto/%.proto
 	@cp -R $(GENERATED_DIR) $(GO_SDK_DIR)/.generated
 
 setup:
-	go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
-	go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
-	@if ! which protoc </dev/null; then \
+	@if ! command -v $(GOBIN)/protoc-gen-go >/dev/null; then echo "Installing protoc-gen-go..."; go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.6; fi
+	@if ! command -v $(GOBIN)/protoc-gen-go-grpc >/dev/null; then echo "Installing protoc-gen-go-grpc..."; go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1; fi
+	@if ! which protoc >/dev/null; then \
 		if which brew >/dev/null; then \
 			brew install protobuf; \
 		else \

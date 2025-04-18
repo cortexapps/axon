@@ -100,8 +100,8 @@ func TestTriggerAndDequeue(t *testing.T) {
 	h, err := mgr.Dequeue(context.Background(), "1", 500*time.Millisecond)
 	require.NoError(t, err)
 	require.NotNil(t, h)
-	require.Equal(t, "handler1", h.HandlerName)
-	require.Equal(t, int32(defaultTimeout.Milliseconds()), h.TimeoutMs)
+	require.Equal(t, "handler1", h.GetEntry().Name())
+	require.Equal(t, defaultTimeout, h.GetEntry().Timeout())
 }
 
 func TestTriggerAndDequeueNotStarted(t *testing.T) {
@@ -126,15 +126,16 @@ func TestTriggerAndDequeueCustomTimeout(t *testing.T) {
 	mgr := NewHandlerManager(logger, cron)
 
 	timeoutMs := int32(1000)
+	timeout := time.Duration(timeoutMs) * time.Millisecond
 
-	id, err := mgr.RegisterHandler("1", "handler1", time.Duration(timeoutMs)*time.Millisecond, FixtureHandlerOption())
+	id, err := mgr.RegisterHandler("1", "handler1", timeout, FixtureHandlerOption())
 
 	require.NoError(t, err)
 
 	err = mgr.Start("1")
 	require.NoError(t, err)
 
-	entry := NewHandlerEntry(id, "1", "handler1", defaultTimeout)
+	entry := NewHandlerEntry(id, "1", "handler1", timeout)
 	invoke := NewScheduledHandlerInvoke(entry, pb.HandlerInvokeType_RUN_NOW)
 
 	err = mgr.Trigger(invoke)
@@ -142,8 +143,8 @@ func TestTriggerAndDequeueCustomTimeout(t *testing.T) {
 	h, err := mgr.Dequeue(context.Background(), "1", 500*time.Millisecond)
 	require.NoError(t, err)
 	require.NotNil(t, h)
-	require.Equal(t, "handler1", h.HandlerName)
-	require.Equal(t, timeoutMs, h.TimeoutMs)
+	require.Equal(t, "handler1", h.GetEntry().Name())
+	require.Equal(t, timeout, h.GetEntry().Timeout())
 }
 
 func TestTriggerAndDequeueTimeout(t *testing.T) {

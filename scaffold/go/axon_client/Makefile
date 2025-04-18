@@ -14,6 +14,8 @@ mock_axon/mocks.go: $(wildcard .generated/proto/github.com/cortexapps/axon/*.go)
 	$(GOPATH)/bin/mockgen github.com/cortexapps/axon-go/.generated/proto/github.com/cortexapps/axon CortexApiClient,AxonAgentClient >mock_axon/mocks.go
 	@echo "Mocks generated"
 
+mocks: mock_axon/mocks.go
+
 test: mock_axon/mocks.go
 	@go mod tidy
 	go test -v ./...

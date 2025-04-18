@@ -53,7 +53,7 @@ func TestApplyOption_RunInterval(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 
 	require.True(t, len(manager.triggered) > 0)
-	require.Equal(t, "handler1", manager.triggered[0].Name)
+	require.Equal(t, "handler1", manager.triggered[0].GetEntry().Name())
 
 	require.True(t, entry.IsActive())
 	entry.Close()
@@ -89,7 +89,7 @@ func TestApplyOption_CronSchedule(t *testing.T) {
 		handlers: make(map[string]func()),
 	}
 	manager := &fakeManager{
-		triggered: make([]HandlerInvoke, 0),
+		triggered: make([]Invocable, 0),
 	}
 
 	option := &pb.HandlerOption{
@@ -110,13 +110,13 @@ func TestApplyOption_CronSchedule(t *testing.T) {
 
 	time.Sleep(10 * time.Millisecond)
 	require.True(t, len(manager.triggered) > 0)
-	require.Equal(t, "handler1", manager.triggered[0].Name)
+	require.Equal(t, "handler1", manager.triggered[0].GetEntry().Name())
 
 	entry.Close()
 	require.False(t, entry.IsActive())
 
 	// close is async, wait for it to finish
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		time.Sleep(10 * time.Millisecond)
 		if len(cron.handlers) == 0 {
 			return
@@ -210,13 +210,13 @@ func TestIsFinishedOnRunNowAndInterval(t *testing.T) {
 }
 
 type fakeManager struct {
-	triggered []HandlerInvoke
+	triggered []Invocable
 	handlers  []HandlerEntry
 }
 
 func newFakeManager() *fakeManager {
 	return &fakeManager{
-		triggered: make([]HandlerInvoke, 0),
+		triggered: make([]Invocable, 0),
 		handlers:  make([]HandlerEntry, 0),
 	}
 }
@@ -241,18 +241,19 @@ func (fhm *fakeManager) ClearHandlers(id string) {
 	panic("not implemented") // TODO: Implement
 }
 
-func (fhm *fakeManager) Trigger(handler HandlerInvoke) error {
+func (fhm *fakeManager) Trigger(handler Invocable) error {
 	fhm.triggered = append(fhm.triggered, handler)
 	for _, h := range fhm.handlers {
-		if h.Id() == handler.Id {
-			h.OnTrigger(handler.Reason)
+		if h.Id() == handler.GetEntry().Id() {
+			message := handler.ToDispatchInvoke()
+			h.OnTrigger(message.Reason)
 			return nil
 		}
 	}
 	return os.ErrNotExist
 }
 
-func (fhm *fakeManager) Dequeue(ctx context.Context, id string, waitTime time.Duration) (*pb.DispatchHandlerInvoke, error) {
+func (fhm *fakeManager) Dequeue(ctx context.Context, id string, waitTime time.Duration) (Invocable, error) {
 	panic("not implemented") // TODO: Implement
 }
 

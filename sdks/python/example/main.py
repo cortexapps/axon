@@ -1,7 +1,7 @@
 import json
 
 from cortex_axon.axon_client import AxonClient, HandlerContext
-from cortex_axon.handler import cortex_scheduled
+from cortex_axon.handler import cortex_handler, cortex_scheduled
 
 
 @cortex_scheduled(interval="5s")
@@ -24,9 +24,9 @@ def my_handler(ctx: HandlerContext):
     json_payload = json.dumps(payload)
 
     response = ctx.cortex_api_call(
-            method="PUT",
-            path="/api/v1/catalog/custom-data",
-            body=json_payload,
+        method="PUT",
+        path="/api/v1/catalog/custom-data",
+        body=json_payload,
     )
 
     if response.status_code >= 400:
@@ -39,6 +39,15 @@ def my_handler(ctx: HandlerContext):
 @cortex_scheduled(cron="* * * * *", run_now=False)
 def my_cron_handler(context: HandlerContext):
     context.log("Cron handler called!")
+
+
+@cortex_handler()
+def my_invoke_handler(context: HandlerContext) -> str:
+    context.log("Invoke handler called!")
+    result = {
+        "status": "success",
+    }
+    return json.dumps(result)
 
 
 def run():

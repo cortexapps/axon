@@ -34,10 +34,10 @@
             "name": "Launch Python SDK Example",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/sdks/python/example/main.py",
-            "console": "integratedTerminal",            
-            
-        },  
+            "cwd": "${workspaceFolder}/sdks/python",
+            "module": "example",
+            "args": []
+        },
         {
             "name": "Launch Go SDK Example",
             "type": "go",

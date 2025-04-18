@@ -25,7 +25,7 @@ const (
 type HandlerInvokeType int32
 
 const (
-	HandlerInvokeType_NONE          HandlerInvokeType = 0
+	HandlerInvokeType_INVOKE        HandlerInvokeType = 0
 	HandlerInvokeType_RUN_NOW       HandlerInvokeType = 1
 	HandlerInvokeType_CRON_SCHEDULE HandlerInvokeType = 2
 	HandlerInvokeType_RUN_INTERVAL  HandlerInvokeType = 3
@@ -35,14 +35,14 @@ const (
 // Enum value maps for HandlerInvokeType.
 var (
 	HandlerInvokeType_name = map[int32]string{
-		0: "NONE",
+		0: "INVOKE",
 		1: "RUN_NOW",
 		2: "CRON_SCHEDULE",
 		3: "RUN_INTERVAL",
 		4: "WEBHOOK",
 	}
 	HandlerInvokeType_value = map[string]int32{
-		"NONE":          0,
+		"INVOKE":        0,
 		"RUN_NOW":       1,
 		"CRON_SCHEDULE": 2,
 		"RUN_INTERVAL":  3,
@@ -236,7 +236,7 @@ func (x *HandlerInvokeOption) GetType() HandlerInvokeType {
 	if x != nil {
 		return x.Type
 	}
-	return HandlerInvokeType_NONE
+	return HandlerInvokeType_INVOKE
 }
 
 func (x *HandlerInvokeOption) GetValue() string {
@@ -832,7 +832,7 @@ func (x *DispatchHandlerInvoke) GetReason() HandlerInvokeType {
 	if x != nil {
 		return x.Reason
 	}
-	return HandlerInvokeType_NONE
+	return HandlerInvokeType_INVOKE
 }
 
 func (x *DispatchHandlerInvoke) GetArgs() map[string]string {
@@ -1451,9 +1451,10 @@ const file_cortex_axon_agent_proto_rawDesc = "" +
 	"\x04logs\x18\x1e \x03(\v2\x10.cortex.axon.LogR\x04logs\"~\n" +
 	"\x19GetHandlerHistoryResponse\x12(\n" +
 	"\x05error\x18\x01 \x01(\v2\x12.cortex.axon.ErrorR\x05error\x127\n" +
-	"\ahistory\x18\x02 \x03(\v2\x1d.cortex.axon.HandlerExecutionR\ahistory*\\\n" +
-	"\x11HandlerInvokeType\x12\b\n" +
-	"\x04NONE\x10\x00\x12\v\n" +
+	"\ahistory\x18\x02 \x03(\v2\x1d.cortex.axon.HandlerExecutionR\ahistory*^\n" +
+	"\x11HandlerInvokeType\x12\n" +
+	"\n" +
+	"\x06INVOKE\x10\x00\x12\v\n" +
 	"\aRUN_NOW\x10\x01\x12\x11\n" +
 	"\rCRON_SCHEDULE\x10\x02\x12\x10\n" +
 	"\fRUN_INTERVAL\x10\x03\x12\v\n" +

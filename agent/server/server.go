@@ -17,7 +17,6 @@ import (
 	"github.com/cortexapps/axon/proto"
 	"github.com/cortexapps/axon/server/api"
 	"github.com/cortexapps/axon/server/handler"
-	"github.com/google/uuid"
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
@@ -46,8 +45,8 @@ type AxonAgent struct {
 }
 
 type inflightRequest struct {
-	*pb.DispatchHandlerInvoke
-	sentAt time.Time
+	invocable handler.Invocable
+	sentAt    time.Time
 }
 
 func NewAxonAgent(
@@ -142,13 +141,13 @@ func (s *AxonAgent) sendInvocations(dispatchId string, stream pb.AxonAgent_Dispa
 		}()
 
 		for !finished {
-			msg, err := s.Manager.Dequeue(stream.Context(), dispatchId, s.config.DequeueWaitTime)
+			invoke, err := s.Manager.Dequeue(stream.Context(), dispatchId, s.config.DequeueWaitTime)
 			if err != nil {
 				s.logger.Error("failed to dequeue message", zap.Error(err))
 				continue
 			}
 
-			if msg == nil {
+			if invoke == nil {
 
 				if s.Manager.IsFinished() && len(s.outstandingRequests) == 0 {
 					s.sendComplete(stream)
@@ -158,20 +157,11 @@ func (s *AxonAgent) sendInvocations(dispatchId string, stream pb.AxonAgent_Dispa
 			}
 
 			now := time.Now()
-			id := uuid.New().String()
-
-			invoke := &pb.DispatchHandlerInvoke{
-				DispatchId:   dispatchId,
-				HandlerName:  msg.HandlerName,
-				HandlerId:    msg.HandlerId,
-				InvocationId: id,
-				TimeoutMs:    msg.TimeoutMs,
-				Args:         msg.Args,
-			}
+			msg := invoke.ToDispatchInvoke()
 
 			dispatchMessage := &pb.DispatchMessage{
 				Type:    pb.DispatchMessageType_DISPATCH_MESSAGE_INVOKE,
-				Message: &pb.DispatchMessage_Invoke{Invoke: invoke},
+				Message: &pb.DispatchMessage_Invoke{Invoke: msg},
 			}
 
 			if err := stream.Send(dispatchMessage); err != nil {
@@ -179,17 +169,17 @@ func (s *AxonAgent) sendInvocations(dispatchId string, stream pb.AxonAgent_Dispa
 				return
 			}
 
-			s.setOutstandingRequest(id, &inflightRequest{
-				DispatchHandlerInvoke: invoke,
-				sentAt:                now,
+			s.setOutstandingRequest(msg.InvocationId, &inflightRequest{
+				invocable: invoke,
+				sentAt:    now,
 			})
 			go func(requestId string) {
 				<-time.After(time.Duration(msg.TimeoutMs) * time.Millisecond)
 				s.ReportInvocation(context.Background(), &pb.ReportInvocationRequest{
-					HandlerInvoke: invoke,
+					HandlerInvoke: msg,
 					Message:       &pb.ReportInvocationRequest_Error{Error: &pb.Error{Code: "timeout"}},
 				})
-			}(id)
+			}(msg.InvocationId)
 		}
 	}()
 	return nil
@@ -217,6 +207,18 @@ func (s *AxonAgent) ReportInvocation(ctx context.Context, req *pb.ReportInvocati
 		return &pb.ReportInvocationResponse{}, nil
 	}
 	defer s.setOutstandingRequest(req.HandlerInvoke.InvocationId, nil)
+
+	var requestErr error
+
+	if req.GetError() != nil {
+		requestErr = fmt.Errorf("invocation error: %s", req.GetError().GetMessage())
+	}
+	requestResult := ""
+
+	if rr := req.GetResult(); rr != nil {
+		requestResult = rr.GetValue()
+	}
+	ifr.invocable.Complete(requestResult, requestErr)
 
 	execution := proto.ReportToExecution(req, ifr.sentAt)
 	err := s.historyManager.Write(ctx, execution)
