@@ -1,0 +1,19 @@
+services:
+  axon-github:
+    image: ghcr.io/cortexapps/cortex-axon-agent:latest
+    env_file: .env # Add CORTEX_API_TOKEN and GITHUB_TOKEN here
+    environment:
+      GITHUB_API: api.github.com
+      GITHUB_GRAPHQL: api.github.com/graphql
+      HOSTNAME: axon-github-$HOSTNAME
+      
+    logging: &logging
+      driver: "json-file"
+      options:
+        max-size: "10M"
+        max-file: "3"
+    command: [
+      "relay",
+      "-i", "github",
+      "-a", "github-relay", # Assumes a configuration in Cortex aliased as github-relay
+    ]

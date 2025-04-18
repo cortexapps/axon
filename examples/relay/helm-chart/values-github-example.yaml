@@ -1,0 +1,6 @@
+relay:
+  integration: github
+  alias: github-relay
+  env:
+    GITHUB_API: "https://api.github.com"
+    GITHUB_GRAPHQL: "https://api.github.com/graphql"

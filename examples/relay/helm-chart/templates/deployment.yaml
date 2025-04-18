@@ -1,0 +1,43 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-{{ .Values.relay.integration }}.{{ .Values.relay.alias }}
+  labels:
+    app: {{ .Chart.Name }}-{{ .Values.relay.integration }}.{{ .Values.relay.alias }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ .Chart.Name }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Chart.Name }}
+    spec:
+      containers:
+      - name: {{ .Chart.Name }}
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        imagePullPolicy: IfNotPresent
+        envFrom:
+        - secretRef:
+            name: axon-secrets
+        - configMapRef:
+            name: axon-config-{{ .Values.relay.integration }}.{{ .Values.relay.alias }}
+        resources:
+          limits:
+            memory: {{ .Values.resources.limits.memory }}
+            cpu: {{ .Values.resources.limits.cpu }}
+          requests:
+            memory: {{ .Values.resources.requests.memory }}
+            cpu: {{ .Values.resources.requests.cpu }}
+        args: 
+          - relay
+          - -i
+          - {{ .Values.relay.integration }}
+          {{- if .Values.relay.subtype }}
+          - -s
+          - {{ .Values.relay.subtype }}
+          {{- end }}
+          - -a
+          - {{ .Values.relay.alias }}
+
