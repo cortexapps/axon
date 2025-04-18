@@ -70,7 +70,6 @@ Generally the naming works like:
 
 
 ### Environment Variables Summary
-### Environment Variables Summary
 
 | Integration    | Environment Variables                                                                                               |
 |----------------|---------------------------------------------------------------------------------------------------------------------|
