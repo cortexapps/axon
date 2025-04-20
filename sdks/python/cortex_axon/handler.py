@@ -171,14 +171,17 @@ def cortex_webhook(*a, **k):
     return real_decorator
 
 
-def find_annotated_methods(type, scope: dict):
+def find_annotated_methods(scope: dict = None, types: list = [cortex_scheduled, cortex_webhook, cortex_handler]):
     handlers = []
     for _, func in scope.items():
         if not inspect.isfunction(func):
             continue
-
-        h = getattr(func, type.__name__, None)
-        if isinstance(h, CortexAnnotation):
-            h.set_func(func)
-            handlers.append(h)
+    
+        for type in types:
+            h = getattr(func, type.__name__, None)
+            if isinstance(h, CortexAnnotation):
+                h.set_func(func)
+                handlers.append(h)
+                break
+        
     return handlers

@@ -9,7 +9,7 @@ packages = [{ include = "cortex_axon" }, { include = "generated" }]
 include = ["cortex_axon/**", "generated/**"]
 
 [tool.poetry.dependencies]
-python = "^3.10"
+python = "^3.9"
 grpcio = "~1.68.1"
 grpcio-tools = "~1.68.1"
 protoletariat = "~3.3.2"

@@ -1,5 +1,6 @@
-from cortex_axon.handler import cortex_scheduled, cortex_webhook
-from cortex_axon.axon_client import AxonClient
+import json
+from cortex_axon.axon_client import AxonClient, HandlerContext
+from cortex_axon.handler import cortex_scheduled, cortex_webhook, cortex_handler
 
 @cortex_webhook(id="my-webhook-1")
 def my_webhook_handler(context):
@@ -57,6 +58,15 @@ def my_handler(context):
 
     # ctx.log("CortexApi PUT custom-data called successfully!")
     context.log("Success! Handler called!")
+
+
+@cortex_handler()
+def my_invoke_handler(context: HandlerContext) -> str:
+    context.log("Invoke handler called!")
+    result = {
+        "status": "success",
+    }
+    return json.dumps(result)
 
 
 def run():

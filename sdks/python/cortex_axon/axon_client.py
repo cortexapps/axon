@@ -145,8 +145,7 @@ class AxonClient:
         if not scope and not handlers:
             raise ValueError("One of scope (globals()) or handlers required")
 
-        self.handlers = handlers or (find_annotated_methods(
-            cortex_scheduled, scope) + find_annotated_methods(cortex_webhook, scope))
+        self.handlers = handlers or find_annotated_methods(scope)
 
     def _get_stub(self):
         if not self.agent_stub:
@@ -231,11 +230,11 @@ class AxonClient:
 
                         except Exception as e:
                             print(
-                                f"Error calling handler {invoke.handler_name}")
+                                f"Error calling handler {invoke.handler_name}: {e}")
                             print(e)
                             traceback.print_exc()
                             handler_err = common_pb2.Error(
-                                code="unexpected", message=handler_err
+                                code="unexpected", message="Error calling handler: " + str(e)
                             )
 
                         invoke_info = cortex_axon_agent_pb2.ReportInvocationRequest(
