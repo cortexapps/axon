@@ -3,6 +3,7 @@ WORKDIR /project
 COPY requirements.txt .
 ENV VIRTUAL_ENV=/project/.venv
 RUN python3 -m venv $VIRTUAL_ENV
+RUN echo ".venv" > /project/.gitignore
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
 # Install Python dependencies
