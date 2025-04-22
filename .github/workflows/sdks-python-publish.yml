@@ -1,4 +1,4 @@
-name: Python SDK Publish
+name: Python SDK Publish To PyPI
 on:
   workflow_dispatch:
     inputs:
@@ -38,3 +38,15 @@ jobs:
           poetry version ${{ github.event.inputs.version }}
           python3 -m build -v          
           poetry publish -r test-pypi
+
+      - name: Publish (Main PyPI)
+        id: publish
+        run: |
+          cd sdks/python
+          make all
+          python3 -m pip install --upgrade build --break-system-packages
+          poetry config repositories.pypihttps://upload.pypi.org/legacy/
+          poetry config pypi-token.pypi ${{ secrets.PYPI_API_TOKEN }}
+          poetry version ${{ github.event.inputs.version }}
+          python3 -m build -v          
+          poetry publish -r pypi
