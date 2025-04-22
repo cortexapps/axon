@@ -45,7 +45,7 @@ jobs:
           cd sdks/python
           make all
           python3 -m pip install --upgrade build --break-system-packages
-          poetry config repositories.pypihttps://upload.pypi.org/legacy/
+          poetry config repositories.pypi https://upload.pypi.org/legacy/
           poetry config pypi-token.pypi ${{ secrets.PYPI_API_TOKEN }}
           poetry version ${{ github.event.inputs.version }}
           python3 -m build -v          
