@@ -7,6 +7,7 @@ import (
 	"time"
 
 	pb "github.com/cortexapps/axon/.generated/proto/github.com/cortexapps/axon"
+	"github.com/google/uuid"
 )
 
 type Invocable interface {
@@ -21,6 +22,7 @@ type Invocable interface {
 }
 
 type HandlerInvoke struct {
+	Id        string
 	Entry     HandlerEntry
 	Reason    pb.HandlerInvokeType
 	Args      map[string]string
@@ -41,6 +43,7 @@ func NewHandlerInvoke(
 	args map[string]string,
 ) *HandlerInvoke {
 	return &HandlerInvoke{
+		Id:        uuid.New().String(),
 		Entry:     entry,
 		Reason:    reason,
 		Args:      args,
@@ -106,11 +109,12 @@ func (h HandlerInvoke) Done() <-chan struct{} {
 
 func (h HandlerInvoke) ToDispatchInvoke() *pb.DispatchHandlerInvoke {
 	return &pb.DispatchHandlerInvoke{
-		DispatchId:  h.Entry.DispatchId(),
-		HandlerId:   h.Entry.Id(),
-		HandlerName: h.Entry.Name(),
-		Reason:      h.Reason,
-		Args:        h.Args,
-		TimeoutMs:   int32(h.Entry.Timeout().Milliseconds()),
+		InvocationId: h.Id,
+		DispatchId:   h.Entry.DispatchId(),
+		HandlerId:    h.Entry.Id(),
+		HandlerName:  h.Entry.Name(),
+		Reason:       h.Reason,
+		Args:         h.Args,
+		TimeoutMs:    int32(h.Entry.Timeout().Milliseconds()),
 	}
 }

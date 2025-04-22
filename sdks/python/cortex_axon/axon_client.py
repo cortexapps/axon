@@ -19,8 +19,6 @@ from generated import (
 from .agentversion import AGENT_VERSION
 from .handler import (
     CortexAnnotation,
-    cortex_scheduled,
-    cortex_webhook,
     find_annotated_methods,
 )
 
@@ -209,7 +207,7 @@ class AxonClient:
                             print(f"Unknown handler: {response.handler_name}")
                             continue
                         print(
-                            f"Dispatching handler: {invoke.handler_name} {invoke.reason}"
+                            f"Dispatch handler START {invoke.handler_name} (id={invoke.invocation_id}) reason={invoke.reason}"
                         )
                         handler_err = None
                         handler_result = None
@@ -227,11 +225,9 @@ class AxonClient:
                                 handler_result = cortex_axon_agent_pb2.InvokeResult(
                                     value=str(result)
                                 )
-
+                            print(f"Dispatch handler SUCCESS {invoke.handler_name} (id={invoke.invocation_id}) in {round((datetime.now() - now).total_seconds() * 1000, 1)}ms. Returned result={result is not None}")
                         except Exception as e:
-                            print(
-                                f"Error calling handler {invoke.handler_name}: {e}")
-                            print(e)
+                            print(f"Dispatch handler ERROR {invoke.handler_name} (id={invoke.invocation_id}) in {round((datetime.now() - now).total_seconds() * 1000, 1)}ms. Error={e}")
                             traceback.print_exc()
                             handler_err = common_pb2.Error(
                                 code="unexpected", message="Error calling handler: " + str(e)
