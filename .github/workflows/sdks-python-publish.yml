@@ -28,7 +28,7 @@ jobs:
           sudo apt install -y protobuf-compiler
 
       - name: Publish (Test PyPI)
-        id: publish
+        id: publish-test-pypi
         run: |
           cd sdks/python
           make all
@@ -40,7 +40,7 @@ jobs:
           poetry publish -r test-pypi
 
       - name: Publish (Main PyPI)
-        id: publish
+        id: publish-pypi
         run: |
           cd sdks/python
           make all
