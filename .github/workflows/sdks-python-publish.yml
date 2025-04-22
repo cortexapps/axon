@@ -1,4 +1,4 @@
-name: Python SDK Publish
+name: Python SDK Publish To PyPI
 on:
   workflow_dispatch:
     inputs:
