@@ -28,7 +28,7 @@ jobs:
           sudo apt install -y protobuf-compiler
 
       - name: Publish (Test PyPI)
-        id: publish
+        id: publish-test-pypi
         run: |
           cd sdks/python
           make all
@@ -40,12 +40,12 @@ jobs:
           poetry publish -r test-pypi
 
       - name: Publish (Main PyPI)
-        id: publish
+        id: publish-pypi
         run: |
           cd sdks/python
           make all
           python3 -m pip install --upgrade build --break-system-packages
-          poetry config repositories.pypihttps://upload.pypi.org/legacy/
+          poetry config repositories.pypi https://upload.pypi.org/legacy/
           poetry config pypi-token.pypi ${{ secrets.PYPI_API_TOKEN }}
           poetry version ${{ github.event.inputs.version }}
           python3 -m build -v          
