@@ -2,4 +2,4 @@ grpcio
 grpcio-tools
 
 --extra-index-url https://test.pypi.org/simple
-cortex-axon-sdk==0.0.1
+cortex-axon-sdk

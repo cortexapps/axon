@@ -237,7 +237,7 @@ func (s *handlerManager) ListHandlers() []HandlerEntry {
 
 func (s *handlerManager) GetByTag(tag string) HandlerEntry {
 	for _, entry := range s.handlers {
-		if entry.Tag() == tag {
+		if entry.Tag() == tag && entry.IsActive() {
 			return entry
 		}
 	}

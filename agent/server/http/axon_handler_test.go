@@ -120,6 +120,6 @@ func TestInvokeEndpointErr(t *testing.T) {
 	assert.NotNil(t, manager.GetByTag("test-handler").LastInvoked())
 	body, err := io.ReadAll(resp.Body)
 	assert.NoError(t, err)
-	require.Equal(t, "nope didn't work", string(body))
+	require.Equal(t, "{\"error\":\"Handler failed: nope didn't work\"}", string(body))
 
 }

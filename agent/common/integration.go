@@ -18,6 +18,7 @@ type Integration string
 const (
 	// NOTE: these MUST match up with values from the server side enum
 	IntegrationCustom     Integration = ""
+	IntegrationGit        Integration = "git"
 	IntegrationGithub     Integration = "github"
 	IntegrationSlack      Integration = "slack"
 	IntegrationJira       Integration = "jira"

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 
 	pb "github.com/cortexapps/axon/.generated/proto/github.com/cortexapps/axon"
 	"github.com/cortexapps/axon/config"
@@ -186,10 +187,16 @@ func (h *axonHandler) invokeHandler(w http.ResponseWriter, r *http.Request) {
 
 	result, err := handler.TriggerInvoke(r.Context(), h.handlerManager, handlerName, string(bodyBytes))
 
+	if err == os.ErrNotExist {
+		h.logger.Warn("Handler not found", zap.String("handler", handlerName))
+		h.writeError(w, http.StatusNotFound, fmt.Sprintf("Handler '%s' not found", handlerName))
+		return
+	}
+
 	if err != nil {
+
 		h.logger.Error("Handler failed", zap.Error(err))
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(err.Error()))
+		h.writeError(w, http.StatusInternalServerError, fmt.Sprintf("Handler failed: %s", err.Error()))
 		return
 	}
 
@@ -199,6 +206,21 @@ func (h *axonHandler) invokeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusOK)
+}
+
+func (h *axonHandler) writeError(w http.ResponseWriter, status int, message string) {
+	errMap := map[string]string{
+		"error": message,
+	}
+	jsonErr, err := json.Marshal(errMap)
+	if err != nil {
+		h.logger.Error("Failed to marshal error", zap.Error(err))
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(err.Error()))
+		return
+	}
+	w.WriteHeader(status)
+	w.Write([]byte(jsonErr))
 }
 
 func (h *axonHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {

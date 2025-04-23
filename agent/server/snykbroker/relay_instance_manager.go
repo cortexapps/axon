@@ -272,6 +272,22 @@ func (r *relayInstanceManager) Start() error {
 			"PORT":              fmt.Sprintf("%d", r.getSnykBrokerPort()),
 		}
 
+		// pick up any env variables that are prefixed with SNYK_BROKER_
+		// and add them to the environment
+		for _, e := range os.Environ() {
+			prefix := "SNYKBROKER_"
+			if strings.HasPrefix(e, prefix) {
+				parts := strings.SplitN(e, "=", 2)
+				if len(parts) != 2 {
+					continue
+				}
+				key := strings.TrimPrefix(parts[0], prefix)
+				value := parts[1]
+				brokerEnv[key] = value
+				r.logger.Debug("Adding SNYKBROKER_ environment variable", zap.String("key", key), zap.String("value", value))
+			}
+		}
+
 		validationConfig := r.integrationInfo.GetValidationConfig()
 		r.applyClientValidationConfig(validationConfig, brokerEnv)
 
