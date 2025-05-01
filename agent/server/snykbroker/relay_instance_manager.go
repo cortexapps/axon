@@ -35,6 +35,26 @@ type relayInstanceManager struct {
 	supervisor      *Supervisor
 	running         atomic.Bool
 	startCount      atomic.Int32
+	tokenInfo       *tokenInfo
+}
+
+type tokenInfo struct {
+	ServerUri  string
+	Token      string
+	HasChanged bool
+}
+
+func (t *tokenInfo) equals(other *tokenInfo) bool {
+	if other == nil {
+		return false
+	}
+	if t.ServerUri != other.ServerUri {
+		return false
+	}
+	if t.Token != other.Token {
+		return false
+	}
+	return true
 }
 
 func NewRelayInstanceManager(
@@ -99,12 +119,16 @@ func (r *relayInstanceManager) handleReregister(w http.ResponseWriter, req *http
 		return
 	}
 	r.logger.Info("Reregistering broker")
-	_, _, err := r.getUrlAndToken()
+	info, err := r.getUrlAndToken()
 	if err != nil {
 		r.logger.Error("Unable to reregister", zap.Error(err))
 		w.WriteHeader(http.StatusInternalServerError)
 		w.Write([]byte("Unable to reregister"))
 		return
+	}
+
+	if info.HasChanged {
+		r.Restart()
 	}
 }
 
@@ -162,7 +186,28 @@ func (r *relayInstanceManager) Restart() error {
 	return nil
 }
 
-func (r *relayInstanceManager) getUrlAndToken() (string, string, error) {
+func (r *relayInstanceManager) getUrlAndToken() (*tokenInfo, error) {
+	uri, token, err := r.getUrlAndTokenCore()
+	if err != nil {
+		return nil, err
+	}
+
+	tokenInfo := &tokenInfo{
+		ServerUri: uri,
+		Token:     token,
+	}
+
+	if !tokenInfo.equals(r.tokenInfo) {
+		r.logger.Info("Registration info has changed", zap.String("uri", tokenInfo.ServerUri), zap.String("token", tokenInfo.Token))
+		tokenInfo.HasChanged = true
+		r.tokenInfo = tokenInfo
+	}
+
+	return tokenInfo, nil
+
+}
+
+func (r *relayInstanceManager) getUrlAndTokenCore() (string, string, error) {
 
 	serverUri := os.Getenv("BROKER_SERVER_URL")
 	token := os.Getenv("BROKER_TOKEN")
@@ -183,8 +228,6 @@ func (r *relayInstanceManager) getUrlAndToken() (string, string, error) {
 	if serverUri == "" {
 		serverUri = reg.ServerUri
 	}
-
-	r.logger.Info("Received registration info", zap.String("serverUri", reg.ServerUri))
 
 	return serverUri, reg.Token, nil
 }
@@ -210,12 +253,40 @@ func (r *relayInstanceManager) Start() error {
 
 	done := make(chan struct{})
 
+	if r.config.AutoRegisterFrequency != 0 {
+		go func() {
+			for {
+				if !r.running.Load() {
+					return
+				}
+				select {
+				case <-time.After(r.config.AutoRegisterFrequency):
+
+					info, err := r.getUrlAndToken()
+					if err != nil {
+						r.logger.Error("Unable to auto register", zap.Error(err))
+						continue
+					}
+					if info.HasChanged {
+						r.logger.Info("Auto registered broker, token has changed, restarting")
+						err = r.Restart()
+						if err != nil {
+							r.logger.Error("Unable to auto register restart", zap.Error(err))
+							continue
+						}
+					}
+				case <-done:
+					return
+				}
+			}
+		}()
+	}
+
 	go func() {
 
 		defer close(done)
 
-		var uri string
-		var token string
+		var info *tokenInfo
 		var errx error
 
 		// to allow the agent to start up even if registration isn't available
@@ -226,7 +297,7 @@ func (r *relayInstanceManager) Start() error {
 			if !r.running.Load() {
 				return
 			}
-			uri, token, errx = r.getUrlAndToken()
+			info, errx = r.getUrlAndToken()
 
 			if errx == errSkipBroker {
 				return
@@ -260,15 +331,15 @@ func (r *relayInstanceManager) Start() error {
 		r.logger.Debug("Starting broker",
 			zap.String("executable", executable),
 			zap.Strings("args", args),
-			zap.String("token", token),
-			zap.String("uri", uri),
+			zap.String("token", info.Token),
+			zap.String("uri", info.ServerUri),
 			zap.String("acceptFile", acceptFile),
 		)
 
 		brokerEnv := map[string]string{
 			"ACCEPT":            acceptFile,
-			"BROKER_SERVER_URL": uri,
-			"BROKER_TOKEN":      token,
+			"BROKER_SERVER_URL": info.ServerUri,
+			"BROKER_TOKEN":      info.Token,
 			"PORT":              fmt.Sprintf("%d", r.getSnykBrokerPort()),
 		}
 

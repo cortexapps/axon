@@ -15,21 +15,22 @@ const DefaultHttpPort = 80
 const WebhookServerPort = 8081
 
 type AgentConfig struct {
-	GrpcPort          int
-	CortexApiBaseUrl  string
-	CortexApiToken    string
-	DryRun            bool
-	DequeueWaitTime   time.Duration
-	HistoryPath       string
-	InstanceId        string
-	Integration       string
-	IntegrationAlias  string
-	HttpServerPort    int
-	WebhookServerPort int
-	SnykBrokerPort    int
-	EnableApiProxy    bool
-	FailWaitTime      time.Duration
-	VerboseOutput     bool
+	GrpcPort              int
+	CortexApiBaseUrl      string
+	CortexApiToken        string
+	DryRun                bool
+	DequeueWaitTime       time.Duration
+	HistoryPath           string
+	InstanceId            string
+	Integration           string
+	IntegrationAlias      string
+	HttpServerPort        int
+	WebhookServerPort     int
+	SnykBrokerPort        int
+	EnableApiProxy        bool
+	FailWaitTime          time.Duration
+	AutoRegisterFrequency time.Duration
+	VerboseOutput         bool
 }
 
 func (ac AgentConfig) Print() {
@@ -145,20 +146,30 @@ func NewAgentEnvConfig() AgentConfig {
 		token = "dry-run"
 	}
 
+	reregisterFrequency := time.Minute * 15
+	if reregisterFrequencyEnv := os.Getenv("AUTO_REGISTER_FREQUENCY"); reregisterFrequencyEnv != "" {
+		var err error
+		reregisterFrequency, err = time.ParseDuration(reregisterFrequencyEnv)
+		if err != nil {
+			panic(err)
+		}
+	}
+
 	cfg := AgentConfig{
-		GrpcPort:          port,
-		CortexApiBaseUrl:  baseUrl,
-		CortexApiToken:    token,
-		DryRun:            dryRun,
-		DequeueWaitTime:   dequeueWaitTime,
-		HistoryPath:       historyPath,
-		InstanceId:        getInstanceId(),
-		IntegrationAlias:  identifier,
-		HttpServerPort:    httpPort,
-		WebhookServerPort: WebhookServerPort,
-		SnykBrokerPort:    snykBrokerPort,
-		EnableApiProxy:    true,
-		FailWaitTime:      time.Second * 2,
+		GrpcPort:              port,
+		CortexApiBaseUrl:      baseUrl,
+		CortexApiToken:        token,
+		DryRun:                dryRun,
+		DequeueWaitTime:       dequeueWaitTime,
+		HistoryPath:           historyPath,
+		InstanceId:            getInstanceId(),
+		IntegrationAlias:      identifier,
+		HttpServerPort:        httpPort,
+		WebhookServerPort:     WebhookServerPort,
+		SnykBrokerPort:        snykBrokerPort,
+		EnableApiProxy:        true,
+		FailWaitTime:          time.Second * 2,
+		AutoRegisterFrequency: reregisterFrequency,
 	}
 	return cfg
 }
