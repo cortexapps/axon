@@ -13,6 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       IS_DEFAULT_BRANCH: ${{ github.ref == format('refs/heads/{0}', 'main') }}
+      IS_TAG: ${{ startsWith(github.ref, 'refs/tags/') }}
 
     steps:
       - name: Checkout code
@@ -52,10 +53,10 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           file: ./docker/Dockerfile
-          push:  ${{ github.event_name == 'workflow_dispatch' || env.IS_DEFAULT_BRANCH }}
+          push:  ${{ github.event_name == 'workflow_dispatch' || env.IS_DEFAULT_BRANCH == 'true' || env.IS_TAG == 'true' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           # arm64 is more expensive to build, so only build it on default branch
-          platforms: ${{ env.IS_DEFAULT_BRANCH && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
+          platforms: ${{ env.IS_DEFAULT_BRANCH == 'true' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
           cache-from: type=local,src=/tmp/.buildx-cache
           cache-to: type=local,dest=/tmp/.buildx-cache
