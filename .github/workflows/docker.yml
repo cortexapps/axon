@@ -1,12 +1,18 @@
 name: Build and Publish Docker Image
 
-on: [push, workflow_dispatch]
+on: 
+  push:
+    branches:
+      - '*'
+    tags:
+      - 'v*'
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      DOCKER_TAG: ${{ (github.head_ref || github.ref_name) == 'main' && 'latest' || (github.head_ref || github.ref_name) }}
+      IS_DEFAULT_BRANCH: ${{ github.ref == format('refs/heads/{0}', 'main') }} && 'true' || 'false'
 
     steps:
       - name: Checkout code
@@ -30,14 +36,26 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      -   name: Docker meta
+          id: meta
+          uses: docker/metadata-action@v5
+          with:
+            images: |
+              ghcr.io/${{ github.repository_owner }}/cortex-axon-agent
+            tags: |
+              type=ref,event=branch
+              type=semver,pattern={{version}}
+              type=semver,pattern={{major}}.{{minor}}
+              type=sha
+
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
           file: ./docker/Dockerfile
-          push: true
-          tags: |
-            ghcr.io/${{ github.repository_owner }}/cortex-axon-agent:${{ github.sha }}
-            ghcr.io/${{ github.repository_owner }}/cortex-axon-agent:${{ env.DOCKER_TAG }}
-          platforms: ${{ env.DOCKER_TAG == 'latest' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
+          push:  ${{ github.event_name == 'workflow_dispatch' || env.IS_DEFAULT_BRANCH == 'true' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # arm64 is more expensive to build, so only build it on default branch
+          platforms: ${{ env.IS_DEFAULT_BRANCH == 'true' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
           cache-from: type=local,src=/tmp/.buildx-cache
           cache-to: type=local,dest=/tmp/.buildx-cache
