@@ -277,6 +277,11 @@ func (s *AxonAgent) Start(ctx context.Context) error {
 		log.Fatalf("failed to listen: %v", err)
 	}
 
+	err = s.historyManager.Start()
+	if err != nil {
+		log.Fatal("failed to start history manager", zap.Error(err))
+	}
+
 	s.grpcServer = grpc.NewServer()
 	pb.RegisterAxonAgentServer(s.grpcServer, s)
 
@@ -312,6 +317,10 @@ func (s *AxonAgent) Close() {
 	if s.grpcServer != nil {
 		s.grpcServer.Stop()
 		s.grpcServer = nil
+	}
+	if s.historyManager != nil {
+		s.historyManager.Close()
+		s.historyManager = nil
 	}
 	s.Manager.Close()
 }
