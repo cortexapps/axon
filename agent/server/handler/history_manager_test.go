@@ -2,8 +2,11 @@ package handler
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,7 +23,7 @@ func TestGetHistory(t *testing.T) {
 	historyPath := t.TempDir()
 
 	cfg := config.AgentConfig{
-		HistoryPath: historyPath,
+		HandlerHistoryPath: historyPath,
 	}
 
 	hm := NewHistoryManager(cfg, logger)
@@ -63,7 +66,7 @@ func TestGetHistory_NoHistory(t *testing.T) {
 	historyPath := t.TempDir()
 
 	cfg := config.AgentConfig{
-		HistoryPath: historyPath,
+		HandlerHistoryPath: historyPath,
 	}
 
 	hm := NewHistoryManager(cfg, logger)
@@ -78,7 +81,7 @@ func TestGetHistory_NoDir(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 
 	cfg := config.AgentConfig{
-		HistoryPath: "/foo/bar",
+		HandlerHistoryPath: "/tmp/axon-test/foo/bar",
 	}
 
 	hm := NewHistoryManager(cfg, logger)
@@ -94,7 +97,7 @@ func TestGetHistory_InvalidFiles(t *testing.T) {
 	historyPath := t.TempDir()
 
 	cfg := config.AgentConfig{
-		HistoryPath: historyPath,
+		HandlerHistoryPath: historyPath,
 	}
 
 	hm := NewHistoryManager(cfg, logger)
@@ -115,7 +118,7 @@ func TestGetHistory_MultipleFiles(t *testing.T) {
 	historyPath := t.TempDir()
 
 	cfg := config.AgentConfig{
-		HistoryPath: historyPath,
+		HandlerHistoryPath: historyPath,
 	}
 
 	hm := NewHistoryManager(cfg, logger)
@@ -191,4 +194,114 @@ func TestGetHistory_MultipleFiles(t *testing.T) {
 	require.Equal(t, req2.DurationMs, execution2.DurationMs)
 	require.Equal(t, req2.GetError(), execution2.Error)
 	require.Equal(t, req2.Logs, execution2.Logs)
+}
+
+func TestGetHistory_CleanupSize(t *testing.T) {
+
+	logger, _ := zap.NewDevelopment()
+	historyPath := t.TempDir()
+	defer os.RemoveAll(historyPath)
+
+	cfg := config.AgentConfig{
+		HandlerHistoryPath: historyPath,
+	}
+
+	hm := NewHistoryManager(cfg, logger).(*historyManager)
+
+	startTime := time.Now().Add(-time.Hour)
+	executions := createHandlerExecutions(startTime, 60*60, time.Second)
+
+	for _, e := range executions {
+		err := hm.Write(context.Background(), e)
+		require.NoError(t, err)
+	}
+
+	minTime := startTime.Add(time.Minute * 30)
+	deleted, err := hm.cleanupDirectory(historyPath, minTime, 10000, nil)
+	require.NoError(t, err)
+	require.Equal(t, 3551, deleted)
+
+}
+
+func TestGetHistory_CleanupTime(t *testing.T) {
+
+	logger, _ := zap.NewDevelopment()
+	historyPath := t.TempDir()
+	defer os.RemoveAll(historyPath)
+
+	cfg := config.AgentConfig{
+		HandlerHistoryPath: historyPath,
+	}
+
+	hm := NewHistoryManager(cfg, logger).(*historyManager)
+
+	startTime := time.Now().Add(-time.Hour)
+	executions := createHandlerExecutions(startTime, 60*60, time.Second)
+
+	for _, e := range executions {
+		err := hm.Write(context.Background(), e)
+		require.NoError(t, err)
+	}
+
+	minTime := startTime.Add(time.Minute * 2)
+	deleted, err := hm.cleanupDirectory(historyPath, minTime, 100000000, func(info os.FileInfo) time.Time {
+		nameParts := strings.Split(info.Name(), "-")
+		timestamp, err := strconv.ParseInt(nameParts[0], 10, 64)
+		require.NoError(t, err)
+		return time.UnixMilli(int64(timestamp))
+	})
+	require.NoError(t, err)
+	require.Equal(t, 121, deleted)
+
+}
+
+func TestGetHistory_CleanupMix(t *testing.T) {
+
+	logger, _ := zap.NewDevelopment()
+	historyPath := t.TempDir()
+	defer os.RemoveAll(historyPath)
+
+	cfg := config.AgentConfig{
+		HandlerHistoryPath: historyPath,
+	}
+
+	hm := NewHistoryManager(cfg, logger).(*historyManager)
+
+	startTime := time.Now().Add(-time.Hour)
+	executions := createHandlerExecutions(startTime, 60*60, time.Second)
+
+	for _, e := range executions {
+		err := hm.Write(context.Background(), e)
+		require.NoError(t, err)
+	}
+
+	minTime := startTime.Add(time.Minute * 30)
+	deleted, err := hm.cleanupDirectory(historyPath, minTime, 100000, func(info os.FileInfo) time.Time {
+		nameParts := strings.Split(info.Name(), "-")
+		timestamp, err := strconv.ParseInt(nameParts[0], 10, 64)
+		require.NoError(t, err)
+		return time.UnixMilli(int64(timestamp))
+	})
+	require.NoError(t, err)
+	require.Equal(t, 3108, deleted)
+
+}
+
+func createHandlerExecutions(startTimestamp time.Time, n int, increment time.Duration) []*pb.HandlerExecution {
+	handlerExecutions := make([]*pb.HandlerExecution, n)
+
+	for i := 0; i < n; i++ {
+		handlerExecutions[i] = &pb.HandlerExecution{
+			HandlerName:          "HandlerName",
+			HandlerId:            "HandlerId",
+			InvocationId:         fmt.Sprintf("InvocationId-%d", i),
+			DispatchId:           "DispatchId",
+			StartClientTimestamp: timestamppb.New(startTimestamp.Add(time.Duration(i) * increment)),
+			DurationMs:           1000, // Example duration in milliseconds
+			Error:                nil,  // No error
+			Logs:                 nil,  // No logs
+		}
+	}
+
+	return handlerExecutions
 }

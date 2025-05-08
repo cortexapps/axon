@@ -20,7 +20,6 @@ type AgentConfig struct {
 	CortexApiToken        string
 	DryRun                bool
 	DequeueWaitTime       time.Duration
-	HistoryPath           string
 	InstanceId            string
 	Integration           string
 	IntegrationAlias      string
@@ -31,6 +30,10 @@ type AgentConfig struct {
 	FailWaitTime          time.Duration
 	AutoRegisterFrequency time.Duration
 	VerboseOutput         bool
+
+	HandlerHistoryPath         string
+	HandlerHistoryMaxAge       time.Duration
+	HandlerHistoryMaxSizeBytes int64
 }
 
 func (ac AgentConfig) Print() {
@@ -131,8 +134,25 @@ func NewAgentEnvConfig() AgentConfig {
 	}
 
 	historyPath := "/tmp/axon-agent/history"
-	if historyPathEnv := os.Getenv("HISTORY_PATH"); historyPathEnv != "" {
+	if historyPathEnv := os.Getenv("HANDLER_HISTORY_PATH"); historyPathEnv != "" {
 		historyPath = historyPathEnv
+	}
+
+	handlerHistoryMaxAge := time.Hour * 24 * 7
+	if handlerHistoryMaxAgeEnv := os.Getenv("HANDLER_HISTORY_MAX_AGE"); handlerHistoryMaxAgeEnv != "" {
+		hma, err := time.ParseDuration(handlerHistoryMaxAgeEnv)
+		if err != nil {
+			panic(err)
+		}
+		handlerHistoryMaxAge = hma
+	}
+	handlerHistoryMaxSizeBytes := int64(1024 * 1024 * 1024) // 1GB
+	if handlerHistoryMaxSizeBytesEnv := os.Getenv("HANDLER_HISTORY_MAX_SIZE_BYTES"); handlerHistoryMaxSizeBytesEnv != "" {
+		hma, err := strconv.ParseInt(handlerHistoryMaxSizeBytesEnv, 10, 64)
+		if err != nil {
+			panic(err)
+		}
+		handlerHistoryMaxSizeBytes = hma
 	}
 
 	identifier := os.Getenv("INTEGRATION_ALIAS")
@@ -156,20 +176,23 @@ func NewAgentEnvConfig() AgentConfig {
 	}
 
 	cfg := AgentConfig{
-		GrpcPort:              port,
-		CortexApiBaseUrl:      baseUrl,
-		CortexApiToken:        token,
-		DryRun:                dryRun,
-		DequeueWaitTime:       dequeueWaitTime,
-		HistoryPath:           historyPath,
-		InstanceId:            getInstanceId(),
-		IntegrationAlias:      identifier,
-		HttpServerPort:        httpPort,
-		WebhookServerPort:     WebhookServerPort,
-		SnykBrokerPort:        snykBrokerPort,
-		EnableApiProxy:        true,
-		FailWaitTime:          time.Second * 2,
-		AutoRegisterFrequency: reregisterFrequency,
+		GrpcPort:          port,
+		CortexApiBaseUrl:  baseUrl,
+		CortexApiToken:    token,
+		DryRun:            dryRun,
+		DequeueWaitTime:   dequeueWaitTime,
+		InstanceId:        getInstanceId(),
+		IntegrationAlias:  identifier,
+		HttpServerPort:    httpPort,
+		WebhookServerPort: WebhookServerPort,
+		SnykBrokerPort:    snykBrokerPort,
+		EnableApiProxy:    true,
+		FailWaitTime:      time.Second * 2,
+
+		AutoRegisterFrequency:      reregisterFrequency,
+		HandlerHistoryPath:         historyPath,
+		HandlerHistoryMaxAge:       handlerHistoryMaxAge,
+		HandlerHistoryMaxSizeBytes: handlerHistoryMaxSizeBytes,
 	}
 	return cfg
 }

@@ -35,7 +35,7 @@ COPY docker/app_entrypoint.sh /app/app_entrypoint.sh
 
 
 ENV CORTEX_API_BASE_URL=https://api.getcortexapp.com
-ENV HISTORY_PATH=/agent/history
+ENV HANDLER_HISTORY_PATH=/var/log/axon/history
 
 EXPOSE 50051
 

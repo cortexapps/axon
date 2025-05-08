@@ -28,12 +28,12 @@ func TestGRPCServer_RegisterHandlerAndDispatch(t *testing.T) {
 	}()
 
 	config := config.AgentConfig{
-		GrpcPort:         port,
-		CortexApiBaseUrl: "http://localhost",
-		CortexApiToken:   "test-token",
-		DryRun:           false,
-		DequeueWaitTime:  1 * time.Second,
-		HistoryPath:      historyPath,
+		GrpcPort:           port,
+		CortexApiBaseUrl:   "http://localhost",
+		CortexApiToken:     "test-token",
+		DryRun:             false,
+		DequeueWaitTime:    1 * time.Second,
+		HandlerHistoryPath: historyPath,
 	}
 
 	logger, _ := zap.NewDevelopment()
@@ -127,12 +127,12 @@ func TestGRPCServer_RegisterHandlerAndDispatchInvoke(t *testing.T) {
 	}()
 
 	config := config.AgentConfig{
-		GrpcPort:         port,
-		CortexApiBaseUrl: "http://localhost",
-		CortexApiToken:   "test-token",
-		DryRun:           false,
-		DequeueWaitTime:  1 * time.Second,
-		HistoryPath:      historyPath,
+		GrpcPort:           port,
+		CortexApiBaseUrl:   "http://localhost",
+		CortexApiToken:     "test-token",
+		DryRun:             false,
+		DequeueWaitTime:    1 * time.Second,
+		HandlerHistoryPath: historyPath,
 	}
 
 	logger, _ := zap.NewDevelopment()
@@ -238,12 +238,12 @@ func TestGRPCServer_ClientAutoClose(t *testing.T) {
 	}()
 
 	config := config.AgentConfig{
-		GrpcPort:         port,
-		CortexApiBaseUrl: "http://localhost",
-		CortexApiToken:   "test-token",
-		DryRun:           false,
-		DequeueWaitTime:  100 * time.Millisecond,
-		HistoryPath:      historyPath,
+		GrpcPort:           port,
+		CortexApiBaseUrl:   "http://localhost",
+		CortexApiToken:     "test-token",
+		DryRun:             false,
+		DequeueWaitTime:    100 * time.Millisecond,
+		HandlerHistoryPath: historyPath,
 	}
 
 	logger, _ := zap.NewDevelopment()
