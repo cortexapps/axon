@@ -204,4 +204,17 @@ docker run -e "CORTEX_API_TOKEN=$CORTEX_API_TOKEN" my-cortex-app:latest
 
 Note this will run everything inside the same container so you do NOT need to run the separate agent container or publish the ports as with debugging above.
 
-You can then deloy this container into your Kubernetes environment
+You can then deloy this container into your Kubernetes environment, there is an example `docker-compose.yml` and `helm-chart` in the `examples/relay`directory.
+
+### Monitoring
+
+The agent exposes a Prometheus endpoint at `/metrics` on the default port (80), that has the following metrics:
+
+* `axon_heartbeat` (counter) the agent increments a counter every 5 seconds, with labels for the integration, alias, and instance-id of the agent
+* `axon_handler_invokes` (counter) the number of times a handler has been invoked, with labels for the handler name and the status of the invocation (success or failure)
+* `axon_handler_queue_depth` (gauge) the number of handlers that are waiting to be invoked, with labels for the handler name
+* `axon_handler_latency` (histogram) the latency of the handler invocation, with labels for the handler name and the status of the invocation (success or failure)
+* `axon_http_requests` (counter) the number of HTTP requests made to the agent, with labels for the method, path, and status of the request
+* `axon_http_request_latency_seconds` (histogram) the latency of the HTTP request, with labels for the method, path, and status of the request
+* `broker_operations` (counter) the number of operations made to the broker, with labels for the operation type (`broker_start`, `broker_restart`, `broker_register`, `broker-exit`) and status of the request
+* `axon_webhook_received` (counter) the number of webhooks received, with labels for the webhook id and status of the request

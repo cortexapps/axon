@@ -20,7 +20,7 @@ import (
 func TestHandleWebhook(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 	cron := cron.New()
-	manager := handler.NewHandlerManager(logger, cron)
+	manager := handler.NewHandlerManager(logger, cron, nil)
 
 	option := &pb.HandlerOption{
 		Option: &pb.HandlerOption_Invoke{
@@ -37,7 +37,7 @@ func TestHandleWebhook(t *testing.T) {
 	err = manager.Start("1")
 	require.NoError(t, err)
 
-	webhookHandler := NewWebhookHandler(config.AgentConfig{}, logger, manager)
+	webhookHandler := NewWebhookHandler(config.AgentConfig{}, logger, manager, nil)
 	ts := httptest.NewServer(webhookHandler)
 
 	// The handler should not have been invoked yet

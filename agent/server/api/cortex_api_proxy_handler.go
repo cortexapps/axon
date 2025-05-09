@@ -13,6 +13,7 @@ import (
 
 	"github.com/cortexapps/axon/config"
 	cortex_http "github.com/cortexapps/axon/server/http"
+	"github.com/gorilla/mux"
 	"go.uber.org/zap"
 )
 
@@ -57,8 +58,8 @@ func (a *apiProxyHandler) Path() string {
 	return cortexApiPathRoot
 }
 
-func (a *apiProxyHandler) RegisterRoutes(mux *http.ServeMux) error {
-	mux.Handle(cortexApiPathRoot, a)
+func (a *apiProxyHandler) RegisterRoutes(mux *mux.Router) error {
+	mux.PathPrefix(cortexApiPathRoot).Handler(a)
 	mux.Handle("/", a)
 	return nil
 }

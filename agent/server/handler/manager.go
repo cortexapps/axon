@@ -8,6 +8,7 @@ import (
 
 	pb "github.com/cortexapps/axon/.generated/proto/github.com/cortexapps/axon"
 	"github.com/cortexapps/axon/server/cron"
+	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/zap"
 )
 
@@ -33,15 +34,47 @@ type handlerManager struct {
 	cron                cron.Cron
 	done                chan struct{}
 	finished            bool
+	invokeCounter       *prometheus.CounterVec
+	queueDepthGauge     *prometheus.GaugeVec
+	handlerLatencyGauge *prometheus.HistogramVec
 }
 
-func NewHandlerManager(logger *zap.Logger, cron cron.Cron) Manager {
+func NewHandlerManager(logger *zap.Logger, cron cron.Cron, metrics *prometheus.Registry) Manager {
+
 	mgr := &handlerManager{
 		logger:              logger.Named("handler-manager"),
 		handlers:            make(map[string]HandlerEntry),
 		dispatchQueues:      make(map[string]chan Invocable),
 		cron:                cron,
 		outstandingRequests: make(map[string]Invocable),
+		invokeCounter: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "axon_handler_invokes",
+				Help: "Number of handler invokes",
+			},
+			[]string{"handler", "result"},
+		),
+		queueDepthGauge: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Name: "axon_handler_queue_depth",
+				Help: "Number of items in the handler queue",
+			},
+			[]string{"handler"},
+		),
+		handlerLatencyGauge: prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Name:    "axon_handler_latency",
+				Help:    "Latency of handler invocations",
+				Buckets: prometheus.DefBuckets,
+			},
+			[]string{"handler", "result"},
+		),
+		done: make(chan struct{}),
+	}
+	if metrics != nil {
+		metrics.MustRegister(mgr.invokeCounter)
+		metrics.MustRegister(mgr.queueDepthGauge)
+		metrics.MustRegister(mgr.handlerLatencyGauge)
 	}
 	return mgr
 }
@@ -109,6 +142,11 @@ func (s *handlerManager) createEntry(
 			return NewInvokeHandlerEntry(s, s.logger, dispatchId, name, timeout, options...)
 		}
 	}
+
+	if len(options) == 0 {
+		return NewInvokeHandlerEntry(s, s.logger, dispatchId, name, timeout, options...)
+	}
+
 	s.logger.Error("handler type not supported", zap.String("handler", name))
 	return nil
 }
@@ -199,19 +237,24 @@ func (s *handlerManager) Trigger(handler Invocable) error {
 
 	entry.OnTrigger(message.GetReason())
 
+	startTime := time.Now()
 	queue := s.getDispatchQueue(entry.DispatchId())
 	queue <- message
+	s.queueDepthGauge.WithLabelValues(handlerName).Set(float64(len(queue)))
 
 	go func() {
 		defer cancel()
 		<-message.Done()
 		result, err := message.GetResult()
+		s.queueDepthGauge.WithLabelValues(handlerName).Set(float64(len(queue)))
+		s.handlerLatencyGauge.WithLabelValues(handlerName, result).Observe(float64(time.Since(startTime).Milliseconds()))
 		if err != nil {
 			logger.Error("handler error", zap.Error(err))
+			s.invokeCounter.WithLabelValues(handlerName, "error").Inc()
 		} else {
 			logger.Info("Handler completed", zap.Int("result-length", len(result)))
+			s.invokeCounter.WithLabelValues(handlerName, "success").Inc()
 		}
-
 	}()
 
 	return nil

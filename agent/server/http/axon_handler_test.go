@@ -14,6 +14,7 @@ import (
 	"github.com/cortexapps/axon/config"
 	"github.com/cortexapps/axon/server/cron"
 	"github.com/cortexapps/axon/server/handler"
+	"github.com/gorilla/mux"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
@@ -22,7 +23,7 @@ import (
 func TestInvokeEndpoint(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 	cron := cron.New()
-	manager := handler.NewHandlerManager(logger, cron)
+	manager := handler.NewHandlerManager(logger, cron, nil)
 
 	option := &pb.HandlerOption{
 		Option: &pb.HandlerOption_Invoke{
@@ -39,7 +40,7 @@ func TestInvokeEndpoint(t *testing.T) {
 	require.NoError(t, err)
 
 	axonHandler := NewAxonHandler(config.AgentConfig{}, logger, manager)
-	mux := http.NewServeMux()
+	mux := mux.NewRouter()
 	axonHandler.RegisterRoutes(mux)
 	ts := httptest.NewServer(mux)
 
@@ -49,6 +50,7 @@ func TestInvokeEndpoint(t *testing.T) {
 	go func() {
 		handlerInvocation, err := manager.Dequeue(context.Background(), "1", 500*time.Millisecond)
 		require.NoError(t, err)
+		require.NotNil(t, handlerInvocation)
 		require.Equal(t, "test-handler", handlerInvocation.GetEntry().Name())
 		require.Equal(t, payload, handlerInvocation.ToDispatchInvoke().Args["body"])
 
@@ -75,7 +77,7 @@ func TestInvokeEndpoint(t *testing.T) {
 func TestInvokeEndpointErr(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 	cron := cron.New()
-	manager := handler.NewHandlerManager(logger, cron)
+	manager := handler.NewHandlerManager(logger, cron, nil)
 
 	option := &pb.HandlerOption{
 		Option: &pb.HandlerOption_Invoke{
@@ -92,7 +94,7 @@ func TestInvokeEndpointErr(t *testing.T) {
 	require.NoError(t, err)
 
 	axonHandler := NewAxonHandler(config.AgentConfig{}, logger, manager)
-	mux := http.NewServeMux()
+	mux := mux.NewRouter()
 	axonHandler.RegisterRoutes(mux)
 	ts := httptest.NewServer(mux)
 

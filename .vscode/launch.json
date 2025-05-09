@@ -81,7 +81,7 @@
                 "-i",
                 "github",
                 "--alias",
-                "relay",
+                "relay-github",
                 "-v"
             ],
             "envFile": "${workspaceFolder}/.env",

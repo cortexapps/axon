@@ -37,7 +37,7 @@ func TestGRPCServer_RegisterHandlerAndDispatch(t *testing.T) {
 	}
 
 	logger, _ := zap.NewDevelopment()
-	manager := handler.NewHandlerManager(logger, cron.New())
+	manager := handler.NewHandlerManager(logger, cron.New(), nil)
 
 	agent := NewAxonAgent(logger, config, manager)
 	defer agent.Close()
@@ -136,7 +136,7 @@ func TestGRPCServer_RegisterHandlerAndDispatchInvoke(t *testing.T) {
 	}
 
 	logger, _ := zap.NewDevelopment()
-	manager := handler.NewHandlerManager(logger, cron.New())
+	manager := handler.NewHandlerManager(logger, cron.New(), nil)
 
 	agent := NewAxonAgent(logger, config, manager)
 	defer agent.Close()
@@ -247,7 +247,7 @@ func TestGRPCServer_ClientAutoClose(t *testing.T) {
 	}
 
 	logger, _ := zap.NewDevelopment()
-	manager := handler.NewHandlerManager(logger, cron.New())
+	manager := handler.NewHandlerManager(logger, cron.New(), nil)
 
 	agent := NewAxonAgent(logger, config, manager)
 	defer agent.Close()

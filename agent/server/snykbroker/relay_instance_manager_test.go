@@ -10,6 +10,8 @@ import (
 	"github.com/cortexapps/axon/common"
 	"github.com/cortexapps/axon/config"
 	cortex_http "github.com/cortexapps/axon/server/http"
+	"github.com/gorilla/mux"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/fx/fxtest"
@@ -76,7 +78,7 @@ func TestRelayRestartServer(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/__axon/broker/restart", nil)
 	httpHandler := (mgr.RelayInstanceManager).(cortex_http.RegisterableHandler)
 
-	mux := http.NewServeMux()
+	mux := mux.NewRouter()
 	httpHandler.RegisterRoutes(mux)
 	mux.ServeHTTP(w, req)
 
@@ -97,7 +99,7 @@ func TestRelayReRegisterServer(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/__axon/broker/reregister", nil)
 	httpHandler := (mgr.RelayInstanceManager).(cortex_http.RegisterableHandler)
 
-	mux := http.NewServeMux()
+	mux := mux.NewRouter()
 	httpHandler.RegisterRoutes(mux)
 	mux.ServeHTTP(w, req)
 
@@ -150,7 +152,7 @@ func TestSystemCheck(t *testing.T) {
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/__axon/broker/systemcheck", nil)
 
-	mux := http.NewServeMux()
+	mux := mux.NewRouter()
 	mgr.RegisterRoutes(mux)
 	mux.ServeHTTP(w, req)
 
@@ -203,6 +205,8 @@ func createTestRelayInstanceManager(t *testing.T, controller *gomock.Controller,
 		mockRegistration.EXPECT().Register(gomock.Eq(common.IntegrationGithub), gomock.Eq("")).MinTimes(1).Return(response, nil)
 	}
 
+	registry := prometheus.NewRegistry()
+
 	return &wrappedRelayInstanceManager{
 		RelayInstanceManager: NewRelayInstanceManager(
 			lifecycle,
@@ -211,6 +215,7 @@ func createTestRelayInstanceManager(t *testing.T, controller *gomock.Controller,
 			ii,
 			mockServer,
 			mockRegistration,
+			registry,
 		),
 		mockRegistration: mockRegistration,
 	}

@@ -1,12 +1,15 @@
 package http
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
 
 	"github.com/cortexapps/axon/config"
 	"github.com/cortexapps/axon/server/handler"
+	"github.com/gorilla/mux"
+	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/zap"
 )
 
@@ -14,22 +17,33 @@ const webhookPathRoot = "/webhook/"
 
 type webhookHandler struct {
 	io.Closer
-	config         config.AgentConfig
-	logger         *zap.Logger
-	handlerManager handler.Manager
+	config          config.AgentConfig
+	logger          *zap.Logger
+	handlerManager  handler.Manager
+	webhookReceived *prometheus.CounterVec
 }
 
-func NewWebhookHandler(config config.AgentConfig, logger *zap.Logger, handlerManager handler.Manager) RegisterableHandler {
+func NewWebhookHandler(config config.AgentConfig, logger *zap.Logger, handlerManager handler.Manager, registry *prometheus.Registry) RegisterableHandler {
 
 	handler := &webhookHandler{
 		config:         config,
 		logger:         logger,
 		handlerManager: handlerManager,
+		webhookReceived: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "axon_webhook_received",
+				Help: "Number of webhooks received",
+			},
+			[]string{"webhookId", "status"},
+		),
+	}
+	if registry != nil {
+		registry.MustRegister(handler.webhookReceived)
 	}
 	return handler
 }
 
-func (h *webhookHandler) RegisterRoutes(mux *http.ServeMux) error {
+func (h *webhookHandler) RegisterRoutes(mux *mux.Router) error {
 	mux.Handle(webhookPathRoot, h)
 	return nil
 }
@@ -37,16 +51,23 @@ func (h *webhookHandler) RegisterRoutes(mux *http.ServeMux) error {
 func (h *webhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.logger.Info("Received webhook", zap.String("path", r.URL.Path))
 
+	var webhookId string
+
+	writeStatus := func(status int) {
+		h.webhookReceived.WithLabelValues(webhookId, fmt.Sprintf("%d", status)).Inc()
+		w.WriteHeader(status)
+	}
+
 	switch r.Method {
 	case http.MethodPost, http.MethodPut:
 		break
 	default:
-		w.WriteHeader(http.StatusMethodNotAllowed)
+		writeStatus(http.StatusMethodNotAllowed)
 	}
 
 	if h.handlerManager == nil {
 		h.logger.Error("No handler manager")
-		w.WriteHeader(http.StatusInternalServerError)
+		writeStatus(http.StatusInternalServerError)
 		return
 	}
 
@@ -55,14 +76,15 @@ func (h *webhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	pathParts := strings.Split(path, "/")
 	if len(pathParts) == 0 {
 		h.logger.Error("Invalid webhook path", zap.String("path", r.URL.Path))
-		w.WriteHeader(http.StatusBadRequest)
+		writeStatus(http.StatusBadRequest)
 		return
 	}
-	webhookId := pathParts[0]
+	webhookId = pathParts[0]
+
 	entry := h.handlerManager.GetByTag(webhookId)
 	if entry == nil {
 		h.logger.Error("Webhook not found", zap.String("webhookId", webhookId))
-		w.WriteHeader(http.StatusNotFound)
+		writeStatus(http.StatusNotFound)
 		return
 	}
 
@@ -71,7 +93,7 @@ func (h *webhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil {
 		h.logger.Error("Failed to read body", zap.Error(err))
-		w.WriteHeader(http.StatusInternalServerError)
+		writeStatus(http.StatusInternalServerError)
 		return
 	}
 
@@ -79,9 +101,9 @@ func (h *webhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil {
 		h.logger.Error("Failed to trigger webhook", zap.Error(err))
-		w.WriteHeader(http.StatusInternalServerError)
+		writeStatus(http.StatusInternalServerError)
 		return
 	}
 
-	w.WriteHeader(http.StatusOK)
+	writeStatus(http.StatusOK)
 }
