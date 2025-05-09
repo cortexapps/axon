@@ -1,6 +1,17 @@
 name: Build and Publish Docker Image
 
-on: 
+x-docker-meta: &docker-meta
+  uses: docker/metadata-action@v5
+  with:
+    images: |
+      ghcr.io/${{ github.repository_owner }}/cortex-axon-agent
+    tags: |
+      type=ref,event=branch
+      type=semver,pattern={{version}}
+      type=semver,pattern={{major}}.{{minor}}
+      type=sha
+
+on:
   push:
     branches:
       - '*'
@@ -9,28 +20,67 @@ on:
   workflow_dispatch:
   pull_request:
 
+# This workflow builds multi-architecture Docker images using native runners for each architecture
+# It builds AMD64 and ARM64 images on their respective native runners, then creates a multi-arch manifest
 jobs:
   build:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-22.04
+          - arch: arm64
+            runner: ubuntu-22.04-arm64
+    runs-on: ${{ matrix.runner }}
     env:
-      IS_DEFAULT_BRANCH: ${{ github.ref == format('refs/heads/{0}', 'main') }}
-      IS_TAG: ${{ startsWith(github.ref, 'refs/tags/') }}
+      SHOULD_PUSH: ${{ github.event_name == 'workflow_dispatch' || github.ref == format('refs/heads/{0}', 'main') || startsWith(github.ref, 'refs/tags/') }}
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v2
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v1
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
+
       - name: Cache Docker layers
         uses: actions/cache@v4
         with:
           path: /tmp/.buildx-cache
-          key: ${{ runner.os }}-buildx-${{ github.sha }}
+          key: ${{ runner.os }}-${{ matrix.arch }}-buildx-${{ github.sha }}
           restore-keys: |
-            ${{ runner.os }}-buildx-
+            ${{ runner.os }}-${{ matrix.arch }}-buildx-
 
+      - name: Log in to GitHub Container Registry
+        if: env.SHOULD_PUSH == 'true'
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker meta
+        id: meta
+        <<: *docker-meta
+
+      # Build and push per-architecture image with architecture-specific tag
+      - name: Build and push Docker image for ${{ matrix.arch }}
+        uses: docker/build-push-action@v5
+        with:
+          file: ./docker/Dockerfile
+          push: ${{ env.SHOULD_PUSH }}
+          tags: ${{ steps.meta.outputs.tags }}-${{ matrix.arch }}
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/${{ matrix.arch }}
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache
+
+  # Create and push the multi-arch manifest
+  # This job combines the architecture-specific images into a single multi-arch manifest
+  # The manifest allows Docker to automatically pull the correct image for the user's architecture
+  create-manifest:
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v2
         with:
@@ -38,26 +88,24 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      -   name: Docker meta
-          id: meta
-          uses: docker/metadata-action@v5
-          with:
-            images: |
-              ghcr.io/${{ github.repository_owner }}/cortex-axon-agent
-            tags: |
-              type=ref,event=branch
-              type=semver,pattern={{version}}
-              type=semver,pattern={{major}}.{{minor}}
-              type=sha
+      - name: Docker meta
+        id: meta
+        <<: *docker-meta
 
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v5
-        with:
-          file: ./docker/Dockerfile
-          push:  ${{ github.event_name == 'workflow_dispatch' || env.IS_DEFAULT_BRANCH == 'true' || env.IS_TAG == 'true' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          # arm64 is more expensive to build, so only build it on the default branch or for tags
-          platforms: ${{ (env.IS_DEFAULT_BRANCH == 'true' || env.IS_TAG == 'true') && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
-          cache-from: type=local,src=/tmp/.buildx-cache
-          cache-to: type=local,dest=/tmp/.buildx-cache
+      - name: Create and push manifest
+        run: |
+          # For each tag, create a multi-arch manifest
+          for tag in $(echo "${{ steps.meta.outputs.tags }}" | tr '\n' ' '); do
+            # Create manifest with all architectures
+            platforms=("linux/amd64" "linux/arm64")
+            manifest_args=""
+
+            for platform in ${platforms[@]}; do
+              arch=${platform#*/}
+              manifest_args="$manifest_args ${tag}-${arch}"
+            done
+
+            # Create and push the manifest
+            docker manifest create ${tag} ${manifest_args}
+            docker manifest push ${tag}
+          done
