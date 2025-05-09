@@ -56,7 +56,7 @@ jobs:
           push:  ${{ github.event_name == 'workflow_dispatch' || env.IS_DEFAULT_BRANCH == 'true' || env.IS_TAG == 'true' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          # arm64 is more expensive to build, so only build it on default branch
-          platforms: ${{ env.IS_DEFAULT_BRANCH == 'true' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
+          # arm64 is more expensive to build, so only build it on the default branch or for tags
+          platforms: ${{ (env.IS_DEFAULT_BRANCH == 'true' || env.IS_TAG == 'true') && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
           cache-from: type=local,src=/tmp/.buildx-cache
           cache-to: type=local,dest=/tmp/.buildx-cache
