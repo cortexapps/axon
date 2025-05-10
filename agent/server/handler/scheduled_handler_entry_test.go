@@ -15,7 +15,7 @@ import (
 func TestApplyOption_RunNow(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 	cron := cron.New()
-	manager := NewHandlerManager(logger, cron)
+	manager := NewHandlerManager(logger, cron, nil)
 	entry := newScheduledHandlerEntry(manager, logger, "1", "handler1", defaultTimeout, cron).(*ScheduledHandlerEntry)
 
 	option := &pb.HandlerOption{
@@ -66,7 +66,7 @@ func TestApplyOption_RunInterval(t *testing.T) {
 func TestApplyOption_RunInterval_InvalidDuration(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 	cron := cron.New()
-	manager := NewHandlerManager(logger, cron)
+	manager := NewHandlerManager(logger, cron, nil)
 	entry := newScheduledHandlerEntry(manager, logger, "1", "handler1", defaultTimeout, cron).(*ScheduledHandlerEntry)
 
 	option := &pb.HandlerOption{
@@ -129,7 +129,7 @@ func TestApplyOption_CronSchedule(t *testing.T) {
 func TestApplyOption_CronSchedule_Invalid(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 	cron := cron.New()
-	manager := NewHandlerManager(logger, cron)
+	manager := NewHandlerManager(logger, cron, nil)
 	entry := newScheduledHandlerEntry(manager, logger, "1", "handler1", defaultTimeout, cron).(*ScheduledHandlerEntry)
 
 	option := &pb.HandlerOption{
@@ -149,7 +149,7 @@ func TestIsFinishedOnRunNowOnly(t *testing.T) {
 
 	logger, _ := zap.NewDevelopment()
 	cron := cron.New()
-	manager := NewHandlerManager(logger, cron)
+	manager := NewHandlerManager(logger, cron, nil)
 
 	option := &pb.HandlerOption{
 		Option: &pb.HandlerOption_Invoke{
@@ -174,7 +174,7 @@ func TestIsFinishedOnRunNowAndInterval(t *testing.T) {
 
 	logger, _ := zap.NewDevelopment()
 	cron := cron.New()
-	manager := NewHandlerManager(logger, cron)
+	manager := NewHandlerManager(logger, cron, nil)
 
 	option1 := &pb.HandlerOption{
 		Option: &pb.HandlerOption_Invoke{

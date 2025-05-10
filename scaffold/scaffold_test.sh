@@ -66,7 +66,9 @@ docker build --secret "id=github_token,env=GITHUB_TOKEN" --build-arg "GITHUB_ID=
 
 
 echo "Running docker image for scaffold"
-docker_id=$(docker run -e "DRYRUN=1"  -d $docker_tag)
+docker_http_port=9797
+docker_hostname="docker-test-scaffold"
+docker_id=$(docker run -e "DRYRUN=1" -e "HOSTNAME=$docker_hostname" -p "$docker_http_port:80" -d $docker_tag)
 
 # Define a cleanup function
 cleanup() {
@@ -140,6 +142,34 @@ else
   echo "HISTORY_LOGS count: $history_logs"
   echo "Execution history:"
   echo "$execution_history"
+  FAILURE=true
+  exit 1
+fi
+
+echo "testing http server"
+response=$(curl -s http://localhost:$docker_http_port/__axon/info)
+
+if echo "$response" | grep -q $docker_hostname
+then
+  echo "SUCCESS! Got expected response from http server"
+else
+  echo "Failed to get expected response from http server"
+  echo "Response:"
+  echo "$response"
+  FAILURE=true
+  exit 1
+fi
+
+# test metrics
+response=$(curl -s http://localhost:$docker_http_port/metrics)
+
+if echo "$response" | grep -q 'axon_http_requests{method="GET",path="/__axon/info",status="200"}'
+then
+  echo "SUCCESS! Got expected metrics response from http server"
+else
+  echo "Failed to get expected metrics response from http server"
+  echo "Response:"
+  echo "$response"
   FAILURE=true
   exit 1
 fi

@@ -10,8 +10,10 @@ import (
 	"github.com/cortexapps/axon/server"
 	"github.com/cortexapps/axon/server/api"
 	"github.com/cortexapps/axon/server/handler"
+	"github.com/cortexapps/axon/server/http"
 	cortexHttp "github.com/cortexapps/axon/server/http"
 	"github.com/cortexapps/axon/server/snykbroker"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/spf13/cobra"
 	"go.uber.org/fx"
 	"go.uber.org/zap"
@@ -43,6 +45,7 @@ func buildCoreAgentStack(cmd *cobra.Command, cfg config.AgentConfig) fx.Option {
 
 	stackOptions := fx.Options(
 		fx.Supply(cfg),
+		fx.Provide(http.NewPrometheusRegistry),
 		fx.Provide(func(config config.AgentConfig) *zap.Logger {
 			cfg := zap.NewDevelopmentConfig()
 
@@ -92,8 +95,8 @@ func createAxonAgent(
 	return agent
 }
 
-func createHttpServer(lifecycle fx.Lifecycle, config config.AgentConfig, logger *zap.Logger, handlerManager handler.Manager) cortexHttp.Server {
-	httpServer := cortexHttp.NewHttpServer(logger)
+func createHttpServer(lifecycle fx.Lifecycle, config config.AgentConfig, logger *zap.Logger, handlerManager handler.Manager, registry *prometheus.Registry) cortexHttp.Server {
+	httpServer := cortexHttp.NewHttpServer(logger, cortexHttp.WithRegistry(registry))
 
 	if config.EnableApiProxy {
 		proxy := api.NewApiProxyHandler(config, logger)
@@ -102,6 +105,11 @@ func createHttpServer(lifecycle fx.Lifecycle, config config.AgentConfig, logger 
 
 	axonHandler := cortexHttp.NewAxonHandler(config, logger, handlerManager)
 	httpServer.RegisterHandler(axonHandler)
+
+	if registry != nil {
+		metricsHandler := cortexHttp.NewMetricsHandler(config, logger, registry)
+		httpServer.RegisterHandler(metricsHandler)
+	}
 
 	lifecycle.Append(fx.Hook{
 		OnStart: func(ctx context.Context) error {
@@ -117,11 +125,11 @@ func createHttpServer(lifecycle fx.Lifecycle, config config.AgentConfig, logger 
 	return httpServer
 }
 
-func createWebhookHttpServer(lifecycle fx.Lifecycle, config config.AgentConfig, logger *zap.Logger, handlerManager handler.Manager) cortexHttp.Server {
+func createWebhookHttpServer(lifecycle fx.Lifecycle, config config.AgentConfig, logger *zap.Logger, handlerManager handler.Manager, registry *prometheus.Registry) cortexHttp.Server {
 
-	httpServer := cortexHttp.NewHttpServer(logger)
+	httpServer := cortexHttp.NewHttpServer(logger, cortexHttp.WithRegistry(registry), cortexHttp.WithName("webhook"))
 
-	handler := cortexHttp.NewWebhookHandler(config, logger, handlerManager)
+	handler := cortexHttp.NewWebhookHandler(config, logger, handlerManager, registry)
 	httpServer.RegisterHandler(handler)
 
 	lifecycle.Append(fx.Hook{

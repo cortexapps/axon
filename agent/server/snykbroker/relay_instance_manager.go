@@ -14,6 +14,8 @@ import (
 	"github.com/cortexapps/axon/common"
 	"github.com/cortexapps/axon/config"
 	cortexHttp "github.com/cortexapps/axon/server/http"
+	"github.com/gorilla/mux"
+	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/fx"
 	"go.uber.org/zap"
 )
@@ -28,14 +30,15 @@ type RelayInstanceManager interface {
 }
 
 type relayInstanceManager struct {
-	integrationInfo common.IntegrationInfo
-	registration    Registration
-	config          config.AgentConfig
-	logger          *zap.Logger
-	supervisor      *Supervisor
-	running         atomic.Bool
-	startCount      atomic.Int32
-	tokenInfo       *tokenInfo
+	integrationInfo   common.IntegrationInfo
+	registration      Registration
+	config            config.AgentConfig
+	logger            *zap.Logger
+	supervisor        *Supervisor
+	running           atomic.Bool
+	startCount        atomic.Int32
+	tokenInfo         *tokenInfo
+	operationsCounter *prometheus.CounterVec
 }
 
 type tokenInfo struct {
@@ -64,15 +67,27 @@ func NewRelayInstanceManager(
 	i common.IntegrationInfo,
 	httpServer cortexHttp.Server,
 	registration Registration,
+	registry *prometheus.Registry,
 ) RelayInstanceManager {
 	mgr := &relayInstanceManager{
 		config:          config,
 		logger:          logger,
 		integrationInfo: i,
 		registration:    registration,
+		operationsCounter: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "broker_operations",
+				Help: "Counter for broker operations",
+			},
+			[]string{"integration", "alias", "operation", "status"},
+		),
 	}
 
 	httpServer.RegisterHandler(mgr)
+
+	if registry != nil {
+		registry.MustRegister(mgr.operationsCounter)
+	}
 
 	lifecycle.Append(fx.Hook{
 		OnStart: func(ctx context.Context) error {
@@ -85,16 +100,25 @@ func NewRelayInstanceManager(
 	return mgr
 }
 
-func (r *relayInstanceManager) RegisterRoutes(mux *http.ServeMux) error {
-	mux.HandleFunc(fmt.Sprintf("%s/broker/restart", cortexHttp.AxonPathRoot), r.handleRestart)
-	mux.HandleFunc(fmt.Sprintf("%s/broker/reregister", cortexHttp.AxonPathRoot), r.handleReregister)
-	mux.HandleFunc(fmt.Sprintf("%s/broker/systemcheck", cortexHttp.AxonPathRoot), r.handleSystemCheck)
+func (r *relayInstanceManager) RegisterRoutes(mux *mux.Router) error {
+	subRouter := mux.PathPrefix(fmt.Sprintf("%s/broker", cortexHttp.AxonPathRoot)).Subrouter()
+	subRouter.HandleFunc("/restart", r.handleRestart)
+	subRouter.HandleFunc("/reregister", r.handleReregister)
+	subRouter.HandleFunc("/systemcheck", r.handleSystemCheck)
 	return nil
 }
 
 func (r *relayInstanceManager) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// should never be called, here just to satisfy the interface
 	w.WriteHeader(http.StatusNotFound)
+}
+
+func (r *relayInstanceManager) emitOperationCounter(operation string, success bool) {
+	status := "success"
+	if !success {
+		status = "failure"
+	}
+	r.operationsCounter.WithLabelValues(r.integrationInfo.Integration.String(), r.integrationInfo.Alias, operation, status).Inc()
 }
 
 func (r *relayInstanceManager) handleRestart(w http.ResponseWriter, req *http.Request) {
@@ -120,6 +144,7 @@ func (r *relayInstanceManager) handleReregister(w http.ResponseWriter, req *http
 	}
 	r.logger.Info("Reregistering broker")
 	info, err := r.getUrlAndToken()
+	r.emitOperationCounter("reregister", err == nil)
 	if err != nil {
 		r.logger.Error("Unable to reregister", zap.Error(err))
 		w.WriteHeader(http.StatusInternalServerError)
@@ -171,9 +196,15 @@ var errSkipBroker = errors.New("NoBrokerToken")
 
 func (r *relayInstanceManager) Restart() error {
 
+	var err error
+
+	defer func() {
+		r.emitOperationCounter("restart", err == nil)
+	}()
+
 	r.logger.Info("Restarting broker, shutting down existing broker")
 	// re-register and restart supervisor
-	err := r.Close()
+	err = r.Close()
 	if err != nil {
 		r.logger.Error("unable to close supervisor on Restart", zap.Error(err))
 	}
@@ -221,6 +252,7 @@ func (r *relayInstanceManager) getUrlAndTokenCore() (string, string, error) {
 	}
 
 	reg, err := r.registration.Register(r.integrationInfo.Integration, r.integrationInfo.Alias)
+	r.emitOperationCounter("register", err == nil)
 	if err != nil {
 		return "", "", err
 	}
@@ -375,11 +407,13 @@ func (r *relayInstanceManager) Start() error {
 		r.startCount.Add(1)
 		supervisor := r.supervisor
 		err = supervisor.Start(5, 10*time.Second)
+		r.emitOperationCounter("broker_start", err == nil)
 		if err != nil {
 			r.logger.Warn("Supervisor has exited upon startup", zap.Error(err))
 			return
 		}
 		err = supervisor.Wait()
+		r.emitOperationCounter("broker_exit", err == nil)
 		if err == nil {
 			r.logger.Info("Supervisor has exited")
 		} else {

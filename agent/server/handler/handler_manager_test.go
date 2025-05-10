@@ -2,11 +2,13 @@ package handler
 
 import (
 	"context"
+	"sort"
 	"testing"
 	"time"
 
 	pb "github.com/cortexapps/axon/.generated/proto/github.com/cortexapps/axon"
 	"github.com/cortexapps/axon/server/cron"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 )
@@ -14,7 +16,7 @@ import (
 func TestNewManager(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 	cron := cron.New()
-	mgr := NewHandlerManager(logger, cron)
+	mgr := NewHandlerManager(logger, cron, prometheus.NewRegistry())
 
 	require.NotNil(t, mgr)
 }
@@ -33,7 +35,7 @@ func FixtureHandlerOption() *pb.HandlerOption {
 func TestRegisterHandler(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 	cron := cron.New()
-	mgr := NewHandlerManager(logger, cron)
+	mgr := NewHandlerManager(logger, cron, nil)
 
 	id, err := mgr.RegisterHandler("1", "handler1", defaultTimeout, FixtureHandlerOption())
 	require.NoError(t, err)
@@ -56,7 +58,7 @@ func TestRegisterHandler(t *testing.T) {
 func TestUnregisterHandler(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 	cron := cron.New()
-	mgr := NewHandlerManager(logger, cron)
+	mgr := NewHandlerManager(logger, cron, nil)
 
 	id, err := mgr.RegisterHandler("1", "handler1", defaultTimeout, FixtureHandlerOption())
 	require.NoError(t, err)
@@ -70,7 +72,7 @@ func TestUnregisterHandler(t *testing.T) {
 func TestClearHandlers(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 	cron := cron.New()
-	mgr := NewHandlerManager(logger, cron)
+	mgr := NewHandlerManager(logger, cron, nil)
 
 	_, err := mgr.RegisterHandler("1", "handler1", defaultTimeout, FixtureHandlerOption())
 	require.NoError(t, err)
@@ -84,7 +86,8 @@ func TestClearHandlers(t *testing.T) {
 func TestTriggerAndDequeue(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 	cron := cron.New()
-	mgr := NewHandlerManager(logger, cron)
+	registry := prometheus.NewRegistry()
+	mgr := NewHandlerManager(logger, cron, registry)
 
 	id, err := mgr.RegisterHandler("1", "handler1", defaultTimeout, FixtureHandlerOption())
 	require.NoError(t, err)
@@ -102,12 +105,34 @@ func TestTriggerAndDequeue(t *testing.T) {
 	require.NotNil(t, h)
 	require.Equal(t, "handler1", h.GetEntry().Name())
 	require.Equal(t, defaultTimeout, h.GetEntry().Timeout())
+	invoke.Complete("ok", nil)
+
+	time.Sleep(time.Millisecond * 10)
+	metrics, err := registry.Gather()
+	require.NoError(t, err)
+	require.Equal(t, 3, len(metrics))
+
+	expected := []string{
+		"axon_handler_invokes",
+		"axon_handler_latency",
+		"axon_handler_queue_depth",
+	}
+	sort.Strings(expected)
+	seen := []string{}
+
+	for _, metric := range metrics {
+		seen = append(seen, metric.GetName())
+	}
+
+	sort.Strings(seen)
+	require.Equal(t, expected, seen)
+
 }
 
 func TestTriggerAndDequeueNotStarted(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 	cron := cron.New()
-	mgr := NewHandlerManager(logger, cron)
+	mgr := NewHandlerManager(logger, cron, nil)
 
 	id, err := mgr.RegisterHandler("1", "handler1", defaultTimeout, FixtureHandlerOption())
 	require.NoError(t, err)
@@ -123,7 +148,7 @@ func TestTriggerAndDequeueNotStarted(t *testing.T) {
 func TestTriggerAndDequeueCustomTimeout(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 	cron := cron.New()
-	mgr := NewHandlerManager(logger, cron)
+	mgr := NewHandlerManager(logger, cron, nil)
 
 	timeoutMs := int32(1000)
 	timeout := time.Duration(timeoutMs) * time.Millisecond
@@ -150,7 +175,7 @@ func TestTriggerAndDequeueCustomTimeout(t *testing.T) {
 func TestTriggerAndDequeueTimeout(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 	cron := cron.New()
-	mgr := NewHandlerManager(logger, cron)
+	mgr := NewHandlerManager(logger, cron, nil)
 
 	_, err := mgr.RegisterHandler("1", "handler1", defaultTimeout, FixtureHandlerOption())
 	require.NoError(t, err)
@@ -163,7 +188,7 @@ func TestTriggerAndDequeueTimeout(t *testing.T) {
 func TestTriggerAndDequeueTimeoutContext(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 	cron := cron.New()
-	mgr := NewHandlerManager(logger, cron)
+	mgr := NewHandlerManager(logger, cron, nil)
 
 	_, err := mgr.RegisterHandler("1", "handler1", defaultTimeout, FixtureHandlerOption())
 	require.NoError(t, err)

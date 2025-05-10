@@ -10,6 +10,7 @@ import (
 	pb "github.com/cortexapps/axon/.generated/proto/github.com/cortexapps/axon"
 	"github.com/cortexapps/axon/config"
 	"github.com/cortexapps/axon/server/handler"
+	"github.com/gorilla/mux"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -32,6 +33,7 @@ func NewAxonHandler(config config.AgentConfig, logger *zap.Logger, handlerManage
 		logger:         logger,
 		handlerManager: handlerManager,
 	}
+
 	return handler
 }
 
@@ -50,12 +52,14 @@ func (h *axonHandler) grpcClient() (pb.AxonAgentClient, error) {
 	return h.client, nil
 }
 
-func (h *axonHandler) RegisterRoutes(mux *http.ServeMux) error {
-	mux.HandleFunc(AxonPathRoot+"/healthcheck", h.healthcheck)
-	mux.HandleFunc(AxonPathRoot+"/info", h.info)
-	mux.HandleFunc(AxonPathRoot+"/handlers", h.listHandlers)
-	mux.HandleFunc(AxonPathRoot+"/handlers/{handler}", h.getHandler)
-	mux.HandleFunc(AxonPathRoot+"/handlers/{handler}/invoke", h.invokeHandler)
+func (h *axonHandler) RegisterRoutes(mux *mux.Router) error {
+	subRouter := mux.PathPrefix(AxonPathRoot).Subrouter()
+
+	subRouter.HandleFunc("/handlers/{handler}/invoke", h.invokeHandler)
+	subRouter.HandleFunc("/handlers/{handler}", h.getHandler)
+	subRouter.HandleFunc("/handlers", h.listHandlers)
+	subRouter.HandleFunc("/healthcheck", h.healthcheck)
+	subRouter.HandleFunc("/info", h.info)
 	return nil
 }
 
@@ -146,7 +150,8 @@ func (h *axonHandler) getHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	handlerName := r.PathValue("handler")
+	vars := mux.Vars(r)
+	handlerName := vars["handler"]
 
 	client, err := h.grpcClient()
 	if h.returnError(err, w) {
@@ -177,7 +182,13 @@ func (h *axonHandler) invokeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	handlerName := r.PathValue("handler")
+	vars := mux.Vars(r)
+	handlerName := vars["handler"]
+	if handlerName == "" {
+		h.logger.Error("No handler name")
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil {
 		h.logger.Error("Failed to read body", zap.Error(err))
