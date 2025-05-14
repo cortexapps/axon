@@ -76,7 +76,6 @@ func init() {
 	RelayCommand.Flags().StringP("subtype", "s", "", "Integation subtype, integration dependent")
 	RelayCommand.Flags().BoolP("verbose", "v", false, "Verbose mode")
 	RelayCommand.Flags().StringP("alias", "a", "", "The alias to use for the integration")
-	RelayCommand.MarkFlagRequired("integration")
 	RelayCommand.MarkFlagRequired("alias")
 }
 
