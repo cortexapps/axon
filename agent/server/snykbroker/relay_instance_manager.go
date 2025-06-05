@@ -391,6 +391,8 @@ func (r *relayInstanceManager) Start() error {
 			}
 		}
 
+		r.setHttpProxyEnvVars(brokerEnv)
+
 		validationConfig := r.integrationInfo.GetValidationConfig()
 		r.applyClientValidationConfig(validationConfig, brokerEnv)
 
@@ -426,6 +428,26 @@ func (r *relayInstanceManager) Start() error {
 	case <-time.After(r.config.FailWaitTime):
 	}
 	return err
+}
+
+func (r *relayInstanceManager) setHttpProxyEnvVars(brokerEnv map[string]string) {
+
+	httpProxy := os.Getenv("HTTP_PROXY")
+	if httpProxy != "" && brokerEnv["HTTP_PROXY"] == "" {
+		brokerEnv["HTTP_PROXY"] = httpProxy
+	}
+	httpsProxy := os.Getenv("HTTPS_PROXY")
+	if httpsProxy != "" && brokerEnv["HTTPS_PROXY"] == "" {
+		brokerEnv["HTTPS_PROXY"] = httpsProxy
+	}
+	noProxy := os.Getenv("NO_PROXY")
+	if noProxy != "" && brokerEnv["NO_PROXY"] == "" {
+		brokerEnv["NO_PROXY"] = noProxy
+	}
+
+	if r.config.HttpCaCertFilePath != "" {
+		brokerEnv["NODE_EXTRA_CA_CERTS"] = r.config.HttpCaCertFilePath
+	}
 }
 
 func (r *relayInstanceManager) applyClientValidationConfig(validationConfig *common.ValidationConfig, brokerEnv map[string]string) {

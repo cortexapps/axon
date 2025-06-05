@@ -91,6 +91,9 @@
                 "PORT" : "7399",
                 "GITHUB_API": "api.github.com",
                 "GITHUB_GRAPHQL": "api.github.com/graphql",
+                "CACERT_PATH": "${workspaceFolder}/agent/test/certs",
+                "HTTP_PROXY": "au.secureconnect.me:489",
+                "HTTPS_PROXY": "au.secureconnect.me:489",
             }        
         },
 
