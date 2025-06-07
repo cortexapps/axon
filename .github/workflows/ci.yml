@@ -53,3 +53,18 @@ jobs:
       - name: Run Relay Test
         run: |
           make -C agent relay-test
+  helm-test:
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v1
+
+      - name: Render Helm Chart
+        run: |
+          cd examples/relay/helm-chart
+          make test-render

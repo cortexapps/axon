@@ -26,6 +26,8 @@ resources:
     memory: "256Mi"
     cpu: "250m"
 
-# ssl:
-#   DisableTLS: false # set to true to disable SSL verification for DEBUGGING ONLY
-#   certSecretName: # name of the secret containing one or more pem files with the CA certificate(s)
+# proxy:
+#   server:  # set to the proxy server URL, e.g. http://proxy.example.com:8080
+#   noProxy: # a comma-separated list of addresses to exclude from proxying
+#   disableTLS: false # set to true to disable SSL verification for DEBUGGING ONLY
+#   certSecretName: # name of the secret containing a .pem file with the CA certificate

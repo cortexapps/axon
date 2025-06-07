@@ -1,0 +1,71 @@
+---
+# Source: axon-relay/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: axon-config-jira.jira-relay
+  labels:
+    app: axon-relay-jira.jira-relay
+data:
+  SOME_ENV_VAR: "some-value"
+---
+# Source: axon-relay/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: axon-render-test-jira.jira-relay
+  labels:
+    app: axon-relay-jira.jira-relay
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: axon-relay
+  template:
+    metadata:
+      labels:
+        app: axon-relay
+    spec:
+      containers:
+      - name: axon-relay
+        image: "ghcr.io/cortexapps/cortex-axon-agent:some-tag"
+        imagePullPolicy: Alaways
+        env:
+          - name: CA_CERT_PATH
+            value: /etc/ssl/axon-certs
+          - name: HTTP_PROXY
+            value: http://user@password:myproxy.com:8888
+          - name: HTTPS_PROXY
+            value: http://user@password:myproxy.com:8888
+          - name: NO_PROXY
+            value: internal.myproxy.com
+         
+        envFrom:
+        - secretRef:
+            name: axon-secrets
+        - configMapRef:
+            name: axon-config-jira.jira-relay
+        resources:
+          limits:
+            memory: 512Mi
+            cpu: 500m
+          requests:
+            memory: 256Mi
+            cpu: 250m
+        args: 
+          - relay
+          - -i
+          - jira
+          - -s
+          - bearer
+          - -a
+          - jira-relay
+          - -v
+        volumeMounts:
+          - name:  axon-render-test-ssl-cert-volume
+            mountPath: /etc/ssl/axon-certs
+            readOnly: true
+      volumes:
+        - name: axon-render-test-ssl-cert-volume
+          secret:
+            secretName: ca-pem-secret

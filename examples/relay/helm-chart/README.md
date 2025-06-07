@@ -49,7 +49,8 @@ The critical configuration options are:
 For testing in proxy environments, you can set some additional values:
 
 ```yaml
-tls:
+proxy:
+    server: "http://proxy.mycompany.com:8080" # your proxy server
     disableTLS: true # for debugging only, do not use in production
     certSecretName: axon-ca-cert # name of the Kubernetes secret containing the CA cert files
 ```
@@ -64,21 +65,6 @@ The secret should be created like this:
 
 This will then be mounted into the container and picked up by the agent and the Snyk Broker.
 
-Finally you must set the HTTP proxy variables in your `values.yaml` file:
-
-```yaml
-# example for github integration
-relay:
-  integration: github
-  alias: github-relay
-  env:
-    # ...
-    HTTP_PROXY: "http://proxy.mycompany.com:8080" 
-    HTTPS_PROXY: "http://proxy.mycompany.com:8080"
-
-ssl:
-  certSecretName: axon-ca-cert
-```
 
 ## Uninstallation
 

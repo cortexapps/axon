@@ -19,13 +19,23 @@ spec:
         image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
         imagePullPolicy: {{ .Values.image.pullPolicy | default "IfNotPresent" }}
         env:
-          {{- if (.Values.ssl).DisableTLS }}
+          {{- if (.Values.proxy).disableTLS }}
           - name: DISABLE_TLS
             value: "true"
           {{- end }}
-          {{- if or (.Values.ssl).certSecretName }}
+          {{- if or (.Values.proxy).certSecretName }}
           - name: CA_CERT_PATH
             value: /etc/ssl/axon-certs
+          {{- end }}
+          {{- if (.Values.proxy).server }}
+          - name: HTTP_PROXY
+            value: {{ .Values.proxy.server }}
+          - name: HTTPS_PROXY
+            value: {{ .Values.proxy.server }}
+          {{- end }}
+          {{- if (.Values.proxy).noProxy }}
+          - name: NO_PROXY
+            value: {{ .Values.proxy.noProxy }}
           {{- end }}
          
         envFrom:
@@ -53,7 +63,7 @@ spec:
           {{- if .Values.relay.verbose }}
           - -v
           {{- end }}
-      {{- if (.Values.ssl).certSecretName }}
+      {{- if (.Values.proxy).certSecretName }}
         volumeMounts:
           - name:  {{ .Release.Name }}-ssl-cert-volume
             mountPath: /etc/ssl/axon-certs
@@ -61,7 +71,7 @@ spec:
       volumes:
         - name: {{ .Release.Name }}-ssl-cert-volume
           secret:
-            secretName: {{ .Values.ssl.certSecretName }}
+            secretName: {{ .Values.proxy.certSecretName }}
       {{- end }}
 
     
