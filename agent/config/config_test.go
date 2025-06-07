@@ -5,11 +5,34 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cortexapps/axon/util"
 	"github.com/stretchr/testify/require"
 )
 
+func resetEnv() {
+	varsToClear := []string{
+		"CORTEX_API_BASE_URL",
+		"CORTEX_API_TOKEN",
+		"PORT",
+		"HTTP_PORT",
+		"SNYK_BROKER_PORT",
+		"DRYRUN",
+		"DEQUEUE_WAIT_TIME",
+		"CA_CERT_PATH",
+		"DISABLE_TLS",
+	}
+
+	for _, v := range varsToClear {
+		if err := os.Unsetenv(v); err != nil {
+			panic(err)
+		}
+	}
+}
+
 func TestNewAgentEnvConfig_DefaultValues(t *testing.T) {
-	os.Clearenv()
+	oldEnv := util.SaveEnv(false)
+	defer util.RestoreEnv(oldEnv)
+	resetEnv()
 
 	config := NewAgentEnvConfig()
 
@@ -21,6 +44,7 @@ func TestNewAgentEnvConfig_DefaultValues(t *testing.T) {
 }
 
 func TestNewAgentEnvConfig_CustomValues(t *testing.T) {
+	resetEnv()
 	os.Setenv("CORTEX_API_BASE_URL", "https://custom.api.url")
 	os.Setenv("PORT", "12345")
 	os.Setenv("CORTEX_API_TOKEN", "custom_token")
@@ -36,6 +60,7 @@ func TestNewAgentEnvConfig_CustomValues(t *testing.T) {
 }
 
 func TestNewAgentEnvConfig_CustomValues_DRYRUN(t *testing.T) {
+	resetEnv()
 	os.Setenv("CORTEX_API_TOKEN", "custom_token")
 	os.Setenv("DRYRUN", "true")
 
@@ -46,6 +71,7 @@ func TestNewAgentEnvConfig_CustomValues_DRYRUN(t *testing.T) {
 }
 
 func TestNewAgentEnvConfig_InvalidPort(t *testing.T) {
+	resetEnv()
 	os.Setenv("PORT", "invalid")
 
 	defer func() {
@@ -58,6 +84,7 @@ func TestNewAgentEnvConfig_InvalidPort(t *testing.T) {
 }
 
 func TestNewAgentEnvConfig_InvalidDequeueWaitTime(t *testing.T) {
+	resetEnv()
 	os.Setenv("DEQUEUE_WAIT_TIME", "invalid")
 
 	defer func() {
@@ -67,4 +94,16 @@ func TestNewAgentEnvConfig_InvalidDequeueWaitTime(t *testing.T) {
 	}()
 
 	NewAgentEnvConfig()
+}
+
+func TestLoadCaCertsDir(t *testing.T) {
+	oldEnv := util.SaveEnv(false)
+	defer util.RestoreEnv(oldEnv)
+	resetEnv()
+	os.Setenv("CA_CERT_PATH", "/tmp/foo/../bar/certs/cert.pem")
+	os.Setenv("DISABLE_TLS", "true")
+
+	config := NewAgentEnvConfig()
+	require.Equal(t, true, config.HttpDisableTLS)
+	require.Equal(t, "/tmp/bar/certs/cert.pem", config.HttpCaCertFilePath)
 }
