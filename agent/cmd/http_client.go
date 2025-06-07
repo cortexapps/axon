@@ -10,9 +10,10 @@ import (
 	"path/filepath"
 
 	"github.com/cortexapps/axon/config"
+	"go.uber.org/zap"
 )
 
-func createHttpTransport(config config.AgentConfig) *gohttp.Transport {
+func createHttpTransport(config config.AgentConfig, logger *zap.Logger) *gohttp.Transport {
 	tlsConfig := &tls.Config{
 		InsecureSkipVerify: config.HttpDisableTLS,
 	}
@@ -25,10 +26,12 @@ func createHttpTransport(config config.AgentConfig) *gohttp.Transport {
 		if err != nil {
 			panic(fmt.Errorf("error reading CA cert file %s: %v", path, err))
 		}
+		logger.Info("Found custom CA cert", zap.String("path", path))
 		caPEM = append(caPEM, data...)
 	}
 
 	if config.HttpCaCertFilePath != "" {
+		logger.Info("CA_CERT_PATH set, looking for cert files", zap.String("path", config.HttpCaCertFilePath))
 		stat, err := os.Stat(config.HttpCaCertFilePath)
 		if err != nil {
 			panic(fmt.Errorf("error checking CA cert file %s: %v", config.HttpCaCertFilePath, err))

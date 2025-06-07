@@ -5,6 +5,7 @@ import (
 
 	"github.com/cortexapps/axon/config"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 )
 
 func TestLoadCerts(t *testing.T) {
@@ -12,6 +13,6 @@ func TestLoadCerts(t *testing.T) {
 	// It should load certificates and verify their correctness.
 	transport := createHttpTransport(config.AgentConfig{
 		HttpCaCertFilePath: "../test/certs",
-	})
+	}, zap.NewNop())
 	require.NotNil(t, transport)
 }

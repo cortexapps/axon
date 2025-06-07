@@ -50,23 +50,35 @@ For testing in proxy environments, you can set some additional values:
 
 ```yaml
 tls:
-    disasbleTLS: true # for debugging only, do not use in production
-    caCertPath: /etc/ssl/certs/mycert.pem # path to PEM cert file
-    certSecretName: axon-ca-cert # name of the Kubernetes secret containing the CA certs
+    disableTLS: true # for debugging only, do not use in production
+    certSecretName: axon-ca-cert # name of the Kubernetes secret containing the CA cert files
 ```
 
-Choose ONE of `caCertPath` or `certSecretName`. If you use `caCertPath`, the file must be mounted into the container at that path. If you use `certSecretName`, the secret must contain a PEM file or directory of PEM files. The secret will be mounted into the container at `/etc/ssl/axon-certs/`.
+If you use `certSecretName`, the secret must contain a PEM file as a value. The secret will be mounted into the container at `/etc/ssl/axon-certs/`.
 
-If created externally the secret can be created like:
+The secret should be created like this:
 
 ```bash
-
- # specific 
- kubectl create secret generic axon-ca-cert --from-file=path/to/mycert.pem
- # directory
- kubectl create secret generic axon-ca-cert --from-file=path/to/certs
+ kubectl create secret generic axon-ca-cert --from-file=/path/to/my-cert.pem
 ```
 
+This will then be mounted into the container and picked up by the agent and the Snyk Broker.
+
+Finally you must set the HTTP proxy variables in your `values.yaml` file:
+
+```yaml
+# example for github integration
+relay:
+  integration: github
+  alias: github-relay
+  env:
+    # ...
+    HTTP_PROXY: "http://proxy.mycompany.com:8080" 
+    HTTPS_PROXY: "http://proxy.mycompany.com:8080"
+
+ssl:
+  certSecretName: axon-ca-cert
+```
 
 ## Uninstallation
 

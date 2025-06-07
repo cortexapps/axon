@@ -10,6 +10,7 @@ relay:
     #
     # GITHUB_API: "https://api.github.com"
     # GITHUB_GRAPHQL_API: "https://api.github.com/graphql"
+  verbose: false # set to true to enable verbose logging
 
 replicaCount: 2
 
@@ -27,5 +28,4 @@ resources:
 
 # ssl:
 #   DisableTLS: false # set to true to disable SSL verification for DEBUGGING ONLY
-#   caCertPath: # path where PEM files are located
-#   certSecretName: # name of the secret containing a PEM file
+#   certSecretName: # name of the secret containing one or more pem files with the CA certificate(s)

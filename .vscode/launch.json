@@ -81,7 +81,7 @@
                 "-i",
                 "github",
                 "--alias",
-                "relay-github",
+                "relay2",
                 "-v"
             ],
             "envFile": "${workspaceFolder}/.env",
@@ -91,7 +91,9 @@
                 "PORT" : "7399",
                 "GITHUB_API": "api.github.com",
                 "GITHUB_GRAPHQL": "api.github.com/graphql",
-               
+                "CA_CERT_PATH": "/Users/shawn/.mitmproxy",
+                "HTTP_PROXY": "http://127.0.0.1:8080",
+                "HTTPS_PROXY": "http://127.0.0.1:8080",
             }        
         },
 

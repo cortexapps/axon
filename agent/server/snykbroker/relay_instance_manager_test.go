@@ -65,6 +65,20 @@ func TestApplyValidationConfig(t *testing.T) {
 
 }
 
+func TestLoadCertsDir(t *testing.T) {
+	mgr := &relayInstanceManager{}
+
+	path := mgr.getCertFilePath("../../test/certs")
+	assert.Equal(t, "../../test/certs/selfsigned-1.pem", path)
+}
+
+func TestLoadCertsFile(t *testing.T) {
+	mgr := &relayInstanceManager{}
+
+	path := mgr.getCertFilePath("../../test/certs/selfsigned-2.pem")
+	assert.Equal(t, "../../test/certs/selfsigned-2.pem", path)
+}
+
 // POST request successfully restarts supervisor and returns 200 OK
 func TestRelayRestartServer(t *testing.T) {
 	ctrl := gomock.NewController(t)

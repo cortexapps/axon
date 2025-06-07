@@ -188,7 +188,7 @@ The agent supports the following environment variables to handle proxy and TLS:
 * `HTTP_PROXY` - the HTTP proxy to use for outgoing requests
 * `HTTPS_PROXY` - the HTTPS proxy to use for outgoing requests
 * `NO_PROXY` - a comma-separated list of hosts that should not use the proxy
-* `CA_CERT_PATH` - the path to a CA certificate file (or `*.pem` if it is a directory) to use for TLS verification, e.g self signed certificates
+* `CA_CERT_PATH` - the path to directory of `*.pem` files that contain CA certificates to use for TLS verification. Note only the first file in the directory will be used.
 * `DISABLE_TLS` - set to `true` to disable outbound TLS verification, this is useful for self-signed certificates or if you are using a proxy that does not support TLS. Use for debugging only!
 
 
