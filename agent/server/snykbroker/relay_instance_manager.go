@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -391,6 +392,8 @@ func (r *relayInstanceManager) Start() error {
 			}
 		}
 
+		r.setHttpProxyEnvVars(brokerEnv)
+
 		validationConfig := r.integrationInfo.GetValidationConfig()
 		r.applyClientValidationConfig(validationConfig, brokerEnv)
 
@@ -426,6 +429,57 @@ func (r *relayInstanceManager) Start() error {
 	case <-time.After(r.config.FailWaitTime):
 	}
 	return err
+}
+
+func (r *relayInstanceManager) setHttpProxyEnvVars(brokerEnv map[string]string) {
+
+	httpProxy := os.Getenv("HTTP_PROXY")
+	if httpProxy != "" && brokerEnv["HTTP_PROXY"] == "" {
+		brokerEnv["HTTP_PROXY"] = httpProxy
+	}
+	httpsProxy := os.Getenv("HTTPS_PROXY")
+	if httpsProxy != "" && brokerEnv["HTTPS_PROXY"] == "" {
+		brokerEnv["HTTPS_PROXY"] = httpsProxy
+	}
+	noProxy := os.Getenv("NO_PROXY")
+	if noProxy != "" && brokerEnv["NO_PROXY"] == "" {
+		brokerEnv["NO_PROXY"] = noProxy
+	}
+
+	if certPath := r.getCertFilePath(r.config.HttpCaCertFilePath); certPath != "" {
+		brokerEnv["NODE_EXTRA_CA_CERTS"] = certPath
+	}
+}
+
+func (r *relayInstanceManager) getCertFilePath(certPath string) string {
+
+	if certPath == "" {
+		return ""
+	}
+
+	stat, err := os.Stat(certPath)
+
+	if err != nil {
+		r.logger.Error("Error checking CA cert file", zap.String("path", certPath), zap.Error(err))
+		return ""
+	}
+
+	// if it's a directory, pick the first .pem file in the directory
+	if stat.IsDir() {
+		files, err := os.ReadDir(certPath)
+		if err != nil {
+			r.logger.Error("Error reading CA cert directory", zap.String("path", certPath), zap.Error(err))
+			return ""
+		}
+		for _, file := range files {
+			if strings.HasSuffix(file.Name(), ".pem") {
+				certPath = path.Join(certPath, file.Name())
+				break
+			}
+		}
+	}
+
+	return certPath
 }
 
 func (r *relayInstanceManager) applyClientValidationConfig(validationConfig *common.ValidationConfig, brokerEnv map[string]string) {

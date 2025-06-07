@@ -4,6 +4,7 @@ import (
 	"context"
 	_ "embed"
 	"fmt"
+	gohttp "net/http"
 	"os"
 
 	"github.com/cortexapps/axon/config"
@@ -46,6 +47,8 @@ func buildCoreAgentStack(cmd *cobra.Command, cfg config.AgentConfig) fx.Option {
 	stackOptions := fx.Options(
 		fx.Supply(cfg),
 		fx.Provide(http.NewPrometheusRegistry),
+		fx.Provide(createHttpTransport),
+		fx.Provide(createHttpClient),
 		fx.Provide(func(config config.AgentConfig) *zap.Logger {
 			cfg := zap.NewDevelopmentConfig()
 
@@ -99,7 +102,8 @@ func createHttpServer(lifecycle fx.Lifecycle, config config.AgentConfig, logger 
 	httpServer := cortexHttp.NewHttpServer(logger, cortexHttp.WithRegistry(registry))
 
 	if config.EnableApiProxy {
-		proxy := api.NewApiProxyHandler(config, logger)
+		transport := gohttp.DefaultTransport.(*gohttp.Transport).Clone()
+		proxy := api.NewApiProxyHandler(config, logger, transport)
 		httpServer.RegisterHandler(proxy)
 	}
 

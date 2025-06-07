@@ -33,13 +33,18 @@ func (e *RegistrationError) Error() string {
 }
 
 type registration struct {
-	config    config.AgentConfig
-	proxyPort int
+	config     config.AgentConfig
+	proxyPort  int
+	httpClient *http.Client
 }
 
-func NewRegistration(config config.AgentConfig) Registration {
+func NewRegistration(config config.AgentConfig, httpClient *http.Client) Registration {
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
 	return &registration{
-		config: config,
+		config:     config,
+		httpClient: httpClient,
 	}
 }
 
@@ -58,8 +63,6 @@ func (r *registration) Register(integration common.Integration, alias string) (*
 		"%s/api/v1/relay/register",
 		r.config.CortexApiBaseUrl,
 	)
-
-	client := &http.Client{}
 
 	reqBody := &registerRequest{
 		Integration:   integration,
@@ -81,7 +84,7 @@ func (r *registration) Register(integration common.Integration, alias string) (*
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", r.config.CortexApiToken))
 
-	resp, err := client.Do(req)
+	resp, err := r.httpClient.Do(req)
 	if err == net.ErrClosed {
 		return nil, fmt.Errorf("cortex API server not available, check CORTEX_API_BASE_URL")
 	}

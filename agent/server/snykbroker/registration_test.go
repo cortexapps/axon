@@ -29,7 +29,7 @@ func TestRegister_Success(t *testing.T) {
 	)
 	defer server.Close()
 	cfg.CortexApiBaseUrl = server.URL
-	reg := NewRegistration(*cfg)
+	reg := NewRegistration(*cfg, nil)
 
 	resp, err := reg.Register(common.Integration("test_integration"), "test_alias")
 	require.NoError(t, err)
@@ -53,7 +53,7 @@ func TestRegister_Unauthorized(t *testing.T) {
 	)
 	defer server.Close()
 	cfg.CortexApiBaseUrl = server.URL
-	reg := NewRegistration(*cfg)
+	reg := NewRegistration(*cfg, nil)
 
 	resp, err := reg.Register(common.Integration("test_integration"), "test_alias")
 	require.Nil(t, resp)
@@ -76,7 +76,7 @@ func TestRegister_OtherError(t *testing.T) {
 	)
 	defer server.Close()
 	cfg.CortexApiBaseUrl = server.URL
-	reg := NewRegistration(*cfg)
+	reg := NewRegistration(*cfg, nil)
 
 	resp, err := reg.Register(common.Integration("test_integration"), "test_alias")
 	require.Nil(t, resp)
@@ -93,7 +93,7 @@ func TestRegister_ConnectError(t *testing.T) {
 	}
 
 	cfg.CortexApiBaseUrl = "http://123xyz-foobar.com"
-	reg := NewRegistration(*cfg)
+	reg := NewRegistration(*cfg, nil)
 
 	resp, err := reg.Register(common.Integration("test_integration"), "test_alias")
 	require.Nil(t, resp)

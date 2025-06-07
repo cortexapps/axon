@@ -24,7 +24,7 @@ func TestServeHTTP_Success(t *testing.T) {
 	proxy := NewApiProxyHandler(config.AgentConfig{
 		CortexApiBaseUrl: server.URL,
 		CortexApiToken:   "test_token",
-	}, zap.NewNop())
+	}, zap.NewNop(), nil)
 
 	req, err := http.NewRequest("GET", "/cortex-api/test", nil)
 	require.NoError(t, err)
@@ -45,7 +45,7 @@ func TestServeHTTP_Host(t *testing.T) {
 	proxy := NewApiProxyHandler(config.AgentConfig{
 		CortexApiBaseUrl: server.URL,
 		CortexApiToken:   "test_token",
-	}, zap.NewNop())
+	}, zap.NewNop(), nil)
 
 	req, err := http.NewRequest("GET", "/test", nil)
 	require.NoError(t, err)
@@ -71,7 +71,7 @@ func TestServeHTTP_Success_POST(t *testing.T) {
 	proxy := NewApiProxyHandler(config.AgentConfig{
 		CortexApiBaseUrl: server.URL,
 		CortexApiToken:   "test_token",
-	}, zap.NewNop())
+	}, zap.NewNop(), nil)
 
 	req, err := http.NewRequest("POST", "/cortex-api/test", bytes.NewBufferString("xxxyyyzzz"))
 	require.NoError(t, err)
@@ -103,7 +103,7 @@ func TestServeHTTP_Success_POST_Gzip(t *testing.T) {
 	proxy := NewApiProxyHandler(config.AgentConfig{
 		CortexApiBaseUrl: server.URL,
 		CortexApiToken:   "test_token",
-	}, zap.NewNop())
+	}, zap.NewNop(), nil)
 
 	req, err := http.NewRequest("POST", "/cortex-api/test", bytes.NewBufferString("xxxyyyzzz"))
 	require.NoError(t, err)
@@ -134,7 +134,7 @@ func TestServeHTTP_RateLimited(t *testing.T) {
 	proxy := NewApiProxyHandler(config.AgentConfig{
 		CortexApiBaseUrl: server.URL,
 		CortexApiToken:   "test_token",
-	}, zap.NewNop())
+	}, zap.NewNop(), nil)
 
 	req, err := http.NewRequest("POST", "/cortex-api/test", bytes.NewBufferString("xxxyyyzzz"))
 	require.NoError(t, err)
@@ -168,7 +168,7 @@ func TestServeHTTP_RateLimited_Timeout(t *testing.T) {
 	proxy := NewApiProxyHandler(config.AgentConfig{
 		CortexApiBaseUrl: server.URL,
 		CortexApiToken:   "test_token",
-	}, zap.NewNop())
+	}, zap.NewNop(), nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond*5)
 	defer cancel()
@@ -186,7 +186,7 @@ func TestServeHTTP_DryRun(t *testing.T) {
 		CortexApiBaseUrl: "http://example.com",
 		CortexApiToken:   "test_token",
 		DryRun:           true,
-	}, zap.NewNop())
+	}, zap.NewNop(), nil)
 
 	req, err := http.NewRequest("GET", "/cortex-api/test", nil)
 	require.NoError(t, err)
@@ -206,7 +206,7 @@ func TestServeHTTP_Error(t *testing.T) {
 	proxy := NewApiProxyHandler(config.AgentConfig{
 		CortexApiBaseUrl: server.URL,
 		CortexApiToken:   "test_token",
-	}, zap.NewNop())
+	}, zap.NewNop(), nil)
 
 	req, err := http.NewRequest("GET", "/cortex-api/test", nil)
 	require.NoError(t, err)

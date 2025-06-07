@@ -10,6 +10,7 @@ relay:
     #
     # GITHUB_API: "https://api.github.com"
     # GITHUB_GRAPHQL_API: "https://api.github.com/graphql"
+  verbose: false # set to true to enable verbose logging
 
 replicaCount: 2
 
@@ -24,3 +25,7 @@ resources:
   requests:
     memory: "256Mi"
     cpu: "250m"
+
+# ssl:
+#   DisableTLS: false # set to true to disable SSL verification for DEBUGGING ONLY
+#   certSecretName: # name of the secret containing one or more pem files with the CA certificate(s)

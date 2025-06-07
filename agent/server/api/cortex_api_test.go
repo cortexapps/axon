@@ -158,7 +158,7 @@ func mockServer(t *testing.T, cfg config.AgentConfig, handler http.HandlerFunc) 
 	}
 
 	cfg.HttpServerPort = 0
-	proxy := NewApiProxyHandler(cfg, logger)
+	proxy := NewApiProxyHandler(cfg, logger, nil)
 	proxyServer := cortex_http.NewHttpServer(logger)
 	proxyServer.RegisterHandler(proxy)
 	port, err := proxyServer.Start(cfg.HttpServerPort)
