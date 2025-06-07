@@ -44,6 +44,30 @@ The critical configuration options are:
 
 4. Verify the installation via the Cortex UI. Under Settings >> Integrations, create an integration of the type and alias specified above.  Push the "Test Configuration" button to verify. Note that the deployment configured here will report errors until that is created, then will begin to report success.  You can do these steps in any order, but the integration must be created before the deployment will work.
 
+## Adding Secrets for Additional CA certs
+
+For testing in proxy environments, you can set some additional values:
+
+```yaml
+tls:
+    disasbleTLS: true # for debugging only, do not use in production
+    caCertPath: /etc/ssl/certs/mycert.pem # path to PEM cert file
+    certSecretName: axon-ca-cert # name of the Kubernetes secret containing the CA certs
+```
+
+Choose ONE of `caCertPath` or `certSecretName`. If you use `caCertPath`, the file must be mounted into the container at that path. If you use `certSecretName`, the secret must contain a PEM file or directory of PEM files. The secret will be mounted into the container at `/etc/ssl/axon-certs/`.
+
+If created externally the secret can be created like:
+
+```bash
+
+ # specific 
+ kubectl create secret generic axon-ca-cert --from-file=path/to/mycert.pem
+ # directory
+ kubectl create secret generic axon-ca-cert --from-file=path/to/certs
+```
+
+
 ## Uninstallation
 
 To uninstall the chart:

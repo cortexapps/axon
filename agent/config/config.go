@@ -35,7 +35,7 @@ type AgentConfig struct {
 	HandlerHistoryMaxAge       time.Duration
 	HandlerHistoryMaxSizeBytes int64
 
-	HttpDisableTls     bool
+	HttpDisableTLS     bool
 	HttpCaCertFilePath string
 }
 
@@ -198,11 +198,11 @@ func NewAgentEnvConfig() AgentConfig {
 		HandlerHistoryMaxSizeBytes: handlerHistoryMaxSizeBytes,
 	}
 
-	if disableTLS := os.Getenv("DISABLE_TLS"); disableTLS == "true" {
-		cfg.HttpDisableTls = true
+	if DisableTLS := os.Getenv("DISABLE_TLS"); DisableTLS == "true" {
+		cfg.HttpDisableTLS = true
 	}
 
-	if caCertFilePath := os.Getenv("CACERT_PATH"); caCertFilePath != "" {
+	if caCertFilePath := os.Getenv("CA_CERT_PATH"); caCertFilePath != "" {
 		cfg.HttpCaCertFilePath = caCertFilePath
 		cfg.HttpCaCertFilePath = filepath.Clean(cfg.HttpCaCertFilePath)
 	}

@@ -4,3 +4,9 @@ relay:
   env:
     GITHUB_API: "https://api.github.com"
     GITHUB_GRAPHQL: "https://api.github.com/graphql"
+
+
+ssl:
+  DisableTLS: false # set to true to disable SSL verification for DEBUGGING ONLY
+  caCertPath: /Users/shawn/dev/cortex/axon/agent/test/certs # path where PEM files are located
+  # certSecretName: ssl-secret

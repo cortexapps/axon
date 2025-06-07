@@ -181,13 +181,26 @@ response = ctx.cortex_api_call(
 
 When you are ready to invoke Cortex APIs, set the `CORTEX_API_TOKEN` enviornment variable and omit `DRYRUN`. For on-premise installs you'll also need to add `CORTEX_API_BASE_URL` which is the DNS name of your cortex instance eg `https://api.cortex.internal`
 
+## Handling Proxy and TLS
+
+The agent supports the following environment variables to handle proxy and TLS:
+
+* `HTTP_PROXY` - the HTTP proxy to use for outgoing requests
+* `HTTPS_PROXY` - the HTTPS proxy to use for outgoing requests
+* `NO_PROXY` - a comma-separated list of hosts that should not use the proxy
+* `CA_CERT_PATH` - the path to a CA certificate file (or `*.pem` if it is a directory) to use for TLS verification, e.g self signed certificates
+* `DISABLE_TLS` - set to `true` to disable outbound TLS verification, this is useful for self-signed certificates or if you are using a proxy that does not support TLS. Use for debugging only!
+
+
 ## Publishing your code
 
 To publish your app into your environment, you'll need to:
 
 1. Build a docker image using the `Dockerfile` in the project.  This may need to be customized to add more files if needed for the scenario.
 2. Publish this image into your Docker registry
-3. Build a `Deployment` or `Job` Kubernetes manifest that deploys that container into your environment, configuring secrets for passing the `CORTEX_API_TOKEN`
+3. Build a `Deployment` or `Job` Kubernetes manifest that deploys that container into your environment, configuring secrets for passing the `CORTEX_API_TOKEN`.  See the example `examples/relay/docker-compose.yml` and `examples/relay/helm-chart` for examples of how to do this.
+
+
 
 Here you build your docker container:
 

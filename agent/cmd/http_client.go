@@ -14,7 +14,7 @@ import (
 
 func createHttpTransport(config config.AgentConfig) *gohttp.Transport {
 	tlsConfig := &tls.Config{
-		InsecureSkipVerify: config.HttpDisableTls,
+		InsecureSkipVerify: config.HttpDisableTLS,
 	}
 
 	// Load custom CA cert if provided
@@ -48,7 +48,7 @@ func createHttpTransport(config config.AgentConfig) *gohttp.Transport {
 
 	if len(caPEM) > 0 {
 
-		if config.HttpDisableTls {
+		if config.HttpDisableTLS {
 			panic("Cannot use custom CA cert with TLS verification disabled")
 		}
 

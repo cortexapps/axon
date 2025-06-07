@@ -24,3 +24,8 @@ resources:
   requests:
     memory: "256Mi"
     cpu: "250m"
+
+# ssl:
+#   DisableTLS: false # set to true to disable SSL verification for DEBUGGING ONLY
+#   caCertPath: # path where PEM files are located
+#   certSecretName: # name of the secret containing a PEM file
