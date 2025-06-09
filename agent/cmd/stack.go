@@ -98,11 +98,10 @@ func createAxonAgent(
 	return agent
 }
 
-func createHttpServer(lifecycle fx.Lifecycle, config config.AgentConfig, logger *zap.Logger, handlerManager handler.Manager, registry *prometheus.Registry) cortexHttp.Server {
+func createHttpServer(lifecycle fx.Lifecycle, config config.AgentConfig, logger *zap.Logger, handlerManager handler.Manager, registry *prometheus.Registry, transport *gohttp.Transport) cortexHttp.Server {
 	httpServer := cortexHttp.NewHttpServer(logger, cortexHttp.WithRegistry(registry))
 
 	if config.EnableApiProxy {
-		transport := gohttp.DefaultTransport.(*gohttp.Transport).Clone()
 		proxy := api.NewApiProxyHandler(config, logger, transport)
 		httpServer.RegisterHandler(proxy)
 	}
