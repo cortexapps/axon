@@ -10,6 +10,7 @@ import (
 	"github.com/cortexapps/axon/config"
 	"github.com/cortexapps/axon/server"
 	"github.com/cortexapps/axon/server/api"
+	"github.com/cortexapps/axon/server/handler"
 	"github.com/cortexapps/axon/server/http"
 	cortexHttp "github.com/cortexapps/axon/server/http"
 	"github.com/prometheus/client_golang/prometheus"
@@ -34,6 +35,7 @@ var AgentModule = fx.Module("agent",
 	fx.Provide(http.NewPrometheusRegistry),
 	fx.Provide(createHttpTransport),
 	fx.Provide(createHttpClient),
+	fx.Provide(http.NewAxonHandler),
 	fx.Provide(createMainHttpServer),
 	fx.Provide(func(config config.AgentConfig) *zap.Logger {
 
@@ -73,15 +75,24 @@ func initStack(cmd *cobra.Command, cfg config.AgentConfig, integrationInfo commo
 	)
 }
 
-func createMainHttpServer(lifecycle fx.Lifecycle, config config.AgentConfig, logger *zap.Logger, registry *prometheus.Registry, transport *gohttp.Transport) cortexHttp.Server {
+func createMainHttpServer(lifecycle fx.Lifecycle, config config.AgentConfig, logger *zap.Logger, registry *prometheus.Registry, transport *gohttp.Transport, handlerManager handler.Manager) cortexHttp.Server {
 
 	httpServerParams := cortexHttp.HttpServerParams{
-		Logger:   logger,
-		Registry: registry,
-		Handlers: []cortexHttp.RegisterableHandler{},
+		Lifecycle: lifecycle,
+		Logger:    logger,
+		Registry:  registry,
+		Handlers:  []cortexHttp.RegisterableHandler{},
 	}
 
 	httpServer := cortexHttp.NewHttpServer(httpServerParams, cortexHttp.WithPort(config.HttpServerPort))
+
+	params := cortexHttp.AxonHandlerParams{
+		Logger:         logger,
+		Config:         config,
+		HandlerManager: handlerManager,
+	}
+	axonHandler := cortexHttp.NewAxonHandler(params)
+	httpServer.RegisterHandler(axonHandler)
 
 	if config.EnableApiProxy {
 		proxy := api.NewApiProxyHandler(config, logger, transport)
