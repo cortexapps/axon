@@ -6,6 +6,7 @@ import (
 
 	"github.com/cortexapps/axon/common"
 	"github.com/cortexapps/axon/config"
+	"github.com/cortexapps/axon/server/http"
 	"github.com/cortexapps/axon/server/snykbroker"
 	"github.com/spf13/cobra"
 	"go.uber.org/fx"
@@ -83,6 +84,7 @@ func buildRelayStack(cmd *cobra.Command, cfg config.AgentConfig, integrationInfo
 	stack := fx.Options(
 		initStack(cmd, cfg, integrationInfo),
 		AgentModule,
+		http.Module,
 		snykbroker.Module,
 	)
 	return stack

@@ -75,32 +75,44 @@ func initStack(cmd *cobra.Command, cfg config.AgentConfig, integrationInfo commo
 	)
 }
 
-func createMainHttpServer(lifecycle fx.Lifecycle, config config.AgentConfig, logger *zap.Logger, registry *prometheus.Registry, transport *gohttp.Transport, handlerManager handler.Manager) cortexHttp.Server {
+type MainHttpServerParams struct {
+	fx.In
+	Lifecycle      fx.Lifecycle
+	Config         config.AgentConfig
+	Logger         *zap.Logger
+	Registry       *prometheus.Registry
+	Transport      *gohttp.Transport
+	HandlerManager handler.Manager `optional:"true"`
+}
+
+func createMainHttpServer(p MainHttpServerParams) cortexHttp.Server {
 
 	httpServerParams := cortexHttp.HttpServerParams{
-		Lifecycle: lifecycle,
-		Logger:    logger,
-		Registry:  registry,
+		Lifecycle: p.Lifecycle,
+		Logger:    p.Logger,
+		Registry:  p.Registry,
 		Handlers:  []cortexHttp.RegisterableHandler{},
 	}
+
+	config := p.Config
 
 	httpServer := cortexHttp.NewHttpServer(httpServerParams, cortexHttp.WithPort(config.HttpServerPort))
 
 	params := cortexHttp.AxonHandlerParams{
-		Logger:         logger,
-		Config:         config,
-		HandlerManager: handlerManager,
+		Logger:         p.Logger,
+		Config:         p.Config,
+		HandlerManager: p.HandlerManager,
 	}
 	axonHandler := cortexHttp.NewAxonHandler(params)
 	httpServer.RegisterHandler(axonHandler)
 
 	if config.EnableApiProxy {
-		proxy := api.NewApiProxyHandler(config, logger, transport)
+		proxy := api.NewApiProxyHandler(config, p.Logger, p.Transport)
 		httpServer.RegisterHandler(proxy)
 	}
 
-	if registry != nil {
-		metricsHandler := cortexHttp.NewMetricsHandler(config, logger, registry)
+	if p.Registry != nil {
+		metricsHandler := cortexHttp.NewMetricsHandler(config, p.Logger, p.Registry)
 		httpServer.RegisterHandler(metricsHandler)
 	}
 
