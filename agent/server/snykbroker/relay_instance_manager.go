@@ -40,6 +40,9 @@ type relayInstanceManager struct {
 	startCount        atomic.Int32
 	tokenInfo         *tokenInfo
 	operationsCounter *prometheus.CounterVec
+	transport         *http.Transport
+
+	reflector *RegistrationReflector
 }
 
 type tokenInfo struct {
@@ -69,7 +72,9 @@ type RelayInstanceManagerParams struct {
 	IntegrationInfo common.IntegrationInfo
 	HttpServer      cortexHttp.Server
 	Registration    Registration
-	Registry        *prometheus.Registry `optional:"true"`
+	Transport       *http.Transport        `optional:"true"`
+	Registry        *prometheus.Registry   `optional:"true"`
+	Reflector       *RegistrationReflector `optional:"true"`
 }
 
 func NewRelayInstanceManager(
@@ -87,6 +92,7 @@ func NewRelayInstanceManager(
 			},
 			[]string{"integration", "alias", "operation", "status"},
 		),
+		transport: p.Transport,
 	}
 
 	p.HttpServer.RegisterHandler(mgr)
@@ -94,6 +100,8 @@ func NewRelayInstanceManager(
 	if p.Registry != nil {
 		p.Registry.MustRegister(mgr.operationsCounter)
 	}
+
+	mgr.reflector = p.Reflector
 
 	if p.Lifecycle != nil {
 		p.Lifecycle.Append(fx.Hook{
@@ -240,6 +248,11 @@ func (r *relayInstanceManager) getUrlAndToken() (*tokenInfo, error) {
 		r.logger.Info("Registration info has changed", zap.String("uri", tokenInfo.ServerUri), zap.String("token", tokenInfo.Token))
 		tokenInfo.HasChanged = true
 		r.tokenInfo = tokenInfo
+	}
+
+	if r.reflector != nil {
+		r.reflector.SetTargetURI(tokenInfo.ServerUri)
+		tokenInfo.ServerUri = r.reflector.ProxyURI()
 	}
 
 	return tokenInfo, nil
@@ -439,6 +452,11 @@ func (r *relayInstanceManager) Start() error {
 }
 
 func (r *relayInstanceManager) setHttpProxyEnvVars(brokerEnv map[string]string) {
+
+	if r.config.EnableHttpRelayReflector {
+		r.logger.Info("HTTP Relay Reflector is enabled, not setting HTTP_PROXY environment variables")
+		return
+	}
 
 	httpProxy := os.Getenv("HTTP_PROXY")
 	if httpProxy != "" && brokerEnv["HTTP_PROXY"] == "" {
