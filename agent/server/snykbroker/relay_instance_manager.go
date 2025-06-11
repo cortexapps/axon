@@ -453,11 +453,6 @@ func (r *relayInstanceManager) Start() error {
 
 func (r *relayInstanceManager) setHttpProxyEnvVars(brokerEnv map[string]string) {
 
-	if r.config.EnableHttpRelayReflector {
-		r.logger.Info("HTTP Relay Reflector is enabled, not setting HTTP_PROXY environment variables")
-		return
-	}
-
 	httpProxy := os.Getenv("HTTP_PROXY")
 	if httpProxy != "" && brokerEnv["HTTP_PROXY"] == "" {
 		brokerEnv["HTTP_PROXY"] = httpProxy
@@ -473,6 +468,10 @@ func (r *relayInstanceManager) setHttpProxyEnvVars(brokerEnv map[string]string) 
 
 	if certPath := r.getCertFilePath(r.config.HttpCaCertFilePath); certPath != "" {
 		brokerEnv["NODE_EXTRA_CA_CERTS"] = certPath
+	}
+
+	if r.config.HttpDisableTLS {
+		brokerEnv["NODE_TLS_REJECT_UNAUTHORIZED"] = "0"
 	}
 }
 
