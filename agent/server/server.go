@@ -18,6 +18,7 @@ import (
 	"github.com/cortexapps/axon/server/api"
 	"github.com/cortexapps/axon/server/handler"
 
+	"go.uber.org/fx"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -49,19 +50,36 @@ type inflightRequest struct {
 	sentAt    time.Time
 }
 
+type Params struct {
+	fx.In
+	Lifecycle fx.Lifecycle `optional:"true"`
+	Logger    *zap.Logger
+	Config    config.AgentConfig
+	Manager   handler.Manager `optional:"true"`
+}
+
 func NewAxonAgent(
-	logger *zap.Logger,
-	config config.AgentConfig,
-	manager handler.Manager,
+	p Params,
 ) *AxonAgent {
-	logger = logger.Named("axon-server")
+	logger := p.Logger.Named("axon-server")
 	agent := &AxonAgent{
-		config:              config,
+		config:              p.Config,
 		logger:              logger,
-		Manager:             manager,
-		cortexApiServer:     api.NewCortexApiServer(logger, config),
+		Manager:             p.Manager,
+		cortexApiServer:     api.NewCortexApiServer(logger, p.Config),
 		outstandingRequests: make(map[string]inflightRequest),
-		historyManager:      handler.NewHistoryManager(config, logger),
+		historyManager:      handler.NewHistoryManager(p.Config, logger),
+	}
+
+	if p.Lifecycle != nil {
+
+		p.Lifecycle.Append(
+			fx.Hook{
+				OnStart: func(ctx context.Context) error {
+					return agent.Start(ctx)
+				},
+			},
+		)
 	}
 
 	return agent

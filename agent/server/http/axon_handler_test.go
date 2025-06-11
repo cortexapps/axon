@@ -39,7 +39,12 @@ func TestInvokeEndpoint(t *testing.T) {
 	err = manager.Start("1")
 	require.NoError(t, err)
 
-	axonHandler := NewAxonHandler(config.AgentConfig{}, logger, manager)
+	axonHandlerParams := AxonHandlerParams{
+		Logger:         logger,
+		Config:         config.AgentConfig{},
+		HandlerManager: manager,
+	}
+	axonHandler := NewAxonHandler(axonHandlerParams)
 	mux := mux.NewRouter()
 	axonHandler.RegisterRoutes(mux)
 	ts := httptest.NewServer(mux)
@@ -93,7 +98,12 @@ func TestInvokeEndpointErr(t *testing.T) {
 	err = manager.Start("1")
 	require.NoError(t, err)
 
-	axonHandler := NewAxonHandler(config.AgentConfig{}, logger, manager)
+	axonHandlerParams := AxonHandlerParams{
+		Logger:         logger,
+		Config:         config.AgentConfig{},
+		HandlerManager: manager,
+	}
+	axonHandler := NewAxonHandler(axonHandlerParams)
 	mux := mux.NewRouter()
 	axonHandler.RegisterRoutes(mux)
 	ts := httptest.NewServer(mux)

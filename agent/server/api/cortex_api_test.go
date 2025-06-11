@@ -159,9 +159,12 @@ func mockServer(t *testing.T, cfg config.AgentConfig, handler http.HandlerFunc) 
 
 	cfg.HttpServerPort = 0
 	proxy := NewApiProxyHandler(cfg, logger, nil)
-	proxyServer := cortex_http.NewHttpServer(logger)
+	httpServerParams := cortex_http.HttpServerParams{
+		Logger: logger,
+	}
+	proxyServer := cortex_http.NewHttpServer(httpServerParams, cortex_http.WithName("mock"), cortex_http.WithPort(cfg.HttpServerPort))
 	proxyServer.RegisterHandler(proxy)
-	port, err := proxyServer.Start(cfg.HttpServerPort)
+	port, err := proxyServer.Start()
 	require.NoError(t, err)
 
 	cfg.HttpServerPort = port

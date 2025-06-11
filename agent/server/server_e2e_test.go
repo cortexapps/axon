@@ -15,6 +15,7 @@ import (
 	"github.com/cortexapps/axon/server/cron"
 	"github.com/cortexapps/axon/server/handler"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/fx/fxtest"
 	"go.uber.org/zap"
 )
 
@@ -39,11 +40,18 @@ func TestGRPCServer_RegisterHandlerAndDispatch(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 	manager := handler.NewHandlerManager(logger, cron.New(), nil)
 
-	agent := NewAxonAgent(logger, config, manager)
+	lifecycle := fxtest.NewLifecycle(t)
+
+	agent := NewAxonAgent(Params{
+		Lifecycle: lifecycle,
+		Logger:    logger,
+		Config:    config,
+		Manager:   manager,
+	})
 	defer agent.Close()
 
 	go func() {
-		if err := agent.Start(context.Background()); err != nil {
+		if err := lifecycle.Start(context.Background()); err != nil {
 			panic(err)
 		}
 	}()
@@ -138,7 +146,11 @@ func TestGRPCServer_RegisterHandlerAndDispatchInvoke(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 	manager := handler.NewHandlerManager(logger, cron.New(), nil)
 
-	agent := NewAxonAgent(logger, config, manager)
+	agent := NewAxonAgent(Params{
+		Logger:  logger,
+		Config:  config,
+		Manager: manager,
+	})
 	defer agent.Close()
 
 	go func() {
@@ -249,7 +261,11 @@ func TestGRPCServer_ClientAutoClose(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 	manager := handler.NewHandlerManager(logger, cron.New(), nil)
 
-	agent := NewAxonAgent(logger, config, manager)
+	agent := NewAxonAgent(Params{
+		Logger:  logger,
+		Config:  config,
+		Manager: manager,
+	})
 	defer agent.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

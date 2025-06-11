@@ -59,7 +59,7 @@ func (r *registration) Register(integration common.Integration, alias string) (*
 	// Broker token
 
 	// Define the URL
-	url := fmt.Sprintf(
+	target := fmt.Sprintf(
 		"%s/api/v1/relay/register",
 		r.config.CortexApiBaseUrl,
 	)
@@ -76,7 +76,7 @@ func (r *registration) Register(integration common.Integration, alias string) (*
 		return nil, fmt.Errorf("error marshalling request body: %v", err)
 	}
 
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonBody))
+	req, err := http.NewRequest("POST", target, bytes.NewBuffer(jsonBody))
 	if err != nil {
 		fmt.Printf("Error creating request: %v\n", err)
 		panic(err)
@@ -91,6 +91,7 @@ func (r *registration) Register(integration common.Integration, alias string) (*
 	if err != nil {
 		re := &RegistrationError{error: err, Message: "error making relay registration request"}
 		fmt.Println("Error: ", re)
+
 		return nil, &RegistrationError{error: err, Message: "error making relay registration request"}
 	}
 

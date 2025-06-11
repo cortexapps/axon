@@ -11,6 +11,7 @@ import (
 	"github.com/cortexapps/axon/config"
 	"github.com/cortexapps/axon/server/handler"
 	"github.com/gorilla/mux"
+	"go.uber.org/fx"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -26,12 +27,20 @@ type axonHandler struct {
 	handlerManager handler.Manager
 }
 
-func NewAxonHandler(config config.AgentConfig, logger *zap.Logger, handlerManager handler.Manager) RegisterableHandler {
+type AxonHandlerParams struct {
+	fx.In
+	Lifecycle      fx.Lifecycle `optional:"true"`
+	Logger         *zap.Logger
+	Config         config.AgentConfig
+	HandlerManager handler.Manager `optional:"true"`
+}
+
+func NewAxonHandler(p AxonHandlerParams) RegisterableHandler {
 
 	handler := &axonHandler{
-		config:         config,
-		logger:         logger,
-		handlerManager: handlerManager,
+		config:         p.Config,
+		logger:         p.Logger,
+		handlerManager: p.HandlerManager,
 	}
 
 	return handler

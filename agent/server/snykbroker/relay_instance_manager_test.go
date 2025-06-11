@@ -247,15 +247,19 @@ func createTestRelayInstanceManager(t *testing.T, controller *gomock.Controller,
 
 	registry := prometheus.NewRegistry()
 
+	params := RelayInstanceManagerParams{
+		Lifecycle:       lifecycle,
+		Config:          config,
+		Logger:          logger,
+		IntegrationInfo: ii,
+		HttpServer:      mockServer,
+		Registration:    mockRegistration,
+		Registry:        registry,
+	}
+
 	return &wrappedRelayInstanceManager{
 		RelayInstanceManager: NewRelayInstanceManager(
-			lifecycle,
-			config,
-			logger,
-			ii,
-			mockServer,
-			mockRegistration,
-			registry,
+			params,
 		),
 		mockRegistration: mockRegistration,
 	}

@@ -82,7 +82,7 @@ func TestRegister_OtherError(t *testing.T) {
 	require.Nil(t, resp)
 	require.IsType(t, err, &RegistrationError{})
 	re := err.(*RegistrationError)
-	require.Equal(t, re.StatusCode, http.StatusBadGateway)
+	require.Equal(t, http.StatusBadGateway, re.StatusCode)
 }
 
 func TestRegister_ConnectError(t *testing.T) {
@@ -92,15 +92,20 @@ func TestRegister_ConnectError(t *testing.T) {
 		InstanceId:     uuid.New().String(),
 	}
 
-	cfg.CortexApiBaseUrl = "http://123xyz-foobar.com"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Fail(t, "This server should not be called")
+	}))
+	server.Close()
+
+	cfg.CortexApiBaseUrl = server.URL
 	reg := NewRegistration(*cfg, nil)
 
 	resp, err := reg.Register(common.Integration("test_integration"), "test_alias")
 	require.Nil(t, resp)
 	require.IsType(t, err, &RegistrationError{})
 	re := err.(*RegistrationError)
-	require.Equal(t, re.StatusCode, 0)
-	require.IsType(t, re.error, &url.Error{})
+	require.Equal(t, 0, re.StatusCode)
+	require.IsType(t, &url.Error{}, re.error)
 }
 
 func createMockRegistrationServer(

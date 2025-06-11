@@ -61,20 +61,25 @@ func (t *tokenInfo) equals(other *tokenInfo) bool {
 	return true
 }
 
+type RelayInstanceManagerParams struct {
+	fx.In
+	Lifecycle       fx.Lifecycle `optional:"true"`
+	Config          config.AgentConfig
+	Logger          *zap.Logger
+	IntegrationInfo common.IntegrationInfo
+	HttpServer      cortexHttp.Server
+	Registration    Registration
+	Registry        *prometheus.Registry `optional:"true"`
+}
+
 func NewRelayInstanceManager(
-	lifecycle fx.Lifecycle,
-	config config.AgentConfig,
-	logger *zap.Logger,
-	i common.IntegrationInfo,
-	httpServer cortexHttp.Server,
-	registration Registration,
-	registry *prometheus.Registry,
+	p RelayInstanceManagerParams,
 ) RelayInstanceManager {
 	mgr := &relayInstanceManager{
-		config:          config,
-		logger:          logger,
-		integrationInfo: i,
-		registration:    registration,
+		config:          p.Config,
+		logger:          p.Logger,
+		integrationInfo: p.IntegrationInfo,
+		registration:    p.Registration,
 		operationsCounter: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
 				Name: "broker_operations",
@@ -84,20 +89,22 @@ func NewRelayInstanceManager(
 		),
 	}
 
-	httpServer.RegisterHandler(mgr)
+	p.HttpServer.RegisterHandler(mgr)
 
-	if registry != nil {
-		registry.MustRegister(mgr.operationsCounter)
+	if p.Registry != nil {
+		p.Registry.MustRegister(mgr.operationsCounter)
 	}
 
-	lifecycle.Append(fx.Hook{
-		OnStart: func(ctx context.Context) error {
-			return mgr.Start()
-		},
-		OnStop: func(ctx context.Context) error {
-			return mgr.Close()
-		},
-	})
+	if p.Lifecycle != nil {
+		p.Lifecycle.Append(fx.Hook{
+			OnStart: func(ctx context.Context) error {
+				return mgr.Start()
+			},
+			OnStop: func(ctx context.Context) error {
+				return mgr.Close()
+			},
+		})
+	}
 	return mgr
 }
 
