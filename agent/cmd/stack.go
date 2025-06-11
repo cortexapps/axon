@@ -4,6 +4,7 @@ import (
 	"context"
 	_ "embed"
 	"fmt"
+	gohttp "net/http"
 	"os"
 
 	"github.com/cortexapps/axon/config"
@@ -46,6 +47,8 @@ func buildCoreAgentStack(cmd *cobra.Command, cfg config.AgentConfig) fx.Option {
 	stackOptions := fx.Options(
 		fx.Supply(cfg),
 		fx.Provide(http.NewPrometheusRegistry),
+		fx.Provide(createHttpTransport),
+		fx.Provide(createHttpClient),
 		fx.Provide(func(config config.AgentConfig) *zap.Logger {
 			cfg := zap.NewDevelopmentConfig()
 
@@ -95,11 +98,11 @@ func createAxonAgent(
 	return agent
 }
 
-func createHttpServer(lifecycle fx.Lifecycle, config config.AgentConfig, logger *zap.Logger, handlerManager handler.Manager, registry *prometheus.Registry) cortexHttp.Server {
+func createHttpServer(lifecycle fx.Lifecycle, config config.AgentConfig, logger *zap.Logger, handlerManager handler.Manager, registry *prometheus.Registry, transport *gohttp.Transport) cortexHttp.Server {
 	httpServer := cortexHttp.NewHttpServer(logger, cortexHttp.WithRegistry(registry))
 
 	if config.EnableApiProxy {
-		proxy := api.NewApiProxyHandler(config, logger)
+		proxy := api.NewApiProxyHandler(config, logger, transport)
 		httpServer.RegisterHandler(proxy)
 	}
 

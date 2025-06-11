@@ -25,7 +25,7 @@ import (
 const cortexApiRoot = "cortex-api"
 const cortexApiPathRoot = "/cortex-api/"
 
-func NewApiProxyHandler(config config.AgentConfig, logger *zap.Logger) cortex_http.RegisterableHandler {
+func NewApiProxyHandler(config config.AgentConfig, logger *zap.Logger, httpTransport *http.Transport) cortex_http.RegisterableHandler {
 	targetURL, err := url.Parse(config.CortexApiBaseUrl)
 	if err != nil {
 		panic(fmt.Errorf("failed to parse target URL: %w", err))
@@ -39,6 +39,9 @@ func NewApiProxyHandler(config config.AgentConfig, logger *zap.Logger) cortex_ht
 	proxy.Director = func(req *http.Request) {
 		defaultDirector(req)
 		req.Host = targetURL.Host
+	}
+	if httpTransport != nil {
+		proxy.Transport = httpTransport
 	}
 	return &apiProxyHandler{
 		proxy:  proxy,

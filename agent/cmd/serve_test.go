@@ -8,13 +8,15 @@ import (
 
 	"github.com/cortexapps/axon/common"
 	"github.com/cortexapps/axon/config"
+	"github.com/cortexapps/axon/util"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/fx"
 )
 
 func TestBuildServeStack(t *testing.T) {
-
+	oldEnv := util.SaveEnv(false)
+	defer util.RestoreEnv(oldEnv)
 	os.Setenv("DRYRUN", "true")
 	os.Setenv("PORT", "0")
 	config := config.NewAgentEnvConfig()
@@ -52,6 +54,9 @@ func TestBuildServeStackLive(t *testing.T) {
 }
 
 func TestBuildRelayStack(t *testing.T) {
+
+	oldEnv := util.SaveEnv(false)
+	defer util.RestoreEnv(oldEnv)
 
 	envVars := map[string]string{
 		"DRYRUN":            "true",

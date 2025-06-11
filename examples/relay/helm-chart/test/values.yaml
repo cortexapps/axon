@@ -1,0 +1,22 @@
+
+relay:
+  integration: jira
+  alias: jira-relay
+  subtype: bearer
+  env:
+    SOME_ENV_VAR: "some-value"
+  verbose: true
+
+replicaCount: 1
+
+image:
+  repository: ghcr.io/cortexapps/cortex-axon-agent
+  tag: some-tag
+  pullPolicy: Alaways
+
+
+proxy:
+  server: http://user@password:myproxy.com:8888
+  noProxy: internal.myproxy.com
+  disableTLS: false 
+  certSecretName: ca-pem-secret

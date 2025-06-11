@@ -17,7 +17,27 @@ spec:
       containers:
       - name: {{ .Chart.Name }}
         image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
-        imagePullPolicy: IfNotPresent
+        imagePullPolicy: {{ .Values.image.pullPolicy | default "IfNotPresent" }}
+        env:
+          {{- if (.Values.proxy).disableTLS }}
+          - name: DISABLE_TLS
+            value: "true"
+          {{- end }}
+          {{- if or (.Values.proxy).certSecretName }}
+          - name: CA_CERT_PATH
+            value: /etc/ssl/axon-certs
+          {{- end }}
+          {{- if (.Values.proxy).server }}
+          - name: HTTP_PROXY
+            value: {{ .Values.proxy.server }}
+          - name: HTTPS_PROXY
+            value: {{ .Values.proxy.server }}
+          {{- end }}
+          {{- if (.Values.proxy).noProxy }}
+          - name: NO_PROXY
+            value: {{ .Values.proxy.noProxy }}
+          {{- end }}
+         
         envFrom:
         - secretRef:
             name: axon-secrets
@@ -40,4 +60,18 @@ spec:
           {{- end }}
           - -a
           - {{ .Values.relay.alias }}
+          {{- if .Values.relay.verbose }}
+          - -v
+          {{- end }}
+      {{- if (.Values.proxy).certSecretName }}
+        volumeMounts:
+          - name:  {{ .Release.Name }}-ssl-cert-volume
+            mountPath: /etc/ssl/axon-certs
+            readOnly: true
+      volumes:
+        - name: {{ .Release.Name }}-ssl-cert-volume
+          secret:
+            secretName: {{ .Values.proxy.certSecretName }}
+      {{- end }}
 
+    

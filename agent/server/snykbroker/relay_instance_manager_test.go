@@ -4,12 +4,14 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 	"time"
 
 	"github.com/cortexapps/axon/common"
 	"github.com/cortexapps/axon/config"
 	cortex_http "github.com/cortexapps/axon/server/http"
+	"github.com/cortexapps/axon/util"
 	"github.com/gorilla/mux"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
@@ -62,6 +64,44 @@ func TestApplyValidationConfig(t *testing.T) {
 	assert.Equal(t, "https://api.github.com/user", envVars["BROKER_CLIENT_VALIDATION_URL"])
 	assert.Equal(t, "POST", envVars["BROKER_CLIENT_VALIDATION_METHOD"])
 	assert.Equal(t, "bearer the-token", envVars["BROKER_CLIENT_VALIDATION_AUTHORIZATION_HEADER"])
+
+}
+
+func TestLoadCertsDir(t *testing.T) {
+	mgr := &relayInstanceManager{}
+
+	path := mgr.getCertFilePath("../../test/certs")
+	assert.Equal(t, "../../test/certs/selfsigned-1.pem", path)
+}
+
+func TestLoadCertsFile(t *testing.T) {
+	mgr := &relayInstanceManager{}
+
+	path := mgr.getCertFilePath("../../test/certs/selfsigned-2.pem")
+	assert.Equal(t, "../../test/certs/selfsigned-2.pem", path)
+}
+
+func TestHttpProxy(t *testing.T) {
+	oldEnv := util.SaveEnv(false)
+	defer util.RestoreEnv(oldEnv)
+	os.Setenv("HTTP_PROXY", "http://proxy.example.com:8080")
+	os.Setenv("HTTPS_PROXY", "http://proxy.example.com:8080")
+	os.Setenv("NO_PROXY", "localhost")
+
+	cfg := config.AgentConfig{
+		HttpCaCertFilePath: "../../test/certs/selfsigned-1.pem",
+	}
+
+	mgr := &relayInstanceManager{
+		config: cfg,
+	}
+	env := map[string]string{}
+	mgr.setHttpProxyEnvVars(env)
+
+	assert.Equal(t, "http://proxy.example.com:8080", env["HTTP_PROXY"])
+	assert.Equal(t, "http://proxy.example.com:8080", env["HTTPS_PROXY"])
+	assert.Equal(t, "localhost", env["NO_PROXY"])
+	assert.Equal(t, cfg.HttpCaCertFilePath, env["NODE_EXTRA_CA_CERTS"])
 
 }
 

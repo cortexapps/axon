@@ -32,10 +32,11 @@ COPY /scaffold/. /app/scaffold/.
 COPY docker/start /agent/start
 COPY docker/entrypoint.sh /agent/entrypoint.sh
 COPY docker/app_entrypoint.sh /app/app_entrypoint.sh
-
+COPY docker/scripts /agent/scripts
 
 ENV CORTEX_API_BASE_URL=https://api.getcortexapp.com
 ENV HANDLER_HISTORY_PATH=/var/log/axon/history
+ENV NODE_OPTIONS=--use-openssl-ca
 
 EXPOSE 50051
 

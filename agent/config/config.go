@@ -34,6 +34,9 @@ type AgentConfig struct {
 	HandlerHistoryPath         string
 	HandlerHistoryMaxAge       time.Duration
 	HandlerHistoryMaxSizeBytes int64
+
+	HttpDisableTLS     bool
+	HttpCaCertFilePath string
 }
 
 func (ac AgentConfig) Print() {
@@ -166,7 +169,7 @@ func NewAgentEnvConfig() AgentConfig {
 		token = "dry-run"
 	}
 
-	reregisterFrequency := time.Minute * 15
+	reregisterFrequency := time.Minute * 5
 	if reregisterFrequencyEnv := os.Getenv("AUTO_REGISTER_FREQUENCY"); reregisterFrequencyEnv != "" {
 		var err error
 		reregisterFrequency, err = time.ParseDuration(reregisterFrequencyEnv)
@@ -194,5 +197,15 @@ func NewAgentEnvConfig() AgentConfig {
 		HandlerHistoryMaxAge:       handlerHistoryMaxAge,
 		HandlerHistoryMaxSizeBytes: handlerHistoryMaxSizeBytes,
 	}
+
+	if DisableTLS := os.Getenv("DISABLE_TLS"); DisableTLS == "true" {
+		cfg.HttpDisableTLS = true
+	}
+
+	if caCertFilePath := os.Getenv("CA_CERT_PATH"); caCertFilePath != "" {
+		cfg.HttpCaCertFilePath = caCertFilePath
+		cfg.HttpCaCertFilePath = filepath.Clean(cfg.HttpCaCertFilePath)
+	}
+
 	return cfg
 }
