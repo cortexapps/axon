@@ -2,7 +2,7 @@ FROM debian:bookworm-slim
 WORKDIR /agent
 
 # Install dependencies
-RUN apt update && apt install -y protobuf-compiler git python3.11 python3.11-venv wget build-essential
+RUN apt update && apt install -y protobuf-compiler git python3.11 python3.11-venv wget build-essential ca-certificates openssl
 
 # Install NodeJS and Snyk Broker
 ENV NODE_VERSION=20
@@ -38,6 +38,17 @@ ENV CORTEX_API_BASE_URL=https://api.getcortexapp.com
 ENV HANDLER_HISTORY_PATH=/var/log/axon/history
 
 EXPOSE 50051
+
+COPY .certs/ agent/.certs/
+
+ENV NODE_OPTIONS=--use-openssl-ca
+RUN if ls agent/.certs/*.crt >/dev/null 2>&1; then \
+        echo "Copying certificates to /usr/local/share/ca-certificates/"; \
+        cp agent/.certs/*.crt /usr/local/share/ca-certificates/ && \
+        echo "Updating CA certificates: $(ls /usr/local/share/ca-certificates/)"; \
+        update-ca-certificates >&2;  \
+    fi
+
 
 ENTRYPOINT [ "/agent/entrypoint.sh" ]
 CMD [ "serve" ]

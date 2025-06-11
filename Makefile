@@ -15,7 +15,7 @@ run-agent:
 DOCKER_TAG ?= cortex-axon-agent:local
 
 docker-build: docker/Dockerfile
-	docker build -t $(DOCKER_TAG) -f $< .
+	docker build -t $(DOCKER_TAG) --progress=plain -f $< .
 .PHONY: docker-build
 
 setup:
