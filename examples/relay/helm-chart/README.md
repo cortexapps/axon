@@ -46,7 +46,7 @@ The critical configuration options are:
 
 ## Adding Secrets for Additional CA certs
 
-For testing in proxy environments, you can set some additional values:
+For running in proxy environments, you can set some additional values:
 
 ```yaml
 proxy:
