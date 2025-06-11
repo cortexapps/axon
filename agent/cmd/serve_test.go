@@ -2,17 +2,31 @@ package cmd
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"testing"
 	"time"
 
 	"github.com/cortexapps/axon/common"
 	"github.com/cortexapps/axon/config"
+	cortexHttp "github.com/cortexapps/axon/server/http"
+	"github.com/cortexapps/axon/server/snykbroker"
 	"github.com/cortexapps/axon/util"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/fx"
 )
+
+func buildServeStack(cmd *cobra.Command, config config.AgentConfig) fx.Option {
+
+	return fx.Options(
+		initStack(cmd, config, common.IntegrationInfo{}),
+		AgentModule,
+		cortexHttp.Module,
+		snykbroker.Module,
+	)
+}
 
 func TestBuildServeStack(t *testing.T) {
 	oldEnv := util.SaveEnv(false)
@@ -36,7 +50,13 @@ func TestBuildServeStack(t *testing.T) {
 
 func TestBuildServeStackLive(t *testing.T) {
 
+	// create a fake server that serves http://localhost:xxx/relay/register
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	}))
+	defer server.Close()
+
 	os.Setenv("CORTEX_API_TOKEN", "xxxyyyzzz")
+	os.Setenv("CORTEX_API_BASE_URL", server.URL)
 	os.Setenv("PORT", "0")
 	config := config.NewAgentEnvConfig()
 	config.HttpServerPort = 0
@@ -51,6 +71,7 @@ func TestBuildServeStackLive(t *testing.T) {
 	err := app.Start(context.Background())
 	require.NoError(t, err)
 	app.Stop(context.Background())
+
 }
 
 func TestBuildRelayStack(t *testing.T) {

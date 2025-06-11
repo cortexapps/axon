@@ -7,7 +7,7 @@ import (
 
 	"github.com/cortexapps/axon/common"
 	"github.com/cortexapps/axon/config"
-	"github.com/cortexapps/axon/server/cron"
+	"github.com/cortexapps/axon/server/http"
 	"github.com/cortexapps/axon/server/snykbroker"
 	"github.com/spf13/cobra"
 	"go.uber.org/fx"
@@ -35,7 +35,20 @@ var serveCmd = &cobra.Command{
 		}
 
 		config.Print()
-		startAgent(buildServeStack(cmd, config))
+
+		info := common.IntegrationInfo{
+			Integration: common.IntegrationCustom,
+			Alias:       config.IntegrationAlias,
+		}
+
+		stack := fx.Options(
+			initStack(cmd, config, info),
+			AgentModule,
+			http.Module,
+			snykbroker.Module,
+		)
+
+		startAgent(stack)
 		fmt.Println("Server stopped")
 	},
 }
@@ -44,30 +57,4 @@ func init() {
 	serveCmd.Flags().Bool("dry-run", false, "Dry run mode")
 	serveCmd.Flags().BoolP("verbose", "v", false, "Verbose mode")
 	serveCmd.Flags().StringP("alias", "a", "customer-agent", "Alias (identifier) for this agent type")
-}
-
-// buildServeStack builds the fx dependency injection stack for the agent
-func buildServeStack(cmd *cobra.Command, cfg config.AgentConfig) fx.Option {
-
-	opts := []fx.Option{
-		buildCoreAgentStack(cmd, cfg),
-		fx.Supply(common.IntegrationInfo{
-			Integration: common.IntegrationCustom,
-			Alias:       cfg.IntegrationAlias,
-		}),
-		fx.Provide(createHttpServer),
-		fx.Provide(cron.New),
-		fx.Invoke(createWebhookHttpServer),
-	}
-
-	if !cfg.DryRun || os.Getenv("BROKER_TOKEN") != "" {
-		// we only start the broker if we have a token
-		opts = append(opts,
-			fx.Invoke(snykbroker.NewRelayInstanceManager),
-		)
-	}
-
-	return fx.Options(
-		opts...,
-	)
 }

@@ -1,19 +1,17 @@
 package cmd
 
 import (
-	"context"
 	_ "embed"
 	"fmt"
 	gohttp "net/http"
 	"os"
 
+	"github.com/cortexapps/axon/common"
 	"github.com/cortexapps/axon/config"
 	"github.com/cortexapps/axon/server"
 	"github.com/cortexapps/axon/server/api"
-	"github.com/cortexapps/axon/server/handler"
 	"github.com/cortexapps/axon/server/http"
 	cortexHttp "github.com/cortexapps/axon/server/http"
-	"github.com/cortexapps/axon/server/snykbroker"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/spf13/cobra"
 	"go.uber.org/fx"
@@ -32,120 +30,68 @@ func startAgent(opts fx.Option) {
 	app.Run()
 }
 
-func buildCoreAgentStack(cmd *cobra.Command, cfg config.AgentConfig) fx.Option {
+var AgentModule = fx.Module("agent",
+	fx.Provide(http.NewPrometheusRegistry),
+	fx.Provide(createHttpTransport),
+	fx.Provide(createHttpClient),
+	fx.Provide(createMainHttpServer),
+	fx.Provide(func(config config.AgentConfig) *zap.Logger {
 
-	if ok, _ := cmd.Flags().GetBool("verbose"); ok {
-		cfg.VerboseOutput = true
-	}
+		if config.VerboseOutput {
+			return zap.NewNop()
+		}
 
-	options := []fx.Option{}
+		cfg := zap.NewDevelopmentConfig()
 
-	if !cfg.VerboseOutput {
-		options = append(options, fx.NopLogger)
-	}
+		loggingLevel := zap.InfoLevel
+		if config.VerboseOutput {
+			loggingLevel = zap.DebugLevel
+		}
 
-	stackOptions := fx.Options(
-		fx.Supply(cfg),
-		fx.Provide(http.NewPrometheusRegistry),
-		fx.Provide(createHttpTransport),
-		fx.Provide(createHttpClient),
-		fx.Provide(func(config config.AgentConfig) *zap.Logger {
-			cfg := zap.NewDevelopmentConfig()
+		cfg.Level = zap.NewAtomicLevelAt(loggingLevel)
+		logger, err := cfg.Build()
+		if err != nil {
+			panic(err)
+		}
+		return logger
+	}),
+	fx.Invoke(func(config config.AgentConfig, logger *zap.Logger) {
+		if config.CortexApiToken == "" && !config.DryRun {
+			logger.Fatal("Cannot start agent: either CORTEX_API_TOKEN or DRYRUN is required")
+		}
+	}),
+	fx.Invoke(server.NewAxonAgent),
+)
 
-			loggingLevel := zap.InfoLevel
-			if config.VerboseOutput {
-				loggingLevel = zap.DebugLevel
-			}
-
-			cfg.Level = zap.NewAtomicLevelAt(loggingLevel)
-			logger, err := cfg.Build()
-			if err != nil {
-				panic(err)
-			}
-			return logger
-		}),
-		fx.Invoke(func(config config.AgentConfig, logger *zap.Logger) {
-			if config.CortexApiToken == "" && !config.DryRun {
-				logger.Fatal("Cannot start agent: either CORTEX_API_TOKEN or DRYRUN is required")
-			}
-		}),
-		fx.Provide(snykbroker.NewRegistration),
-		fx.Provide(handler.NewHandlerManager),
-		fx.Invoke(createAxonAgent),
-	)
-
-	options = append(options, stackOptions)
-
+func initStack(cmd *cobra.Command, cfg config.AgentConfig, integrationInfo common.IntegrationInfo) fx.Option {
+	// This is a placeholder for the actual stack building logic
+	// It should be replaced with the actual implementation
 	return fx.Options(
-		options...,
+		fx.Supply(integrationInfo),
+		fx.Supply(cmd),
+		fx.Supply(cfg),
 	)
-
 }
 
-func createAxonAgent(
-	lifecycle fx.Lifecycle,
-	logger *zap.Logger,
-	cfg config.AgentConfig,
-	manager handler.Manager,
-	_ cortexHttp.Server, // we need to make sure the HTTP server is always started
-) *server.AxonAgent {
-	agent := server.NewAxonAgent(logger, cfg, manager)
-	lifecycle.Append(fx.Hook{
-		OnStart: func(ctx context.Context) error {
-			return agent.Start(ctx)
-		},
-	})
-	return agent
-}
+func createMainHttpServer(lifecycle fx.Lifecycle, config config.AgentConfig, logger *zap.Logger, registry *prometheus.Registry, transport *gohttp.Transport) cortexHttp.Server {
 
-func createHttpServer(lifecycle fx.Lifecycle, config config.AgentConfig, logger *zap.Logger, handlerManager handler.Manager, registry *prometheus.Registry, transport *gohttp.Transport) cortexHttp.Server {
-	httpServer := cortexHttp.NewHttpServer(logger, cortexHttp.WithRegistry(registry))
+	httpServerParams := cortexHttp.HttpServerParams{
+		Logger:   logger,
+		Registry: registry,
+		Handlers: []cortexHttp.RegisterableHandler{},
+	}
+
+	httpServer := cortexHttp.NewHttpServer(httpServerParams, cortexHttp.WithPort(config.HttpServerPort))
 
 	if config.EnableApiProxy {
 		proxy := api.NewApiProxyHandler(config, logger, transport)
 		httpServer.RegisterHandler(proxy)
 	}
 
-	axonHandler := cortexHttp.NewAxonHandler(config, logger, handlerManager)
-	httpServer.RegisterHandler(axonHandler)
-
 	if registry != nil {
 		metricsHandler := cortexHttp.NewMetricsHandler(config, logger, registry)
 		httpServer.RegisterHandler(metricsHandler)
 	}
 
-	lifecycle.Append(fx.Hook{
-		OnStart: func(ctx context.Context) error {
-			_, err := httpServer.Start(config.HttpServerPort)
-			logger.Info("HTTP server started", zap.Int("port", config.HttpServerPort), zap.Error(err))
-			return err
-		},
-		OnStop: func(ctx context.Context) error {
-			httpServer.Close()
-			return nil
-		},
-	})
-	return httpServer
-}
-
-func createWebhookHttpServer(lifecycle fx.Lifecycle, config config.AgentConfig, logger *zap.Logger, handlerManager handler.Manager, registry *prometheus.Registry) cortexHttp.Server {
-
-	httpServer := cortexHttp.NewHttpServer(logger, cortexHttp.WithRegistry(registry), cortexHttp.WithName("webhook"))
-
-	handler := cortexHttp.NewWebhookHandler(config, logger, handlerManager, registry)
-	httpServer.RegisterHandler(handler)
-
-	lifecycle.Append(fx.Hook{
-		OnStart: func(ctx context.Context) error {
-			_, err := httpServer.Start(config.WebhookServerPort)
-			logger.Info("Webhook server started", zap.Int("port", config.WebhookServerPort), zap.Error(err))
-
-			return err
-		},
-		OnStop: func(ctx context.Context) error {
-			httpServer.Close()
-			return nil
-		},
-	})
 	return httpServer
 }

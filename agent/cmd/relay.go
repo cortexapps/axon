@@ -6,7 +6,6 @@ import (
 
 	"github.com/cortexapps/axon/common"
 	"github.com/cortexapps/axon/config"
-	"github.com/cortexapps/axon/server/cron"
 	"github.com/cortexapps/axon/server/snykbroker"
 	"github.com/spf13/cobra"
 	"go.uber.org/fx"
@@ -66,6 +65,7 @@ var RelayCommand = &cobra.Command{
 		}
 
 		fmt.Println("Starting agent")
+
 		startAgent(buildRelayStack(cmd, config, info))
 	},
 }
@@ -79,14 +79,11 @@ func init() {
 	RelayCommand.MarkFlagRequired("alias")
 }
 
-// buildRelayStack builds the fx dependency injection stack for the agent
 func buildRelayStack(cmd *cobra.Command, cfg config.AgentConfig, integrationInfo common.IntegrationInfo) fx.Option {
-	cfg.EnableApiProxy = false
-	return fx.Options(
-		fx.Supply(integrationInfo),
-		fx.Provide(cron.NewNoopCron),
-		buildCoreAgentStack(cmd, cfg),
-		fx.Provide(createHttpServer),
-		fx.Invoke(snykbroker.NewRelayInstanceManager),
+	stack := fx.Options(
+		initStack(cmd, cfg, integrationInfo),
+		AgentModule,
+		snykbroker.Module,
 	)
+	return stack
 }

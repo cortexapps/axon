@@ -1,14 +1,17 @@
 package http
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"time"
 
+	"github.com/cortexapps/axon/config"
 	"github.com/gorilla/mux"
 	"github.com/prometheus/client_golang/prometheus"
+	"go.uber.org/fx"
 	"go.uber.org/zap"
 )
 
@@ -18,7 +21,7 @@ import (
 type Server interface {
 	io.Closer
 	RegisterHandler(h RegisterableHandler)
-	Start(port int) (int, error)
+	Start() (int, error)
 }
 
 type RegisterableHandler interface {
@@ -31,6 +34,7 @@ type ServerOption func(*serverOptions)
 type serverOptions struct {
 	name     string
 	registry *prometheus.Registry
+	port     int
 }
 
 func WithName(name string) ServerOption {
@@ -45,7 +49,41 @@ func WithRegistry(registry *prometheus.Registry) ServerOption {
 	}
 }
 
-func NewHttpServer(logger *zap.Logger, opts ...ServerOption) Server {
+func WithPort(port int) ServerOption {
+	return func(s *serverOptions) {
+		s.port = port
+	}
+}
+
+func AsHandler(f any) any {
+	return fx.Annotate(
+		f,
+		fx.As(new(RegisterableHandler)),
+		fx.ResultTags(`group:"http_handlers"`),
+	)
+}
+
+type HttpServerParams struct {
+	fx.In
+	Lifecycle fx.Lifecycle `optional:"true"`
+	Logger    *zap.Logger
+	Config    config.AgentConfig
+	Handlers  []RegisterableHandler `group:"http_handlers"`
+	Registry  *prometheus.Registry  `optional:"true"`
+}
+
+func NewHttpServerFx(name string, port int) func(HttpServerParams, ...ServerOption) Server {
+	return func(p HttpServerParams, opts ...ServerOption) Server {
+		opts = append(opts, WithName(name), WithPort(port))
+		return NewHttpServer(p, opts...)
+	}
+}
+
+func NewHttpServer(p HttpServerParams, opts ...ServerOption) Server {
+
+	if p.Registry != nil {
+		opts = append(opts, WithRegistry(p.Registry))
+	}
 
 	serverOpts := &serverOptions{}
 	for _, o := range opts {
@@ -62,7 +100,7 @@ func NewHttpServer(logger *zap.Logger, opts ...ServerOption) Server {
 	router := mux.NewRouter()
 
 	server := &httpServer{
-		logger: logger,
+		logger: p.Logger,
 		mux:    router,
 		requestCounter: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
@@ -87,6 +125,26 @@ func NewHttpServer(logger *zap.Logger, opts ...ServerOption) Server {
 		serverOpts.registry.MustRegister(server.requestCounter)
 		serverOpts.registry.MustRegister(server.requestLatency)
 	}
+
+	for _, handler := range p.Handlers {
+		server.RegisterHandler(handler)
+	}
+	server.port = serverOpts.port
+
+	if p.Lifecycle != nil {
+		p.Lifecycle.Append(fx.Hook{
+			OnStart: func(ctx context.Context) error {
+				_, err := server.Start()
+				p.Logger.Info("HTTP server started", zap.Int("port", serverOpts.port), zap.Error(err))
+				return err
+			},
+			OnStop: func(ctx context.Context) error {
+				server.Close()
+				return nil
+			},
+		})
+	}
+
 	return server
 }
 
@@ -134,13 +192,13 @@ func (h *httpServer) requestMiddleware(next http.Handler) http.Handler {
 		)
 	})
 }
-func (h *httpServer) Start(port int) (int, error) {
+func (h *httpServer) Start() (int, error) {
 
 	if h.server != nil {
 		panic("Server already started")
 	}
 
-	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", h.port))
 	if err != nil {
 		panic(err)
 	}
