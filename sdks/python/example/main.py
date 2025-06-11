@@ -21,18 +21,19 @@ def my_handler(ctx: HandlerContext):
         }
     }
 
+    json_payload = json.dumps(payload)
 
     response = ctx.cortex_api_call(
-        method="GET",
-        path="/api/v1/catalog/aa00-1/custom-data",
+        method="PUT",
+        path="/api/v1/catalog/custom-data",
+        body=json_payload,
     )
 
-    body = getattr(response, "body", None)
     if response.status_code >= 400:
-        ctx.log(f"SetCustomTags error: status={response.status_code} {body}", level="ERROR")
-        return
+        ctx.log(f"SetCustomTags error: {response.body}", level="ERROR")
+        exit(1)
 
-    ctx.log(f"SetCustomTags response: {body}", level="INFO")
+    ctx.log("CortexApi PUT custom-data called successfully!")
 
 
 @cortex_scheduled(cron="* * * * *", run_now=False)
