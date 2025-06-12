@@ -221,8 +221,8 @@ func (rr *RegistrationReflector) ServeHTTP(w http.ResponseWriter, r *http.Reques
 	entry, newPath, err := rr.parseTargetUri(r.URL.Path)
 	if err != nil {
 		rr.logger.Error("Failed to parse target URI", zap.Error(err))
-		http.Error(w, "Invalid target URI", http.StatusBadRequest)
-		w.WriteHeader(http.StatusBadRequest)
+		http.Error(w, "Invalid target URI", http.StatusBadGateway)
+		w.WriteHeader(http.StatusBadGateway)
 		return
 	}
 
