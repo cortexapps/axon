@@ -126,7 +126,7 @@ func TestHttpProxy(t *testing.T) {
 
 	assert.Equal(t, "http://proxy.example.com:8080", env["HTTP_PROXY"])
 	assert.Equal(t, "http://proxy.example.com:8080", env["HTTPS_PROXY"])
-	assert.Equal(t, "localhost", env["NO_PROXY"])
+	assert.Equal(t, "localhost,127.0.0.1", env["NO_PROXY"])
 	assert.Equal(t, cfg.HttpCaCertFilePath, env["NODE_EXTRA_CA_CERTS"])
 
 }

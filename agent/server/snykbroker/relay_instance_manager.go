@@ -15,6 +15,7 @@ import (
 	"github.com/cortexapps/axon/common"
 	"github.com/cortexapps/axon/config"
 	cortexHttp "github.com/cortexapps/axon/server/http"
+	"github.com/cortexapps/axon/util"
 	"github.com/gorilla/mux"
 	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/fx"
@@ -478,10 +479,8 @@ func (r *relayInstanceManager) setHttpProxyEnvVars(brokerEnv map[string]string) 
 	if httpsProxy != "" && brokerEnv["HTTPS_PROXY"] == "" {
 		brokerEnv["HTTPS_PROXY"] = httpsProxy
 	}
-	noProxy := os.Getenv("NO_PROXY")
-	if noProxy != "" && brokerEnv["NO_PROXY"] == "" {
-		brokerEnv["NO_PROXY"] = noProxy
-	}
+
+	brokerEnv["NO_PROXY"] = util.EnsureLocalhostNoProxy(false)
 
 	if certPath := r.getCertFilePath(r.config.HttpCaCertFilePath); certPath != "" {
 		brokerEnv["NODE_EXTRA_CA_CERTS"] = certPath
