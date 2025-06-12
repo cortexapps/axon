@@ -14,6 +14,27 @@ const DefaultGrpcPort = 50051
 const DefaultHttpPort = 80
 const WebhookServerPort = 8081
 
+type RelayReflectorMode int
+
+const (
+	RelayReflectorDisabled RelayReflectorMode = iota
+	RelayReflectorRegistrationOnly
+	RelayReflectorAllTraffic
+)
+
+func (m RelayReflectorMode) String() string {
+	switch m {
+	case RelayReflectorDisabled:
+		return "Disabled"
+	case RelayReflectorRegistrationOnly:
+		return "RegistrationOnly"
+	case RelayReflectorAllTraffic:
+		return "AllTraffic"
+	default:
+		return "Unknown"
+	}
+}
+
 type AgentConfig struct {
 	GrpcPort              int
 	CortexApiBaseUrl      string
@@ -35,9 +56,9 @@ type AgentConfig struct {
 	HandlerHistoryMaxAge       time.Duration
 	HandlerHistoryMaxSizeBytes int64
 
-	HttpDisableTLS           bool
-	HttpCaCertFilePath       string
-	EnableHttpRelayReflector bool
+	HttpDisableTLS         bool
+	HttpCaCertFilePath     string
+	HttpRelayReflectorMode RelayReflectorMode
 }
 
 func (ac AgentConfig) Print() {
@@ -208,8 +229,13 @@ func NewAgentEnvConfig() AgentConfig {
 		cfg.HttpCaCertFilePath = filepath.Clean(cfg.HttpCaCertFilePath)
 	}
 
-	if relayReflector := os.Getenv("ENABLE_RELAY_REFLECTOR"); relayReflector == "true" {
-		cfg.EnableHttpRelayReflector = true
+	if relayReflector := os.Getenv("ENABLE_RELAY_REFLECTOR"); relayReflector != "" {
+		switch relayReflector {
+		case "true", "registration":
+			cfg.HttpRelayReflectorMode = RelayReflectorRegistrationOnly
+		case "all":
+			cfg.HttpRelayReflectorMode = RelayReflectorAllTraffic
+		}
 	}
 
 	return cfg

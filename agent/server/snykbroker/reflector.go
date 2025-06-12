@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"github.com/cortexapps/axon/config"
 	cortexHttp "github.com/cortexapps/axon/server/http"
 	"github.com/gorilla/mux"
 	"github.com/prometheus/client_golang/prometheus"
@@ -24,14 +25,7 @@ type RegistrationReflector struct {
 	server        cortexHttp.Server
 	targets       map[string]proxyEntry
 	serverStarted atomic.Bool
-}
-
-type proxyEntry struct {
-	isDefault bool
-	targetURI string
-	hashCode  string
-	proxyURI  string
-	handler   http.Handler
+	mode          config.RelayReflectorMode
 }
 
 type RegistrationReflectorParams struct {
@@ -40,6 +34,7 @@ type RegistrationReflectorParams struct {
 	Logger    *zap.Logger
 	Transport *http.Transport      `optional:"true"`
 	Registry  *prometheus.Registry `optional:"true"`
+	Config    config.AgentConfig
 }
 
 func NewRegistrationReflector(p RegistrationReflectorParams) *RegistrationReflector {
@@ -59,6 +54,7 @@ func NewRegistrationReflector(p RegistrationReflectorParams) *RegistrationReflec
 		server:    server,
 		logger:    httpParams.Logger,
 		targets:   make(map[string]proxyEntry),
+		mode:      p.Config.HttpRelayReflectorMode,
 	}
 
 	server.RegisterHandler(rr)
@@ -134,14 +130,10 @@ func (rr *RegistrationReflector) getProxy(targetURI string, isDefault bool) (*pr
 		if rr.transport != nil {
 			proxy.Transport = rr.transport
 		}
-		entry = proxyEntry{
-			isDefault: isDefault,
-			targetURI: targetURI,
-			proxyURI:  rr.encodeProxyUri(targetURI),
-			handler:   proxy,
-			hashCode:  strconv.Itoa(int(hashString(targetURI))),
-		}
-		rr.targets[key] = entry
+
+		newEntry := newProxyEntry(targetURI, isDefault, proxy, rr.server.Port())
+		rr.targets[key] = *newEntry
+		entry = *newEntry
 
 		rr.logger.Info("Registered redirector",
 			zap.String("targetURI", entry.targetURI),
@@ -151,11 +143,7 @@ func (rr *RegistrationReflector) getProxy(targetURI string, isDefault bool) (*pr
 	return &entry, nil
 }
 
-func (rr *RegistrationReflector) encodeProxyUri(targetURI string) string {
-	return fmt.Sprintf("http://localhost:%d/!%d!", rr.server.Port(), hashString(targetURI))
-}
-
-func (rr *RegistrationReflector) getHash(part string) string {
+func (rr *RegistrationReflector) extractHash(part string) string {
 	// Check if the part is a valid hash (a number)
 	if !strings.HasPrefix(part, "!") || !strings.HasSuffix(part, "!") {
 		return ""
@@ -172,7 +160,7 @@ func (rr *RegistrationReflector) parseTargetUri(proxyPath string) (*proxyEntry, 
 		beforeSlash = path[:slash]
 		remainder = path[slash:]
 	}
-	hash := rr.getHash(beforeSlash)
+	hash := rr.extractHash(beforeSlash)
 	if hash == "" {
 		// find the default proxy entry
 		if entry, exists := rr.targets["default"]; exists {
@@ -194,8 +182,27 @@ func (rr *RegistrationReflector) parseTargetUri(proxyPath string) (*proxyEntry, 
 	return nil, "", fmt.Errorf("no proxy entry found for path: %s", proxyPath)
 }
 
-func (rr *RegistrationReflector) ProxyURI(target string) string {
-	proxy, err := rr.getProxy(target, false)
+type ProxyOption func(*proxyOption)
+
+type proxyOption struct {
+	isDefault bool
+}
+
+func WithDefault(value bool) ProxyOption {
+	return func(option *proxyOption) {
+		option.isDefault = value
+	}
+}
+
+func (rr *RegistrationReflector) ProxyURI(target string, options ...ProxyOption) string {
+
+	opts := &proxyOption{}
+
+	for _, opt := range options {
+		opt(opts)
+	}
+
+	proxy, err := rr.getProxy(target, opts.isDefault)
 	if err != nil {
 		rr.logger.Error("Failed to get proxy URI", zap.Error(err))
 		return target
@@ -203,25 +210,6 @@ func (rr *RegistrationReflector) ProxyURI(target string) string {
 	return proxy.proxyURI
 }
 
-func (rr *RegistrationReflector) DefaultProxyURI(target string) string {
-	proxyURI, err := rr.getProxy(target, true)
-	if err != nil {
-		rr.logger.Error("Failed to get proxy URI", zap.Error(err))
-		return target
-	}
-	parsedTarget, err := url.Parse(target)
-	if err != nil {
-		panic(fmt.Sprintf("Failed to parse target URI %q: %v", target, err))
-	}
-	parsedProxyURI, err := url.Parse(proxyURI.proxyURI)
-	if err != nil {
-		panic(fmt.Sprintf("Failed to parse proxy URI %q: %v", proxyURI.proxyURI, err))
-	}
-	parsedTarget.Host = parsedProxyURI.Host
-	parsedTarget.Scheme = parsedProxyURI.Scheme
-
-	return parsedTarget.String()
-}
 func (rr *RegistrationReflector) RegisterRoutes(mux *mux.Router) error {
 	mux.PathPrefix("/").Handler(rr)
 	return nil
@@ -248,4 +236,46 @@ func hashString(s string) uint32 {
 	h := fnv.New32a()
 	h.Write([]byte(s))
 	return h.Sum32()
+}
+
+type proxyEntry struct {
+	isDefault bool
+	targetURI string
+	hashCode  string
+	proxyURI  string
+	handler   http.Handler
+}
+
+func newProxyEntry(targetURI string, isDefault bool, handler http.Handler, port int) *proxyEntry {
+
+	pe := &proxyEntry{
+		isDefault: isDefault,
+		targetURI: targetURI,
+		hashCode:  strconv.Itoa(int(hashString(targetURI))),
+		handler:   handler,
+	}
+	pe.proxyURI = pe.encodeProxyUri(targetURI, port, isDefault)
+
+	return pe
+}
+
+func (pe *proxyEntry) encodeProxyUri(targetURI string, port int, isDefault bool) string {
+	baseProxyURI := fmt.Sprintf("http://localhost:%d", port)
+	if isDefault {
+		// for default proxy, we only change the host and port
+		// to be our proxy
+		parsedProxyURI, err := url.Parse(baseProxyURI)
+		if err != nil {
+			panic(fmt.Sprintf("failed to parse proxy URI %q: %v", baseProxyURI, err))
+		}
+
+		parsedTarget, err := url.Parse(targetURI)
+		if err != nil {
+			panic(fmt.Errorf("failed to parse target URI %q: %v", targetURI, err))
+		}
+		parsedTarget.Host = parsedProxyURI.Host
+		parsedTarget.Scheme = parsedProxyURI.Scheme
+		return parsedTarget.String()
+	}
+	return fmt.Sprintf("%s/!%d!", baseProxyURI, hashString(targetURI))
 }

@@ -244,8 +244,12 @@ func createTestRelayInstanceManager(t *testing.T, controller *gomock.Controller,
 	common.ApplyEnv(envVars)
 
 	lifecycle := fxtest.NewLifecycle(t)
-	config := config.NewAgentEnvConfig()
-	config.FailWaitTime = time.Millisecond * 100
+	cfg := config.NewAgentEnvConfig()
+	cfg.FailWaitTime = time.Millisecond * 100
+	cfg.HttpRelayReflectorMode = config.RelayReflectorDisabled
+	if useReflector {
+		cfg.HttpRelayReflectorMode = config.RelayReflectorAllTraffic
+	}
 	logger := zap.NewNop()
 	ii := common.IntegrationInfo{
 		Integration: common.IntegrationGithub,
@@ -262,6 +266,7 @@ func createTestRelayInstanceManager(t *testing.T, controller *gomock.Controller,
 		params := RegistrationReflectorParams{
 			Lifecycle: lifecycle,
 			Logger:    logger.Named("reflector"),
+			Config:    cfg,
 		}
 		reflector = NewRegistrationReflector(
 			params,
@@ -270,7 +275,7 @@ func createTestRelayInstanceManager(t *testing.T, controller *gomock.Controller,
 
 	params := RelayInstanceManagerParams{
 		Lifecycle:       lifecycle,
-		Config:          config,
+		Config:          cfg,
 		Logger:          logger,
 		IntegrationInfo: ii,
 		HttpServer:      mockServer,

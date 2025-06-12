@@ -11,9 +11,9 @@ var Module = fx.Module("snykbroker",
 	fx.Invoke(NewRelayInstanceManager),
 )
 
-func MaybeNewRegistrationReflector(config config.AgentConfig, p RegistrationReflectorParams) *RegistrationReflector {
+func MaybeNewRegistrationReflector(cfg config.AgentConfig, p RegistrationReflectorParams) *RegistrationReflector {
 
-	if !config.EnableHttpRelayReflector {
+	if cfg.HttpRelayReflectorMode != config.RelayReflectorDisabled {
 		return nil
 	}
 

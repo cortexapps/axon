@@ -46,16 +46,17 @@ type relayInstanceManager struct {
 }
 
 type tokenInfo struct {
-	ServerUri  string
-	Token      string
-	HasChanged bool
+	ServerUri   string
+	OriginalUri string
+	Token       string
+	HasChanged  bool
 }
 
 func (t *tokenInfo) equals(other *tokenInfo) bool {
 	if other == nil {
 		return false
 	}
-	if t.ServerUri != other.ServerUri {
+	if t.OriginalUri != other.OriginalUri {
 		return false
 	}
 	if t.Token != other.Token {
@@ -240,8 +241,9 @@ func (r *relayInstanceManager) getUrlAndToken() (*tokenInfo, error) {
 	}
 
 	tokenInfo := &tokenInfo{
-		ServerUri: uri,
-		Token:     token,
+		ServerUri:   uri,
+		OriginalUri: uri,
+		Token:       token,
 	}
 
 	if !tokenInfo.equals(r.tokenInfo) {
@@ -251,7 +253,7 @@ func (r *relayInstanceManager) getUrlAndToken() (*tokenInfo, error) {
 	}
 
 	if r.reflector != nil {
-		tokenInfo.ServerUri = r.reflector.DefaultProxyURI(tokenInfo.ServerUri)
+		tokenInfo.ServerUri = r.reflector.ProxyURI(tokenInfo.ServerUri, WithDefault(true))
 	}
 
 	return tokenInfo, nil
@@ -388,16 +390,7 @@ func (r *relayInstanceManager) Start() error {
 			zap.String("acceptFile", acceptFile),
 		)
 
-		if r.config.EnableHttpRelayReflector && r.reflector != nil {
-			newFile, err := r.integrationInfo.RewriteOrigins(acceptFile, func(uri string) string {
-				return r.reflector.ProxyURI(uri)
-			})
-			if err != nil {
-				r.logger.Error("Error rewriting accept file", zap.String("acceptFile", acceptFile), zap.Error(err))
-			} else {
-				acceptFile = newFile
-			}
-		}
+		acceptFile = r.applyAcceptFileTransforms(acceptFile)
 
 		brokerEnv := map[string]string{
 			"ACCEPT":            acceptFile,
@@ -459,6 +452,20 @@ func (r *relayInstanceManager) Start() error {
 	case <-time.After(r.config.FailWaitTime):
 	}
 	return err
+}
+
+func (r *relayInstanceManager) applyAcceptFileTransforms(acceptFile string) string {
+	if r.config.HttpRelayReflectorMode == config.RelayReflectorAllTraffic && r.reflector != nil {
+		newFile, err := r.integrationInfo.RewriteOrigins(acceptFile, func(uri string) string {
+			return r.reflector.ProxyURI(uri)
+		})
+		if err != nil {
+			r.logger.Error("Error rewriting accept file", zap.String("acceptFile", acceptFile), zap.Error(err))
+		} else {
+			acceptFile = newFile
+		}
+	}
+	return acceptFile
 }
 
 func (r *relayInstanceManager) setHttpProxyEnvVars(brokerEnv map[string]string) {
