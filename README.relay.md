@@ -170,13 +170,17 @@ spec:
           limits:
             memory: "2Gi"
             cpu: "1"
-        command: ["relay"]
-        args: ["-i", "github", "-a", "github-relay"]
+        args:
+          - relay
+          - -i
+          - github
+          - -a
+          - github-relay
         envFrom:
-            configMapKeyRef:
-              name: github-config
-            secretRef:
-              name: relay-secrets # this will need to be created to store your Cortex and Github keys
+        - configMapKeyRef:
+          name: github-config
+        - secretRef:
+          name: relay-secrets # this will need to be created to store your Cortex and Github keys
 ```
 
 
