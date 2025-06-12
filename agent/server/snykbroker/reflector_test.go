@@ -52,7 +52,7 @@ func TestDefaultProxyURI(t *testing.T) {
 	env := newTestReflectorEnv(t)
 	target := env.Server.URL
 	uri := env.Reflector.DefaultProxyURI(target)
-	require.Equal(t, target, uri)
+	require.Equal(t, fmt.Sprintf("http://localhost:%d", env.Reflector.server.Port()), uri)
 }
 
 func TestEncodeAndParseProxyUri(t *testing.T) {

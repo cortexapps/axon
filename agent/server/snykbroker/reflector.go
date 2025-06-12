@@ -204,12 +204,23 @@ func (rr *RegistrationReflector) ProxyURI(target string) string {
 }
 
 func (rr *RegistrationReflector) DefaultProxyURI(target string) string {
-	_, err := rr.getProxy(target, true)
+	proxyURI, err := rr.getProxy(target, true)
 	if err != nil {
 		rr.logger.Error("Failed to get proxy URI", zap.Error(err))
 		return target
 	}
-	return target
+	parsedTarget, err := url.Parse(target)
+	if err != nil {
+		panic(fmt.Sprintf("Failed to parse target URI %q: %v", target, err))
+	}
+	parsedProxyURI, err := url.Parse(proxyURI.proxyURI)
+	if err != nil {
+		panic(fmt.Sprintf("Failed to parse proxy URI %q: %v", proxyURI.proxyURI, err))
+	}
+	parsedTarget.Host = parsedProxyURI.Host
+	parsedTarget.Scheme = parsedProxyURI.Scheme
+
+	return parsedTarget.String()
 }
 func (rr *RegistrationReflector) RegisterRoutes(mux *mux.Router) error {
 	mux.PathPrefix("/").Handler(rr)
