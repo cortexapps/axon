@@ -41,7 +41,7 @@ func TestManagerSuccessWithReflector(t *testing.T) {
 	mgr := createTestRelayInstanceManager(t, controller, nil, true)
 
 	// call the reflector uri
-	uri := mgr.reflector.ProxyURI()
+	uri := mgr.reflector.ProxyURI(mgr.serverUri)
 
 	req, err := http.NewRequest(http.MethodGet, uri+"/foo/bar", nil)
 	require.NoError(t, err)
@@ -224,6 +224,7 @@ type wrappedRelayInstanceManager struct {
 	mockRegistration *MockRegistration
 	reflector        *RegistrationReflector
 	requestUrls      []url.URL
+	serverUri        string
 }
 
 func (w *wrappedRelayInstanceManager) Instance() *relayInstanceManager {
@@ -258,10 +259,12 @@ func createTestRelayInstanceManager(t *testing.T, controller *gomock.Controller,
 
 	var reflector *RegistrationReflector
 	if useReflector {
+		params := RegistrationReflectorParams{
+			Lifecycle: lifecycle,
+			Logger:    logger.Named("reflector"),
+		}
 		reflector = NewRegistrationReflector(
-			lifecycle,
-			logger,
-			http.DefaultTransport.(*http.Transport),
+			params,
 		)
 	}
 
@@ -292,6 +295,7 @@ func createTestRelayInstanceManager(t *testing.T, controller *gomock.Controller,
 		ServerUri: testServer.URL,
 		Token:     "abcd1234",
 	}
+	mgr.serverUri = testServer.URL
 
 	if expectedError != nil {
 		mockRegistration.EXPECT().Register(gomock.Eq(common.IntegrationGithub), gomock.Eq("")).MinTimes(1).Return(nil, expectedError)

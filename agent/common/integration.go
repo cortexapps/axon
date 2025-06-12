@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 )
 
 type Integration string
@@ -139,6 +140,75 @@ func (ii IntegrationInfo) AcceptFile() (string, error) {
 	err = os.WriteFile(expectedPath, json, os.ModePerm)
 
 	return expectedPath, err
+}
+
+func (ii IntegrationInfo) RewriteOrigins(acceptFilePath string, writer func(string) string) (string, error) {
+
+	stat, err := os.Stat(acceptFilePath)
+	if err != nil {
+		return acceptFilePath, err
+	}
+
+	rawFile, err := os.ReadFile(acceptFilePath)
+	if err != nil {
+		return acceptFilePath, err
+	}
+	dict := map[string]interface{}{}
+	err = json.Unmarshal(rawFile, &dict)
+	if err != nil {
+		return acceptFilePath, err
+	}
+
+	entries, ok := dict["private"].([]interface{})
+	if !ok {
+		return acceptFilePath, nil
+	}
+
+	for _, entry := range entries {
+		rawOrigin, ok := entry.(map[string]interface{})["origin"].(string)
+		if !ok {
+			continue
+		}
+		if rawOrigin == "http://localhost" {
+			continue
+		}
+		origin := ii.getOrigin(rawOrigin)
+		if !strings.HasPrefix(origin, "http://") || strings.HasPrefix(origin, "https://") {
+			origin = "https://" + origin
+		}
+
+		// rewrite the origin to use the writer function
+		newOrigin := writer(ii.getOrigin(origin))
+		if newOrigin != "" {
+			entry.(map[string]interface{})["origin"] = newOrigin
+		}
+
+	}
+
+	newFilePath := path.Join(
+		os.TempDir(),
+		"accept-files-written",
+		fmt.Sprintf("rewrite.%v.%v", time.Now().UnixMilli(), stat.Name()),
+	)
+	err = os.MkdirAll(path.Dir(newFilePath), os.ModeDir|os.ModePerm)
+	if err != nil {
+		return acceptFilePath, err
+	}
+
+	json, err := json.Marshal(dict)
+	if err != nil {
+		return acceptFilePath, err
+	}
+	err = os.WriteFile(newFilePath, json, os.ModePerm)
+	if err != nil {
+		return acceptFilePath, err
+	}
+	return newFilePath, nil
+}
+
+func (ii IntegrationInfo) getOrigin(rawOrigin string) string {
+	expandedOrigin := os.ExpandEnv(rawOrigin)
+	return expandedOrigin
 }
 
 func (ii IntegrationInfo) getAcceptFileContents() (string, error) {

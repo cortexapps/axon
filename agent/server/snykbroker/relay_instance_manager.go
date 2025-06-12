@@ -251,8 +251,7 @@ func (r *relayInstanceManager) getUrlAndToken() (*tokenInfo, error) {
 	}
 
 	if r.reflector != nil {
-		r.reflector.SetTargetURI(tokenInfo.ServerUri)
-		tokenInfo.ServerUri = r.reflector.ProxyURI()
+		tokenInfo.ServerUri = r.reflector.DefaultProxyURI(tokenInfo.ServerUri)
 	}
 
 	return tokenInfo, nil
@@ -388,6 +387,17 @@ func (r *relayInstanceManager) Start() error {
 			zap.String("uri", info.ServerUri),
 			zap.String("acceptFile", acceptFile),
 		)
+
+		if r.config.EnableHttpRelayReflector && r.reflector != nil {
+			newFile, err := r.integrationInfo.RewriteOrigins(acceptFile, func(uri string) string {
+				return r.reflector.ProxyURI(uri)
+			})
+			if err != nil {
+				r.logger.Error("Error rewriting accept file", zap.String("acceptFile", acceptFile), zap.Error(err))
+			} else {
+				acceptFile = newFile
+			}
+		}
 
 		brokerEnv := map[string]string{
 			"ACCEPT":            acceptFile,
