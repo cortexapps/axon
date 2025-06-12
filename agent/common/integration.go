@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path"
 	"regexp"
@@ -169,12 +170,20 @@ func (ii IntegrationInfo) RewriteOrigins(acceptFilePath string, writer func(stri
 		if !ok {
 			continue
 		}
-		if rawOrigin == "http://localhost" {
+
+		origin := ii.getOrigin(rawOrigin)
+
+		parsed, err := url.Parse(origin)
+		if err != nil {
+			return acceptFilePath, fmt.Errorf("failed to parse origin %q: %w", origin, err)
+		}
+
+		if parsed.Host == "localhost" || parsed.Host == "127.0.0.1" {
 			continue
 		}
-		origin := ii.getOrigin(rawOrigin)
-		if !strings.HasPrefix(origin, "http://") || strings.HasPrefix(origin, "https://") {
-			origin = "https://" + origin
+		if parsed.Scheme == "" {
+			parsed.Scheme = "https"
+			origin = parsed.String()
 		}
 
 		// rewrite the origin to use the writer function

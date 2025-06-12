@@ -176,6 +176,16 @@ func TestAcceptRewrite(t *testing.T) {
 			"method": "any",
 			"path": "/*",
 			"origin": "http://python-server"
+		},
+		{
+			"method": "any",
+			"path": "/*",
+			"origin": "http://localhost"
+		},
+		{
+			"method": "any",
+			"path": "/*",
+			"origin": "api.foo.com"
 		}
 		]
 	}	
@@ -194,7 +204,7 @@ func TestAcceptRewrite(t *testing.T) {
 	require.NoError(t, err)
 	contents, err := os.ReadFile(rewritten)
 	require.NoError(t, err)
-	require.Equal(t, `{"private":[{"method":"any","origin":"http://new-python-server","path":"/*"}],"public":[{"method":"any","path":"/*"}]}`, string(contents))
+	require.Equal(t, `{"private":[{"method":"any","origin":"http://new-python-server","path":"/*"},{"method":"any","origin":"http://localhost","path":"/*"},{"method":"any","origin":"https://api.foo.com","path":"/*"}],"public":[{"method":"any","path":"/*"}]}`, string(contents))
 }
 
 func TestGetOrigin(t *testing.T) {
