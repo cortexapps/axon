@@ -1,9 +1,11 @@
 package snykbroker
 
 import (
+	"context"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"testing"
 	"time"
@@ -25,12 +27,34 @@ func TestManagerSuccess(t *testing.T) {
 	controller := gomock.NewController(t)
 	defer controller.Finish()
 
-	mgr := createTestRelayInstanceManager(t, controller, nil)
+	mgr := createTestRelayInstanceManager(t, controller, nil, false)
 
-	err := mgr.Start()
+	err := mgr.Close()
 	require.NoError(t, err)
+
+}
+
+func TestManagerSuccessWithReflector(t *testing.T) {
+	controller := gomock.NewController(t)
+	defer controller.Finish()
+
+	mgr := createTestRelayInstanceManager(t, controller, nil, true)
+
+	// call the reflector uri
+	uri := mgr.reflector.ProxyURI()
+
+	req, err := http.NewRequest(http.MethodGet, uri+"/foo/bar", nil)
+	require.NoError(t, err)
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
 	err = mgr.Close()
 	require.NoError(t, err)
+
+	require.Equal(t, 1, len(mgr.requestUrls), "Expected one request to the reflector URI")
+	assert.Equal(t, "/foo/bar", mgr.requestUrls[0].Path, "Expected request to the reflector URI to have the correct path")
 
 }
 
@@ -38,7 +62,7 @@ func TestManagerUnauthorized(t *testing.T) {
 	controller := gomock.NewController(t)
 	defer controller.Finish()
 
-	mgr := createTestRelayInstanceManager(t, controller, ErrUnauthorized)
+	mgr := createTestRelayInstanceManager(t, controller, ErrUnauthorized, false)
 
 	err := mgr.Start()
 	require.Error(t, err, ErrUnauthorized)
@@ -109,10 +133,7 @@ func TestHttpProxy(t *testing.T) {
 func TestRelayRestartServer(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
-	mgr := createTestRelayInstanceManager(t, ctrl, nil)
-
-	err := mgr.Start()
-	require.NoError(t, err)
+	mgr := createTestRelayInstanceManager(t, ctrl, nil, false)
 
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/__axon/broker/restart", nil)
@@ -130,10 +151,7 @@ func TestRelayRestartServer(t *testing.T) {
 func TestRelayReRegisterServer(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
-	mgr := createTestRelayInstanceManager(t, ctrl, nil)
-
-	err := mgr.Start()
-	require.NoError(t, err)
+	mgr := createTestRelayInstanceManager(t, ctrl, nil, false)
 
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/__axon/broker/reregister", nil)
@@ -204,13 +222,15 @@ func TestSystemCheck(t *testing.T) {
 type wrappedRelayInstanceManager struct {
 	RelayInstanceManager
 	mockRegistration *MockRegistration
+	reflector        *RegistrationReflector
+	requestUrls      []url.URL
 }
 
 func (w *wrappedRelayInstanceManager) Instance() *relayInstanceManager {
 	return w.RelayInstanceManager.(*relayInstanceManager)
 }
 
-func createTestRelayInstanceManager(t *testing.T, controller *gomock.Controller, expectedError error) *wrappedRelayInstanceManager {
+func createTestRelayInstanceManager(t *testing.T, controller *gomock.Controller, expectedError error, useReflector bool) *wrappedRelayInstanceManager {
 	envVars := map[string]string{
 		"ACCEPT_FILE_DIR":  "./accept_files",
 		"GITHUB_TOKEN":     "the-token",
@@ -234,18 +254,16 @@ func createTestRelayInstanceManager(t *testing.T, controller *gomock.Controller,
 
 	mockRegistration := NewMockRegistration(controller)
 
-	response := &RegistrationInfoResponse{
-		ServerUri: "http://broker.cortex.io",
-		Token:     "abcd1234",
-	}
-
-	if expectedError != nil {
-		mockRegistration.EXPECT().Register(gomock.Eq(common.IntegrationGithub), gomock.Eq("")).MinTimes(1).Return(nil, expectedError)
-	} else {
-		mockRegistration.EXPECT().Register(gomock.Eq(common.IntegrationGithub), gomock.Eq("")).MinTimes(1).Return(response, nil)
-	}
-
 	registry := prometheus.NewRegistry()
+
+	var reflector *RegistrationReflector
+	if useReflector {
+		reflector = NewRegistrationReflector(
+			lifecycle,
+			logger,
+			http.DefaultTransport.(*http.Transport),
+		)
+	}
 
 	params := RelayInstanceManagerParams{
 		Lifecycle:       lifecycle,
@@ -255,12 +273,33 @@ func createTestRelayInstanceManager(t *testing.T, controller *gomock.Controller,
 		HttpServer:      mockServer,
 		Registration:    mockRegistration,
 		Registry:        registry,
+		Reflector:       reflector,
 	}
 
-	return &wrappedRelayInstanceManager{
+	mgr := &wrappedRelayInstanceManager{
 		RelayInstanceManager: NewRelayInstanceManager(
 			params,
 		),
 		mockRegistration: mockRegistration,
+		reflector:        reflector,
 	}
+
+	testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mgr.requestUrls = append(mgr.requestUrls, *r.URL)
+	}))
+
+	response := &RegistrationInfoResponse{
+		ServerUri: testServer.URL,
+		Token:     "abcd1234",
+	}
+
+	if expectedError != nil {
+		mockRegistration.EXPECT().Register(gomock.Eq(common.IntegrationGithub), gomock.Eq("")).MinTimes(1).Return(nil, expectedError)
+	} else {
+		mockRegistration.EXPECT().Register(gomock.Eq(common.IntegrationGithub), gomock.Eq("")).MinTimes(1).Return(response, nil)
+	}
+
+	lifecycle.Start(context.Background())
+
+	return mgr
 }

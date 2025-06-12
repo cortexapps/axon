@@ -35,8 +35,9 @@ type AgentConfig struct {
 	HandlerHistoryMaxAge       time.Duration
 	HandlerHistoryMaxSizeBytes int64
 
-	HttpDisableTLS     bool
-	HttpCaCertFilePath string
+	HttpDisableTLS           bool
+	HttpCaCertFilePath       string
+	EnableHttpRelayReflector bool
 }
 
 func (ac AgentConfig) Print() {
@@ -205,6 +206,10 @@ func NewAgentEnvConfig() AgentConfig {
 	if caCertFilePath := os.Getenv("CA_CERT_PATH"); caCertFilePath != "" {
 		cfg.HttpCaCertFilePath = caCertFilePath
 		cfg.HttpCaCertFilePath = filepath.Clean(cfg.HttpCaCertFilePath)
+	}
+
+	if relayReflector := os.Getenv("ENABLE_RELAY_REFLECTOR"); relayReflector == "true" {
+		cfg.EnableHttpRelayReflector = true
 	}
 
 	return cfg

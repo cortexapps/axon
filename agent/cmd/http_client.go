@@ -8,6 +8,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 
 	"github.com/cortexapps/axon/config"
 	"go.uber.org/zap"
@@ -16,6 +17,20 @@ import (
 func createHttpTransport(config config.AgentConfig, logger *zap.Logger) *gohttp.Transport {
 	tlsConfig := &tls.Config{
 		InsecureSkipVerify: config.HttpDisableTLS,
+	}
+
+	// ensure no proxy has localhost
+	if hasProxy() {
+		noProxy := os.Getenv("NO_PROXY")
+		settings := strings.Split(noProxy, ",")
+		if !strings.Contains(noProxy, "localhost") {
+			settings = append(settings, "localhost")
+		}
+		if !strings.Contains(noProxy, "127.0.0.1") {
+			settings = append(settings, "127.0.0.1")
+		}
+		newNoProxy := strings.Join(settings, ",")
+		os.Setenv("NO_PROXY", newNoProxy)
 	}
 
 	// Load custom CA cert if provided
@@ -73,4 +88,12 @@ func createHttpClient(config config.AgentConfig, transport *gohttp.Transport) *g
 	return &gohttp.Client{
 		Transport: transport,
 	}
+}
+
+func hasProxy() bool {
+	proxy := os.Getenv("HTTP_PROXY")
+	if proxy == "" {
+		proxy = os.Getenv("HTTPS_PROXY")
+	}
+	return proxy != ""
 }

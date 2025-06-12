@@ -22,6 +22,7 @@ type Server interface {
 	io.Closer
 	RegisterHandler(h RegisterableHandler)
 	Start() (int, error)
+	Port() int
 }
 
 type RegisterableHandler interface {
@@ -217,6 +218,13 @@ func (h *httpServer) Start() (int, error) {
 	h.listener = ln
 	h.port = ln.Addr().(*net.TCPAddr).Port
 	return h.port, nil
+}
+
+func (h *httpServer) Port() int {
+	if h.port == 0 {
+		panic("Port called before Start")
+	}
+	return h.port
 }
 
 func (h *httpServer) Close() error {
