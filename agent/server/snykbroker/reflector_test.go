@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/cortexapps/axon/config"
 	"github.com/gorilla/mux"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/require"
@@ -140,4 +141,45 @@ func TestStartTwice(t *testing.T) {
 	require.NoError(t, err1)
 	require.NoError(t, err2)
 	require.Equal(t, port1, port2)
+}
+
+func TestModuleStartup(t *testing.T) {
+
+	cases := []struct {
+		name     string
+		cfg      config.AgentConfig
+		expected bool
+	}{
+		{
+			name:     "Disabled",
+			cfg:      config.AgentConfig{HttpRelayReflectorMode: config.RelayReflectorDisabled},
+			expected: false,
+		},
+		{
+			name:     "All",
+			cfg:      config.AgentConfig{HttpRelayReflectorMode: config.RelayReflectorAllTraffic},
+			expected: true,
+		},
+		{
+			name:     "All",
+			cfg:      config.AgentConfig{HttpRelayReflectorMode: config.RelayReflectorRegistrationOnly},
+			expected: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.AgentConfig{
+				HttpRelayReflectorMode: tc.cfg.HttpRelayReflectorMode,
+			}
+			result := MaybeNewRegistrationReflector(cfg, RegistrationReflectorParams{
+				Logger: zaptest.NewLogger(t),
+			})
+			if tc.expected {
+				require.NotNil(t, result, "Expected reflector to be created")
+			} else {
+				require.Nil(t, result, "Expected reflector to be nil")
+			}
+		})
+	}
 }

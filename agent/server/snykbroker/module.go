@@ -13,7 +13,7 @@ var Module = fx.Module("snykbroker",
 
 func MaybeNewRegistrationReflector(cfg config.AgentConfig, p RegistrationReflectorParams) *RegistrationReflector {
 
-	if cfg.HttpRelayReflectorMode != config.RelayReflectorDisabled {
+	if cfg.HttpRelayReflectorMode == config.RelayReflectorDisabled {
 		return nil
 	}
 
