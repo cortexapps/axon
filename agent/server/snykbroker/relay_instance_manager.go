@@ -457,9 +457,15 @@ func (r *relayInstanceManager) Start() error {
 
 func (r *relayInstanceManager) applyAcceptFileTransforms(acceptFile string) string {
 	if r.config.HttpRelayReflectorMode == config.RelayReflectorAllTraffic && r.reflector != nil {
-		newFile, err := r.integrationInfo.RewriteOrigins(acceptFile, func(uri string) string {
-			return r.reflector.ProxyURI(uri)
-		})
+		newFile, err := r.integrationInfo.RewriteOriginsWithHeaderExtraction(acceptFile, 
+			func(uri string) string {
+				return r.reflector.ProxyURI(uri)
+			},
+			func(originalURI string, headers map[string]string) {
+				// Create a new proxy with headers for the original URI
+				// This will ensure headers are injected for this specific target
+				r.reflector.ProxyURIWithHeaders(originalURI, headers)
+			})
 		if err != nil {
 			r.logger.Error("Error rewriting accept file", zap.String("acceptFile", acceptFile), zap.Error(err))
 		} else {
