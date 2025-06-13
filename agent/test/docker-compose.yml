@@ -20,8 +20,9 @@ services:
     environment:
       CORTEX_API_TOKEN: fake-token
       CORTEX_API_BASE_URL: http://cortex-fake:8081
+      ENABLE_RELAY_REFLECTOR: all
       PORT: 7433
-    command: relay -f /src/accept-client.json -i github -a test
+    command: relay -f /src/accept-client.json -i github -a axon-test
     depends_on:
       snyk-broker:
         condition: service_started
