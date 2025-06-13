@@ -1,11 +1,8 @@
 package snykbroker
 
 import (
-	"net/http"
-
 	"github.com/cortexapps/axon/config"
 	"go.uber.org/fx"
-	"go.uber.org/zap"
 )
 
 var Module = fx.Module("snykbroker",
@@ -14,11 +11,11 @@ var Module = fx.Module("snykbroker",
 	fx.Invoke(NewRelayInstanceManager),
 )
 
-func MaybeNewRegistrationReflector(lifecycle fx.Lifecycle, config config.AgentConfig, logger *zap.Logger, transport *http.Transport) *RegistrationReflector {
+func MaybeNewRegistrationReflector(cfg config.AgentConfig, p RegistrationReflectorParams) *RegistrationReflector {
 
-	if !config.EnableHttpRelayReflector {
+	if cfg.HttpRelayReflectorMode != config.RelayReflectorDisabled {
 		return nil
 	}
 
-	return NewRegistrationReflector(lifecycle, logger, transport)
+	return NewRegistrationReflector(p)
 }

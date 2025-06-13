@@ -86,11 +86,20 @@ func NewAxonAgent(
 }
 
 func (s *AxonAgent) RegisterHandler(ctx context.Context, req *pb.RegisterHandlerRequest) (*pb.RegisterHandlerResponse, error) {
+
+	if s.Manager == nil {
+		return nil, fmt.Errorf("handler manager is not initialized")
+	}
+
 	id, err := s.Manager.RegisterHandler(req.DispatchId, req.HandlerName, time.Duration(req.TimeoutMs)*time.Millisecond, req.Options...)
 	return &pb.RegisterHandlerResponse{Id: id}, err
 }
 
 func (s *AxonAgent) UnregisterHandler(ctx context.Context, req *pb.UnregisterHandlerRequest) (*pb.UnregisterHandlerResponse, error) {
+	if s.Manager == nil {
+		return nil, fmt.Errorf("handler manager is not initialized")
+	}
+
 	s.Manager.UnregisterHandler(req.Id)
 	return &pb.UnregisterHandlerResponse{}, nil
 }
@@ -101,6 +110,10 @@ func (s *AxonAgent) UnregisterHandler(ctx context.Context, req *pb.UnregisterHan
 // agent.  When a DispatchResponse is received, the client should call its method then
 // ReportInvocation to report the result of the invocation.
 func (s *AxonAgent) Dispatch(stream pb.AxonAgent_DispatchServer) error {
+
+	if s.Manager == nil {
+		return fmt.Errorf("handler manager is not initialized")
+	}
 
 	firstRequest := true
 	for {
@@ -248,6 +261,11 @@ func (s *AxonAgent) ReportInvocation(ctx context.Context, req *pb.ReportInvocati
 
 // ListHandlers returns a list of all registered handlers
 func (s *AxonAgent) ListHandlers(ctx context.Context, req *pb.ListHandlersRequest) (*pb.ListHandlersResponse, error) {
+
+	if s.Manager == nil {
+		return &pb.ListHandlersResponse{}, nil
+	}
+
 	handlers := s.Manager.ListHandlers()
 	resp := &pb.ListHandlersResponse{
 		Handlers: make([]*pb.HandlerInfo, 0),

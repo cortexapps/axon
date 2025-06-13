@@ -1,6 +1,8 @@
 package common
 
-import "os"
+import (
+	"os"
+)
 
 func ApplyEnv(envVars map[string]string) {
 

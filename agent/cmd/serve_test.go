@@ -39,6 +39,7 @@ func TestBuildServeStack(t *testing.T) {
 	os.Setenv("PORT", "0")
 	config := config.NewAgentEnvConfig()
 	config.HttpServerPort = 0
+	config.WebhookServerPort = 0
 	stack := buildServeStack(&cobra.Command{}, config)
 
 	require.NotNil(t, stack)
@@ -142,6 +143,7 @@ func TestBuildRelayStack(t *testing.T) {
 	config := config.NewAgentEnvConfig()
 	config.FailWaitTime = time.Millisecond
 	config.HttpServerPort = getRandomPort()
+	config.WebhookServerPort = getRandomPort()
 	// Set a random port for the HTTP server
 	stack := buildRelayStack(&cobra.Command{}, config, common.IntegrationInfo{
 		Integration: common.IntegrationGithub,

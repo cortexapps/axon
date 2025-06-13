@@ -69,6 +69,19 @@ while [ "$SNYK_STATUS" != "running" ] || [ "$AXON_STATUS" != "running" ]; do
 done
 
 echo "Sending request to broker server..."
+# First make sure we can call the status endpoint
+info_result=$(curl -s -q http://localhost:$SERVER_PORT/broker/$TOKEN/__axon/info)
+result=$(echo "$info_result" | jq -r '.alias')
+if [ "$result" != "axon-test" ]; then
+    echo "FAIL: Expected alias 'axon-relay', got '$result'"
+    exit 1
+fi
+result=$(echo "$info_result" | jq -r '.integration')
+if [ "$result" != "github" ]; then
+    echo "FAIL: Expected integration type 'github', got '$result'"
+    exit 1
+fi
+
 # The file we look for is at /tmp/token, mounted into the python-server container
 FILENAME="token-$(date +%s)"
 echo "$TOKEN" > /tmp/$FILENAME

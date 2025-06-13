@@ -162,6 +162,77 @@ func TestLoadIntegrationAcceptFilePoolVars(t *testing.T) {
 	require.NotContains(t, string(contents), "GITHUB_TOKEN_POOL")
 }
 
+func TestAcceptRewrite(t *testing.T) {
+	acceptFileContents := `
+	{
+		"public": [
+		{
+			"method": "any",
+			"path": "/*"
+		}
+		],
+		"private": [
+		{
+			"method": "any",
+			"path": "/*",
+			"origin": "http://python-server"
+		},
+		{
+			"method": "any",
+			"path": "/*",
+			"origin": "http://localhost"
+		},
+		{
+			"method": "any",
+			"path": "/*",
+			"origin": "api.foo.com"
+		}
+		]
+	}	
+	`
+	acceptFilePath := writeTempFile(t, acceptFileContents)
+	info := IntegrationInfo{
+		Integration:    IntegrationGithub,
+		AcceptFilePath: acceptFilePath,
+	}
+	rewritten, err := info.RewriteOrigins(acceptFilePath, func(origin string) string {
+		if origin == "http://python-server" {
+			return "http://new-python-server"
+		}
+		return origin
+	})
+	require.NoError(t, err)
+	contents, err := os.ReadFile(rewritten)
+	require.NoError(t, err)
+	require.Equal(t, `{"private":[{"method":"any","origin":"http://new-python-server","path":"/*"},{"method":"any","origin":"http://localhost","path":"/*"},{"method":"any","origin":"https://api.foo.com","path":"/*"}],"public":[{"method":"any","path":"/*"}]}`, string(contents))
+}
+
+func TestGetOrigin(t *testing.T) {
+
+	os.Setenv("USER", "testuser")
+	os.Setenv("API", "api.example.com")
+
+	cases :=
+		[]struct {
+			input    string
+			expected string
+		}{
+			{"http://example.com", "http://example.com"},
+			{"https://${USER}@example.com", "https://testuser@example.com"},
+			{"http://${USER}@${API}/path", "http://testuser@api.example.com/path"},
+		}
+
+	ii := IntegrationInfo{}
+
+	for _, c := range cases {
+		t.Run(c.input, func(t *testing.T) {
+			origin := ii.getOrigin(c.input)
+			require.Equal(t, c.expected, origin)
+		})
+	}
+
+}
+
 func TestLoadValidationParams(t *testing.T) {
 	ii := IntegrationInfo{
 		Integration: IntegrationGithub,

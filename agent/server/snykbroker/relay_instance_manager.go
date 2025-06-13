@@ -15,6 +15,7 @@ import (
 	"github.com/cortexapps/axon/common"
 	"github.com/cortexapps/axon/config"
 	cortexHttp "github.com/cortexapps/axon/server/http"
+	"github.com/cortexapps/axon/util"
 	"github.com/gorilla/mux"
 	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/fx"
@@ -46,16 +47,17 @@ type relayInstanceManager struct {
 }
 
 type tokenInfo struct {
-	ServerUri  string
-	Token      string
-	HasChanged bool
+	ServerUri   string
+	OriginalUri string
+	Token       string
+	HasChanged  bool
 }
 
 func (t *tokenInfo) equals(other *tokenInfo) bool {
 	if other == nil {
 		return false
 	}
-	if t.ServerUri != other.ServerUri {
+	if t.OriginalUri != other.OriginalUri {
 		return false
 	}
 	if t.Token != other.Token {
@@ -240,8 +242,9 @@ func (r *relayInstanceManager) getUrlAndToken() (*tokenInfo, error) {
 	}
 
 	tokenInfo := &tokenInfo{
-		ServerUri: uri,
-		Token:     token,
+		ServerUri:   uri,
+		OriginalUri: uri,
+		Token:       token,
 	}
 
 	if !tokenInfo.equals(r.tokenInfo) {
@@ -251,8 +254,7 @@ func (r *relayInstanceManager) getUrlAndToken() (*tokenInfo, error) {
 	}
 
 	if r.reflector != nil {
-		r.reflector.SetTargetURI(tokenInfo.ServerUri)
-		tokenInfo.ServerUri = r.reflector.ProxyURI()
+		tokenInfo.ServerUri = r.reflector.ProxyURI(tokenInfo.ServerUri, WithDefault(true))
 	}
 
 	return tokenInfo, nil
@@ -389,6 +391,8 @@ func (r *relayInstanceManager) Start() error {
 			zap.String("acceptFile", acceptFile),
 		)
 
+		acceptFile = r.applyAcceptFileTransforms(acceptFile)
+
 		brokerEnv := map[string]string{
 			"ACCEPT":            acceptFile,
 			"BROKER_SERVER_URL": info.ServerUri,
@@ -451,6 +455,20 @@ func (r *relayInstanceManager) Start() error {
 	return err
 }
 
+func (r *relayInstanceManager) applyAcceptFileTransforms(acceptFile string) string {
+	if r.config.HttpRelayReflectorMode == config.RelayReflectorAllTraffic && r.reflector != nil {
+		newFile, err := r.integrationInfo.RewriteOrigins(acceptFile, func(uri string) string {
+			return r.reflector.ProxyURI(uri)
+		})
+		if err != nil {
+			r.logger.Error("Error rewriting accept file", zap.String("acceptFile", acceptFile), zap.Error(err))
+		} else {
+			acceptFile = newFile
+		}
+	}
+	return acceptFile
+}
+
 func (r *relayInstanceManager) setHttpProxyEnvVars(brokerEnv map[string]string) {
 
 	httpProxy := os.Getenv("HTTP_PROXY")
@@ -461,10 +479,8 @@ func (r *relayInstanceManager) setHttpProxyEnvVars(brokerEnv map[string]string) 
 	if httpsProxy != "" && brokerEnv["HTTPS_PROXY"] == "" {
 		brokerEnv["HTTPS_PROXY"] = httpsProxy
 	}
-	noProxy := os.Getenv("NO_PROXY")
-	if noProxy != "" && brokerEnv["NO_PROXY"] == "" {
-		brokerEnv["NO_PROXY"] = noProxy
-	}
+
+	brokerEnv["NO_PROXY"] = util.EnsureLocalhostNoProxy(false)
 
 	if certPath := r.getCertFilePath(r.config.HttpCaCertFilePath); certPath != "" {
 		brokerEnv["NODE_EXTRA_CA_CERTS"] = certPath

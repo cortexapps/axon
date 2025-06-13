@@ -2,6 +2,7 @@ package snykbroker
 
 import (
 	"context"
+	"encoding/json"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PaesslerAG/jsonpath"
 	"github.com/cortexapps/axon/common"
 	"github.com/cortexapps/axon/config"
 	cortex_http "github.com/cortexapps/axon/server/http"
@@ -41,7 +43,7 @@ func TestManagerSuccessWithReflector(t *testing.T) {
 	mgr := createTestRelayInstanceManager(t, controller, nil, true)
 
 	// call the reflector uri
-	uri := mgr.reflector.ProxyURI()
+	uri := mgr.reflector.ProxyURI(mgr.serverUri)
 
 	req, err := http.NewRequest(http.MethodGet, uri+"/foo/bar", nil)
 	require.NoError(t, err)
@@ -124,7 +126,7 @@ func TestHttpProxy(t *testing.T) {
 
 	assert.Equal(t, "http://proxy.example.com:8080", env["HTTP_PROXY"])
 	assert.Equal(t, "http://proxy.example.com:8080", env["HTTPS_PROXY"])
-	assert.Equal(t, "localhost", env["NO_PROXY"])
+	assert.Equal(t, "localhost,127.0.0.1", env["NO_PROXY"])
 	assert.Equal(t, cfg.HttpCaCertFilePath, env["NODE_EXTRA_CA_CERTS"])
 
 }
@@ -219,11 +221,102 @@ func TestSystemCheck(t *testing.T) {
 	assert.Equal(t, jsonPayload, w.Body.String())
 }
 
+func TestApplyAcceptTransforms(t *testing.T) {
+
+	lifecycle := fxtest.NewLifecycle(t)
+	cfg := config.NewAgentEnvConfig()
+	logger := zap.NewNop()
+	cfg.HttpRelayReflectorMode = config.RelayReflectorAllTraffic
+
+	params := RegistrationReflectorParams{
+		Lifecycle: lifecycle,
+		Logger:    logger.Named("reflector"),
+		Config:    cfg,
+	}
+	reflector := NewRegistrationReflector(
+		params,
+	)
+	reflector.Start()
+	defer reflector.Stop()
+
+	mgr := &relayInstanceManager{
+		config:    cfg,
+		reflector: reflector,
+	}
+
+	cases := []struct {
+		acceptFile string
+		env        map[string]string
+	}{
+		{
+			acceptFile: "accept_files/accept.github.json",
+			env: map[string]string{
+				"GITHUB_API":     "api.github.com",
+				"GITHUB_GRAPHQL": "api.github.com/graphql",
+			},
+		},
+		{
+			acceptFile: "accept_files/accept.bitbucket.basic.json",
+			env: map[string]string{
+				"BITBUCKET_API": "api.bitbucket.com",
+			},
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.acceptFile, func(t *testing.T) {
+			// Set environment variables
+			for k, v := range c.env {
+				t.Setenv(k, v)
+			}
+
+			// validate it doesn't do it when mode is
+			cfgCopy := cfg
+			cfgCopy.HttpRelayReflectorMode = config.RelayReflectorRegistrationOnly
+			mgr.config = cfgCopy
+
+			newFile := mgr.applyAcceptFileTransforms(c.acceptFile)
+			// Check that the new file is the same as the original
+			assert.Equal(t, c.acceptFile, newFile, "Expected the accept file to not be transformed when reflector mode is disabled")
+
+			mgr.config = cfg // reset the config to the original
+
+			// Apply the accept file transforms
+			newFile = mgr.applyAcceptFileTransforms(c.acceptFile)
+			// Check that the new file is not the same as the original
+			assert.NotEqual(t, c.acceptFile, newFile, "Expected the accept file to be transformed")
+
+			// gather all of the "origin" values
+			newFileContent, err := os.ReadFile(newFile)
+			require.NoError(t, err, "Failed to read transformed accept file")
+
+			v := any(nil)
+
+			err = json.Unmarshal(newFileContent, &v)
+			require.NoError(t, err, "Failed to unmarshal transformed accept file")
+			origins, err := jsonpath.Get("$.private[*].origin", v)
+			require.NoError(t, err, "Failed to get origins from transformed accept file")
+			for _, origin := range origins.([]any) {
+				originStr, ok := origin.(string)
+				require.True(t, ok, "Expected origin to be a string")
+				// Check that the origin is not empty
+				assert.NotEmpty(t, originStr, "Expected origin to be non-empty")
+				// Check that the origin is a valid URL
+				url, err := url.ParseRequestURI(originStr)
+				assert.NoError(t, err, "Expected origin to be a valid URL")
+				require.Contains(t, url.Host, "localhost:", "Expected origin to contain localhost")
+			}
+		})
+
+	}
+}
+
 type wrappedRelayInstanceManager struct {
 	RelayInstanceManager
 	mockRegistration *MockRegistration
 	reflector        *RegistrationReflector
 	requestUrls      []url.URL
+	serverUri        string
 }
 
 func (w *wrappedRelayInstanceManager) Instance() *relayInstanceManager {
@@ -243,8 +336,12 @@ func createTestRelayInstanceManager(t *testing.T, controller *gomock.Controller,
 	common.ApplyEnv(envVars)
 
 	lifecycle := fxtest.NewLifecycle(t)
-	config := config.NewAgentEnvConfig()
-	config.FailWaitTime = time.Millisecond * 100
+	cfg := config.NewAgentEnvConfig()
+	cfg.FailWaitTime = time.Millisecond * 100
+	cfg.HttpRelayReflectorMode = config.RelayReflectorDisabled
+	if useReflector {
+		cfg.HttpRelayReflectorMode = config.RelayReflectorAllTraffic
+	}
 	logger := zap.NewNop()
 	ii := common.IntegrationInfo{
 		Integration: common.IntegrationGithub,
@@ -258,16 +355,19 @@ func createTestRelayInstanceManager(t *testing.T, controller *gomock.Controller,
 
 	var reflector *RegistrationReflector
 	if useReflector {
+		params := RegistrationReflectorParams{
+			Lifecycle: lifecycle,
+			Logger:    logger.Named("reflector"),
+			Config:    cfg,
+		}
 		reflector = NewRegistrationReflector(
-			lifecycle,
-			logger,
-			http.DefaultTransport.(*http.Transport),
+			params,
 		)
 	}
 
 	params := RelayInstanceManagerParams{
 		Lifecycle:       lifecycle,
-		Config:          config,
+		Config:          cfg,
 		Logger:          logger,
 		IntegrationInfo: ii,
 		HttpServer:      mockServer,
@@ -292,6 +392,7 @@ func createTestRelayInstanceManager(t *testing.T, controller *gomock.Controller,
 		ServerUri: testServer.URL,
 		Token:     "abcd1234",
 	}
+	mgr.serverUri = testServer.URL
 
 	if expectedError != nil {
 		mockRegistration.EXPECT().Register(gomock.Eq(common.IntegrationGithub), gomock.Eq("")).MinTimes(1).Return(nil, expectedError)
