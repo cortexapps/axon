@@ -114,7 +114,7 @@ func setAcceptFileDir(t *testing.T) {
 	pwd, err := os.Getwd()
 	require.NoError(t, err)
 	acceptFileDir := path.Join(pwd, "..", "server", "snykbroker", "accept_files")
-	os.Setenv("ACCEPT_FILE_DIR", acceptFileDir)
+	os.Setenv("ACCEPTFILE_DIR", acceptFileDir)
 }
 
 func loadAcceptFile(t *testing.T, integration Integration) (string, error) {
