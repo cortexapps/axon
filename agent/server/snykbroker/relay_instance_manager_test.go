@@ -325,7 +325,7 @@ func (w *wrappedRelayInstanceManager) Instance() *relayInstanceManager {
 
 func createTestRelayInstanceManager(t *testing.T, controller *gomock.Controller, expectedError error, useReflector bool) *wrappedRelayInstanceManager {
 	envVars := map[string]string{
-		"ACCEPT_FILE_DIR":  "./accept_files",
+		"ACCEPTFILE_DIR":   "./accept_files",
 		"GITHUB_TOKEN":     "the-token",
 		"GITHUB_API":       "https://api.github.com",
 		"GITHUB_GRAPHQL":   "https://api.github.com/graphql",

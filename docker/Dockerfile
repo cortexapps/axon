@@ -25,7 +25,7 @@ RUN make -C /build setup proto
 RUN cd /build && go build -o /agent/cortex-axon-agent
 RUN rm -rf /build
 COPY agent/server/snykbroker/accept_files /agent/accept_files
-ENV ACCEPT_FILE_DIR=/agent/accept_files
+ENV ACCEPTFILE_DIR=/agent/accept_files
 
 COPY /scaffold/. /app/scaffold/.
 

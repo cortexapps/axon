@@ -312,7 +312,7 @@ type Config struct {
 }
 
 func (ii IntegrationInfo) getIntegrationFileContents(fileName string) (string, error) {
-	acceptFileDir := os.Getenv("ACCEPT_FILE_DIR")
+	acceptFileDir := os.Getenv("ACCEPTFILE_DIR")
 
 	if acceptFileDir == "" {
 		acceptFileDir = "server/snykbroker/accept_files"
