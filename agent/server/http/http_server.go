@@ -1,6 +1,7 @@
 package http
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -172,6 +173,16 @@ type responseRecorder struct {
 func (rr *responseRecorder) WriteHeader(code int) {
 	rr.statusCode = code
 	rr.ResponseWriter.WriteHeader(code)
+}
+
+// needed for websockets/HTTP2
+var _ http.Hijacker = (*responseRecorder)(nil)
+
+func (rr *responseRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if h, ok := rr.ResponseWriter.(http.Hijacker); ok {
+		return h.Hijack()
+	}
+	return nil, nil, fmt.Errorf("response writer does not support hijacking")
 }
 
 func (h *httpServer) requestMiddleware(next http.Handler) http.Handler {
