@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -95,6 +97,10 @@ func (rr *RegistrationReflector) Stop() error {
 }
 
 func (rr *RegistrationReflector) getProxy(targetURI string, isDefault bool) (*proxyEntry, error) {
+	return rr.getProxyWithHeaders(targetURI, isDefault, nil)
+}
+
+func (rr *RegistrationReflector) getProxyWithHeaders(targetURI string, isDefault bool, headers map[string]string) (*proxyEntry, error) {
 	if targetURI == "" {
 		return nil, fmt.Errorf("target URI cannot be empty")
 	}
@@ -103,6 +109,13 @@ func (rr *RegistrationReflector) getProxy(targetURI string, isDefault bool) (*pr
 
 	if isDefault {
 		key = "default"
+	} else if len(headers) > 0 {
+		// Create a unique key that includes headers to allow different header sets for the same URI
+		headerKey := ""
+		for k, v := range headers {
+			headerKey += fmt.Sprintf("|%s=%s", k, v)
+		}
+		key = targetURI + headerKey
 	}
 
 	entry, exists := rr.targets[key]
@@ -120,6 +133,14 @@ func (rr *RegistrationReflector) getProxy(targetURI string, isDefault bool) (*pr
 
 		proxy := httputil.NewSingleHostReverseProxy(asUri)
 
+		// Process headers and substitute environment variables
+		processedHeaders := make(map[string]string)
+		if headers != nil {
+			for k, v := range headers {
+				processedHeaders[k] = substituteEnvVars(v)
+			}
+		}
+
 		// The proxy needs to override the Host and the URL host to not get erroneous 404s
 		// https://stackoverflow.com/questions/23164547/golang-reverseproxy-not-working
 		// https://github.com/golang/go/issues/14413
@@ -127,6 +148,11 @@ func (rr *RegistrationReflector) getProxy(targetURI string, isDefault bool) (*pr
 		proxy.Director = func(req *http.Request) {
 			defaultDirector(req)
 			req.Host = asUri.Host
+			
+			// Inject custom headers
+			for headerName, headerValue := range processedHeaders {
+				req.Header.Set(headerName, headerValue)
+			}
 		}
 		proxy.ModifyResponse = func(resp *http.Response) error {
 			resp.Header.Set("x-axon-relay-instance", rr.config.InstanceId)
@@ -137,13 +163,14 @@ func (rr *RegistrationReflector) getProxy(targetURI string, isDefault bool) (*pr
 			proxy.Transport = rr.transport
 		}
 
-		newEntry := newProxyEntry(targetURI, isDefault, proxy, rr.server.Port())
+		newEntry := newProxyEntryWithHeaders(targetURI, isDefault, proxy, rr.server.Port(), processedHeaders)
 		rr.targets[key] = *newEntry
 		entry = *newEntry
 
 		rr.logger.Info("Registered redirector",
 			zap.String("targetURI", entry.targetURI),
 			zap.String("proxyURI", entry.proxyURI),
+			zap.Any("headers", processedHeaders),
 		)
 	}
 	return &entry, nil
@@ -216,6 +243,22 @@ func (rr *RegistrationReflector) ProxyURI(target string, options ...ProxyOption)
 	return proxy.proxyURI
 }
 
+func (rr *RegistrationReflector) ProxyURIWithHeaders(target string, headers map[string]string, options ...ProxyOption) string {
+
+	opts := &proxyOption{}
+
+	for _, opt := range options {
+		opt(opts)
+	}
+
+	proxy, err := rr.getProxyWithHeaders(target, opts.isDefault, headers)
+	if err != nil {
+		rr.logger.Error("Failed to get proxy URI with headers", zap.Error(err))
+		return target
+	}
+	return proxy.proxyURI
+}
+
 func (rr *RegistrationReflector) RegisterRoutes(mux *mux.Router) error {
 	mux.PathPrefix("/").Handler(rr)
 	return nil
@@ -244,12 +287,25 @@ func hashString(s string) uint32 {
 	return h.Sum32()
 }
 
+// substituteEnvVars replaces environment variable placeholders in the format ${VAR_NAME}
+func substituteEnvVars(value string) string {
+	re := regexp.MustCompile(`\$\{([^}]+)\}`)
+	return re.ReplaceAllStringFunc(value, func(match string) string {
+		varName := match[2 : len(match)-1] // Remove ${ and }
+		if envValue := os.Getenv(varName); envValue != "" {
+			return envValue
+		}
+		return match // Return original if env var not found
+	})
+}
+
 type proxyEntry struct {
 	isDefault bool
 	targetURI string
 	hashCode  string
 	proxyURI  string
 	handler   http.Handler
+	headers   map[string]string // Custom headers to inject
 }
 
 func newProxyEntry(targetURI string, isDefault bool, handler http.Handler, port int) *proxyEntry {
@@ -259,6 +315,24 @@ func newProxyEntry(targetURI string, isDefault bool, handler http.Handler, port 
 		targetURI: targetURI,
 		hashCode:  strconv.Itoa(int(hashString(targetURI))),
 		handler:   handler,
+		headers:   make(map[string]string),
+	}
+	pe.proxyURI = pe.encodeProxyUri(targetURI, port, isDefault)
+
+	return pe
+}
+
+func newProxyEntryWithHeaders(targetURI string, isDefault bool, handler http.Handler, port int, headers map[string]string) *proxyEntry {
+
+	pe := &proxyEntry{
+		isDefault: isDefault,
+		targetURI: targetURI,
+		hashCode:  strconv.Itoa(int(hashString(targetURI))),
+		handler:   handler,
+		headers:   headers,
+	}
+	if pe.headers == nil {
+		pe.headers = make(map[string]string)
 	}
 	pe.proxyURI = pe.encodeProxyUri(targetURI, port, isDefault)
 
