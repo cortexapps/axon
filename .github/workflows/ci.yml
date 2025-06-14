@@ -38,7 +38,24 @@ jobs:
           go mod tidy
           make test
 
-      - name: Run scaffold test - build image
+  docker-tests:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Set up Go
+        uses: actions/setup-go@v3
+        with:
+          go-version: '1.22.9'
+
+      - name: Install dependencies
+        run: |
+            sudo apt install -y protobuf-compiler  
+            make -C agent setup proto
+
+      - name: Build Agent Local Image
         run: |
           make docker-build
       
@@ -50,9 +67,12 @@ jobs:
         run: |
             cd scaffold && ./scaffold_test.sh python
       
-      - name: Run Relay Test
-        run: |
-          make -C agent relay-test
+      - name: "Run Relay Test: No Proxy"
+        run: make -C agent relay-test-no-proxy
+
+      - name: "Run Relay Test: With Proxy"
+        run: make -C agent relay-test-with-proxy
+      
   helm-test:
     runs-on: ubuntu-latest
     needs: test

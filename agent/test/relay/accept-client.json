@@ -6,11 +6,17 @@
       }
     ],
     "private": [
+       {
+        "method": "any",
+        "path": "/cortexapps/axon/*",
+        "origin": "https://raw.githubusercontent.com"
+      },
       {
         "method": "any",
         "path": "/*",
         "origin": "http://python-server"
       }
+     
     ]
 }
   
