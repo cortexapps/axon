@@ -471,6 +471,16 @@ func (r *relayInstanceManager) applyAcceptFileTransforms(acceptFile string) stri
 
 func (r *relayInstanceManager) setHttpProxyEnvVars(brokerEnv map[string]string) {
 
+	// This is mostly for testing so we can validate no traffic goes out from the broker
+	// directly
+	if proxyStrictMode := os.Getenv("PROXY_STRICT_MODE"); proxyStrictMode == "true" {
+		brokerEnv["HTTP_PROXY"] = "http://not-a-real-proxy:1234"
+		brokerEnv["HTTPS_PROXY"] = "http://not-a-real-proxy:1234"
+		brokerEnv["NO_PROXY"] = "localhost"
+		r.logger.Warn("PROXY_STRICT_MODE is enabled, setting HTTP_PROXY and HTTPS_PROXY to a dummy value")
+		return
+	}
+
 	httpProxy := os.Getenv("HTTP_PROXY")
 	if httpProxy != "" && brokerEnv["HTTP_PROXY"] == "" {
 		brokerEnv["HTTP_PROXY"] = httpProxy

@@ -26,6 +26,7 @@ type RegistrationReflector struct {
 	targets       map[string]proxyEntry
 	serverStarted atomic.Bool
 	mode          config.RelayReflectorMode
+	config        config.AgentConfig
 }
 
 type RegistrationReflectorParams struct {
@@ -55,6 +56,7 @@ func NewRegistrationReflector(p RegistrationReflectorParams) *RegistrationReflec
 		logger:    httpParams.Logger,
 		targets:   make(map[string]proxyEntry),
 		mode:      p.Config.HttpRelayReflectorMode,
+		config:    p.Config,
 	}
 
 	server.RegisterHandler(rr)
@@ -125,6 +127,10 @@ func (rr *RegistrationReflector) getProxy(targetURI string, isDefault bool) (*pr
 		proxy.Director = func(req *http.Request) {
 			defaultDirector(req)
 			req.Host = asUri.Host
+		}
+		proxy.ModifyResponse = func(resp *http.Response) error {
+			resp.Header.Set("x-axon-relay-instance", rr.config.InstanceId)
+			return nil
 		}
 
 		if rr.transport != nil {

@@ -10,6 +10,16 @@ services:
       ACCEPT: /src/accept-server.json
     command: snyk-broker server
 
+  mitmproxy:
+    image: mitmproxy/mitmproxy:12
+    ports:
+      - "9980:8080"
+      - "9981:8081"
+    volumes:
+      - ./.mitmproxy:/home/mitmproxy/.mitmproxy
+      - ./mitmproxy_addon_header.py:/home/mitmproxy/addon.py
+    command: mitmdump -s /home/mitmproxy/addon.py
+
   axon-relay:
     build:
       context: ../..
@@ -17,13 +27,16 @@ services:
     image: cortex-axon-agent:local
     volumes:
       - .:/src
+      - ./.mitmproxy:/certs
     environment:
       CORTEX_API_TOKEN: fake-token
       CORTEX_API_BASE_URL: http://cortex-fake:8081
-      ENABLE_RELAY_REFLECTOR: all
       PORT: 7433
+    env_file: ${ENVFILE:-noproxy.env}
     command: relay -f /src/accept-client.json -i github -a axon-test
     depends_on:
+      mitmproxy:
+        condition: service_started
       snyk-broker:
         condition: service_started
       cortex-fake:
@@ -58,6 +71,6 @@ services:
     command: sh -c "apk add curl && cd /src && go run cortex-registration-fake.go"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8081/healthcheck"]
-      interval: 5s
-      timeout: 5s
-      retries: 6
+      interval: 1s
+      timeout: 1s
+      retries: 10

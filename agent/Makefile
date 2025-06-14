@@ -71,8 +71,19 @@ test: mocks
 validate-filters:
 	test/validate_filters.sh
 
-relay-test:
-	cd test && ./relay_test.sh
+relay-test-no-proxy:
+	# No proxy case
+	@echo "Running relay tests: no proxy"
+	cd test/relay && export PROXY=0 && ./relay_test.sh
+
+relay-test-with-proxy: 
+	# Proxy case
+	@echo "Running relay tests: with proxy"
+	cd test/relay && export PROXY=1 && ./relay_test.sh
+
+relay-test: relay-test-no-proxy relay-test-with-proxy
+
+.PHONY: relay-test relay-test-no-proxy relay-test-with-proxy
 
 run: proto
 	go run main.go serve
