@@ -299,7 +299,7 @@ func (r *relayInstanceManager) Start() error {
 		executable = directPath
 	}
 
-	acceptFile, err := r.integrationInfo.AcceptFile()
+	acceptFile, err := r.integrationInfo.AcceptFile(r.config.HttpBaseUrl())
 
 	if err != nil {
 		fmt.Println("Error getting accept file", err)

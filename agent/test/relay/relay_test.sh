@@ -18,6 +18,7 @@ set -e
 export TOKEN=0e481b34-76ac-481a-a92f-c94a6cf6f6c1
 export SERVER_PORT=57341
 
+
 if [ "$PROXY" == "1" ]
 then
     echo "TESTING WITH PROXY"
@@ -25,6 +26,10 @@ then
 else 
     echo "TESTING WITHOUT PROXY"
     export ENVFILE=noproxy.env
+
+    # just for fun also set the HTTP_PORT to a different value to ensure
+    # we respect that port as well
+    export HTTP_PORT=58080
 fi
 
 # Create an exit trap to stop the broker when the script exits

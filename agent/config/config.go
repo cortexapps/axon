@@ -61,6 +61,10 @@ type AgentConfig struct {
 	HttpRelayReflectorMode RelayReflectorMode
 }
 
+func (ac AgentConfig) HttpBaseUrl() string {
+	return fmt.Sprintf("http://localhost:%d", ac.HttpServerPort)
+}
+
 func (ac AgentConfig) Print() {
 	fmt.Println("Agent Configuration:")
 	if ac.GrpcPort != DefaultGrpcPort {

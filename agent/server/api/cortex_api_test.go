@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	pb "github.com/cortexapps/axon/.generated/proto/github.com/cortexapps/axon"
+	"github.com/cortexapps/axon/common"
 	"github.com/cortexapps/axon/config"
 	cortex_http "github.com/cortexapps/axon/server/http"
 	"github.com/stretchr/testify/require"
@@ -157,7 +158,7 @@ func mockServer(t *testing.T, cfg config.AgentConfig, handler http.HandlerFunc) 
 		cfg.CortexApiBaseUrl = "http://dryrun" // should never be called
 	}
 
-	cfg.HttpServerPort = 0
+	cfg.HttpServerPort = common.GetRandomPort()
 	proxy := NewApiProxyHandler(cfg, logger, nil)
 	httpServerParams := cortex_http.HttpServerParams{
 		Logger: logger,
@@ -166,6 +167,7 @@ func mockServer(t *testing.T, cfg config.AgentConfig, handler http.HandlerFunc) 
 	proxyServer.RegisterHandler(proxy)
 	port, err := proxyServer.Start()
 	require.NoError(t, err)
+	require.Equal(t, port, cfg.HttpServerPort)
 
 	cfg.HttpServerPort = port
 

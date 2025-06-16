@@ -22,7 +22,7 @@ type httpRequestHelper struct {
 
 func newHttpRequestHelper(config config.AgentConfig, logger *zap.Logger) *httpRequestHelper {
 	return &httpRequestHelper{
-		BaseURL: fmt.Sprintf("http://localhost:%d/cortex-api", config.HttpServerPort),
+		BaseURL: fmt.Sprintf("%s/%s", config.HttpBaseUrl(), cortexApiRoot),
 		logger:  logger.With(zap.String("component", "httpRequestHelper")),
 	}
 }

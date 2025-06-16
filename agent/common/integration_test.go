@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"strings"
 	"testing"
 	"time"
 
@@ -25,12 +26,12 @@ func TestEmptyAcceptFile(t *testing.T) {
 		os.Remove(info.AcceptFilePath)
 	}()
 
-	resultPath, err := info.AcceptFile()
+	resultPath, err := info.AcceptFile("http://localhost:9999")
 	require.NoError(t, err)
 
 	contents, err := os.ReadFile(resultPath)
 	require.NoError(t, err)
-	require.Equal(t, "{\"private\":[{\"method\":\"any\",\"origin\":\"http://localhost\",\"path\":\"/__axon/*\"}],\"public\":[]}", string(contents))
+	require.Equal(t, "{\"private\":[{\"method\":\"any\",\"origin\":\"http://localhost:9999\",\"path\":\"/__axon/*\"}],\"public\":[]}", string(contents))
 
 }
 
@@ -47,7 +48,7 @@ func TestGithubDefaultAcceptFile(t *testing.T) {
 		Alias:       fmt.Sprintf("%v", time.Now().UnixMilli()),
 	}
 
-	resultPath, err := info.AcceptFile()
+	resultPath, err := info.AcceptFile("http://localhost:9999")
 	require.NoError(t, err)
 	_, err = os.Stat(resultPath)
 	require.NoError(t, err)
@@ -67,7 +68,7 @@ func TestGithubDefaultAcceptFileSubtypeInvalid(t *testing.T) {
 		Alias:       fmt.Sprintf("%v", time.Now().UnixMilli()),
 	}
 
-	_, err := info.AcceptFile()
+	_, err := info.AcceptFile("http://localhost:9999")
 	require.Error(t, err)
 }
 
@@ -101,12 +102,12 @@ func TestExistingAcceptFile(t *testing.T) {
 		os.Remove(info.AcceptFilePath)
 	}()
 
-	resultPath, err := info.AcceptFile()
+	resultPath, err := info.AcceptFile("http://localhost:9999")
 	require.NoError(t, err)
 
 	contents, err := os.ReadFile(resultPath)
 	require.NoError(t, err)
-	require.Equal(t, `{"private":[{"method":"any","origin":"http://localhost","path":"/__axon/*"},{"method":"any","origin":"http://python-server","path":"/*"}],"public":[{"method":"any","path":"/*"}]}`, string(contents))
+	require.Equal(t, `{"private":[{"method":"any","origin":"http://localhost:9999","path":"/__axon/*"},{"method":"any","origin":"http://python-server","path":"/*"}],"public":[{"method":"any","path":"/*"}]}`, string(contents))
 
 }
 
@@ -122,7 +123,7 @@ func loadAcceptFile(t *testing.T, integration Integration) (string, error) {
 	ii := IntegrationInfo{
 		Integration: integration,
 	}
-	return ii.AcceptFile()
+	return ii.AcceptFile("http://localhost:9999")
 }
 func init() {
 	setAcceptFileDir(&testing.T{})
@@ -184,6 +185,11 @@ func TestAcceptRewrite(t *testing.T) {
 		},
 		{
 			"method": "any",
+			"path": "/stuff/*",
+			"origin": "http://localhost:9999"
+		},
+		{
+			"method": "any",
 			"path": "/*",
 			"origin": "api.foo.com"
 		}
@@ -196,6 +202,11 @@ func TestAcceptRewrite(t *testing.T) {
 		AcceptFilePath: acceptFilePath,
 	}
 	rewritten, err := info.RewriteOrigins(acceptFilePath, func(origin string) string {
+
+		if strings.Contains(origin, "http://localhost") {
+			require.Fail(t, "should not rewrite localhost origins")
+		}
+
 		if origin == "http://python-server" {
 			return "http://new-python-server"
 		}
@@ -204,7 +215,7 @@ func TestAcceptRewrite(t *testing.T) {
 	require.NoError(t, err)
 	contents, err := os.ReadFile(rewritten)
 	require.NoError(t, err)
-	require.Equal(t, `{"private":[{"method":"any","origin":"http://new-python-server","path":"/*"},{"method":"any","origin":"http://localhost","path":"/*"},{"method":"any","origin":"https://api.foo.com","path":"/*"}],"public":[{"method":"any","path":"/*"}]}`, string(contents))
+	require.Equal(t, `{"private":[{"method":"any","origin":"http://new-python-server","path":"/*"},{"method":"any","origin":"http://localhost","path":"/*"},{"method":"any","origin":"http://localhost:9999","path":"/stuff/*"},{"method":"any","origin":"https://api.foo.com","path":"/*"}],"public":[{"method":"any","path":"/*"}]}`, string(contents))
 }
 
 func TestGetOrigin(t *testing.T) {
