@@ -70,10 +70,10 @@ type IntegrationInfo struct {
 	AcceptFilePath string
 }
 
-func (ii IntegrationInfo) AcceptFile() (string, error) {
+func (ii IntegrationInfo) AcceptFile(localhostBase string) (string, error) {
 
 	// load/locate the accept file then fix it up to have
-	// an entry to talk to the neuroh HTTP server itself
+	// an entry to talk to the axon HTTP server itself
 	// which we use for status, etc
 	alias := ii.Alias
 	if len(alias) == 0 {
@@ -122,7 +122,7 @@ func (ii IntegrationInfo) AcceptFile() (string, error) {
 	entry := map[string]string{
 		"method": "any",
 		"path":   "/__axon/*",
-		"origin": "http://localhost",
+		"origin": localhostBase,
 	}
 	dict["private"] = append([]interface{}{entry}, entries...)
 
@@ -178,7 +178,7 @@ func (ii IntegrationInfo) RewriteOrigins(acceptFilePath string, writer func(stri
 			return acceptFilePath, fmt.Errorf("failed to parse origin %q: %w", origin, err)
 		}
 
-		if parsed.Host == "localhost" || parsed.Host == "127.0.0.1" {
+		if strings.HasPrefix(parsed.Host, "localhost") || strings.HasPrefix(parsed.Host, "127.0.0.1") {
 			continue
 		}
 		if parsed.Scheme == "" {

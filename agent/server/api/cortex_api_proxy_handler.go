@@ -63,7 +63,6 @@ func (a *apiProxyHandler) Path() string {
 
 func (a *apiProxyHandler) RegisterRoutes(mux *mux.Router) error {
 	mux.PathPrefix(cortexApiPathRoot).Handler(a)
-	mux.Handle("/", a)
 	return nil
 }
 

@@ -11,7 +11,6 @@ import (
 	"github.com/cortexapps/axon/server"
 	"github.com/cortexapps/axon/server/api"
 	"github.com/cortexapps/axon/server/handler"
-	"github.com/cortexapps/axon/server/http"
 	cortexHttp "github.com/cortexapps/axon/server/http"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/spf13/cobra"
@@ -32,10 +31,10 @@ func startAgent(opts fx.Option) {
 }
 
 var AgentModule = fx.Module("agent",
-	fx.Provide(http.NewPrometheusRegistry),
+	fx.Provide(cortexHttp.NewPrometheusRegistry),
 	fx.Provide(createHttpTransport),
 	fx.Provide(createHttpClient),
-	fx.Provide(http.NewAxonHandler),
+	fx.Provide(cortexHttp.NewAxonHandler),
 	fx.Provide(createMainHttpServer),
 	fx.Provide(func(config config.AgentConfig) *zap.Logger {
 

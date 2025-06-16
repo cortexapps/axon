@@ -136,7 +136,10 @@ func NewHttpServer(p HttpServerParams, opts ...ServerOption) Server {
 	if p.Lifecycle != nil {
 		p.Lifecycle.Append(fx.Hook{
 			OnStart: func(ctx context.Context) error {
-				_, err := server.Start()
+				port, err := server.Start()
+				if err != nil && serverOpts.port != 0 && port != serverOpts.port {
+					panic("Port mismatch: server started on a different port than expected")
+				}
 				p.Logger.Info("HTTP server started", zap.Int("port", serverOpts.port), zap.Error(err))
 				return err
 			},

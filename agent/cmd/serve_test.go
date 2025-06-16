@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math/rand"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -53,14 +52,6 @@ func TestBuildServeStack(t *testing.T) {
 	app.Stop(context.Background())
 }
 
-func getRandomPort() int {
-	port := 10000 + rand.Intn(50000-10000)
-	if port == 0 {
-		port = 10000
-	}
-	return port
-}
-
 func TestBuildServeStackLive(t *testing.T) {
 
 	// create a fake server that serves http://localhost:xxx/relay/register
@@ -81,8 +72,8 @@ func TestBuildServeStackLive(t *testing.T) {
 	os.Setenv("CORTEX_API_BASE_URL", server.URL)
 	os.Setenv("PORT", "0")
 	config := config.NewAgentEnvConfig()
-	config.HttpServerPort = getRandomPort()
-	config.WebhookServerPort = getRandomPort()
+	config.HttpServerPort = common.GetRandomPort()
+	config.WebhookServerPort = common.GetRandomPort()
 	stack := buildServeStack(&cobra.Command{}, config)
 
 	require.NotNil(t, stack)
@@ -142,8 +133,8 @@ func TestBuildRelayStack(t *testing.T) {
 
 	config := config.NewAgentEnvConfig()
 	config.FailWaitTime = time.Millisecond
-	config.HttpServerPort = getRandomPort()
-	config.WebhookServerPort = getRandomPort()
+	config.HttpServerPort = common.GetRandomPort()
+	config.WebhookServerPort = common.GetRandomPort()
 	// Set a random port for the HTTP server
 	stack := buildRelayStack(&cobra.Command{}, config, common.IntegrationInfo{
 		Integration: common.IntegrationGithub,
