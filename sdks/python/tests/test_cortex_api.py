@@ -55,7 +55,27 @@ def test_param_passed(mock_agent, mock_cortex_api):  # noqa: F811
     resp = ctx.cortex_api_call(method="GET", path="/api/v1/some-api", params={"X": "valueX", "Y": "white space"})
 
     assert resp.status_code == 201
-    assert resp.text == '{"message": "201", "path":"/api/v1/some-api?X=valueX&Y=white%2Bspace"}'
+    assert resp.text == '{"message": "201", "path":"/api/v1/some-api?X=valueX&Y=white+space"}'
+
+
+def test_param_passed_with_commpas(mock_agent, mock_cortex_api):  # noqa: F811
+    recvd_request = {}
+    mock_cortex_api.mock.Call.side_effect = lambda request, context: mock_call(request, recvd_request)
+
+    client = AxonClient(
+        agent_host="localhost",
+        agent_port=mock_agent.port,
+        cortex_host="localhost",
+        cortex_port=mock_cortex_api.port,
+        handlers=[],
+        scope=globals(),
+    )
+
+    ctx = client._handler_context({})
+    resp = ctx.cortex_api_call(method="GET", path="/api/v1/some-api", params={"types": "service,team", "Y": "white space"})
+
+    assert resp.status_code == 201
+    assert resp.text == '{"message": "201", "path":"/api/v1/some-api?types=service%2Cteam&Y=white+space"}'
 
 def test_response_to_json(mock_agent, mock_cortex_api):  # noqa: F811
     mock_cortex_api.mock.Call.side_effect = lambda request, context: mock_call(request)

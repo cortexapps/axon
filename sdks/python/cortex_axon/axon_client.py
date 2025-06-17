@@ -299,7 +299,7 @@ class HandlerContext:
     ) -> CortexResponse:
         if params:
             encoded_params = {k: quote_plus(v) for k, v in params.items()}
-            query_string = urlencode(encoded_params)
+            query_string = "&".join(f"{k}={v}" for k, v in encoded_params.items())
             path = f"{path}?{query_string}"
 
         request = cortex_api_pb2.CallRequest(
