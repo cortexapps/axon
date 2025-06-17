@@ -4,7 +4,7 @@ import traceback
 from datetime import datetime
 from time import sleep
 from typing import Any, Optional
-from urllib.parse import quote_plus, urlencode
+from urllib.parse import quote_plus
 
 import grpc
 
