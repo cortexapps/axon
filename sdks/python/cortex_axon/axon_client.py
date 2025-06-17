@@ -4,7 +4,7 @@ import traceback
 from datetime import datetime
 from time import sleep
 from typing import Any, Optional
-from urllib.parse import quote_plus, urlencode
+from urllib.parse import quote_plus
 
 import grpc
 
@@ -299,7 +299,7 @@ class HandlerContext:
     ) -> CortexResponse:
         if params:
             encoded_params = {k: quote_plus(v) for k, v in params.items()}
-            query_string = urlencode(encoded_params)
+            query_string = "&".join(f"{k}={v}" for k, v in encoded_params.items())
             path = f"{path}?{query_string}"
 
         request = cortex_api_pb2.CallRequest(
