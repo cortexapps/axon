@@ -144,6 +144,10 @@ func (ii IntegrationInfo) AcceptFile(localhostBase string) (string, error) {
 }
 
 func (ii IntegrationInfo) RewriteOrigins(acceptFilePath string, writer func(string) string) (string, error) {
+	return ii.RewriteOriginsWithHeaderExtraction(acceptFilePath, writer, nil)
+}
+
+func (ii IntegrationInfo) RewriteOriginsWithHeaderExtraction(acceptFilePath string, writer func(string) string, headerExtractor func(string, map[string]string)) (string, error) {
 
 	stat, err := os.Stat(acceptFilePath)
 	if err != nil {
@@ -184,6 +188,24 @@ func (ii IntegrationInfo) RewriteOrigins(acceptFilePath string, writer func(stri
 		if parsed.Scheme == "" {
 			parsed.Scheme = "https"
 			origin = parsed.String()
+		}
+
+		// Extract headers if present
+		var headers map[string]string
+		if headersInterface, hasHeaders := entry.(map[string]interface{})["headers"]; hasHeaders {
+			if headersMap, ok := headersInterface.(map[string]interface{}); ok {
+				headers = make(map[string]string)
+				for k, v := range headersMap {
+					if strVal, ok := v.(string); ok {
+						headers[k] = strVal
+					}
+				}
+			}
+		}
+
+		// If headers were found and headerExtractor is provided, call it before rewriting
+		if len(headers) > 0 && headerExtractor != nil {
+			headerExtractor(ii.getOrigin(origin), headers)
 		}
 
 		// rewrite the origin to use the writer function
