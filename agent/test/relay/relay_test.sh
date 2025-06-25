@@ -71,7 +71,7 @@ while [ "$SNYK_STATUS" != "running" ] || [ "$AXON_STATUS" != "running" ]; do
     
     if [ $COUNTER -eq 0 ]; then
         echo "Containers did not start in time"
-        docker compose logsgi
+        docker compose logs
         exit 1
     fi
     

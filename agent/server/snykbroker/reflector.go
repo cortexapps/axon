@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
-	"strconv"
 	"strings"
 	"sync/atomic"
 
@@ -100,41 +99,30 @@ func (rr *RegistrationReflector) getProxy(targetURI string, isDefault bool, head
 		return nil, fmt.Errorf("target URI cannot be empty")
 	}
 
-	key := targetURI
-
-	if isDefault {
-		key = "default"
-	} else if len(headers) > 0 {
-		// Create a unique key that includes headers to allow different header sets for the same URI
-		headerKey := ""
-		for k, v := range headers {
-			headerKey += fmt.Sprintf("|%s=%s", k, v)
-		}
-		key = targetURI + headerKey
+	_, err := rr.Start()
+	if err != nil {
+		panic(fmt.Sprintf("failed to start registration reflector: %v", err))
 	}
+
+	newEntry, err := newProxyEntry(targetURI, isDefault, rr.server.Port(), headers, rr.transport)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create new proxy entry: %w", err)
+	}
+
+	key := newEntry.key()
 
 	entry, exists := rr.targets[key]
 	if !exists {
 
-		_, err := rr.Start()
-		if err != nil {
-			panic(fmt.Sprintf("failed to start registration reflector: %v", err))
-		}
-
-		newEntry, err := newProxyEntry(targetURI, isDefault, rr.server.Port(), headers, rr.transport)
-		if err != nil {
-			return nil, err
-		}
 		rr.targets[key] = *newEntry
 		newEntry.addResponseHeader("x-axon-relay-instance", rr.config.InstanceId)
-
-		entry = *newEntry
 
 		rr.logger.Info("Registered redirector",
 			zap.String("targetURI", entry.TargetURI),
 			zap.String("proxyURI", entry.proxyURI),
 			zap.Any("headers", headers),
 		)
+		return newEntry, nil
 	}
 	return &entry, nil
 }
@@ -169,7 +157,7 @@ func (rr *RegistrationReflector) parseTargetUri(proxyPath string) (*proxyEntry, 
 	}
 
 	for _, entry := range rr.targets {
-		if entry.hashCode == hash {
+		if entry.key() == hash {
 			// Found the target URI
 			return &entry, remainder, nil
 		}
@@ -249,11 +237,11 @@ func hashString(s string) uint32 {
 type proxyEntry struct {
 	isDefault       bool
 	TargetURI       string // Exported for clean access
-	hashCode        string
 	proxyURI        string
 	handler         http.Handler
 	headers         map[string]string
 	responseHeaders map[string]string
+	hashCode        string
 }
 
 func newProxyEntry(targetURI string, isDefault bool, port int, headers map[string]string, transport *http.Transport) (*proxyEntry, error) {
@@ -279,7 +267,6 @@ func newProxyEntry(targetURI string, isDefault bool, port int, headers map[strin
 	pe := &proxyEntry{
 		isDefault: isDefault,
 		TargetURI: targetURI,
-		hashCode:  strconv.Itoa(int(hashString(targetURI))),
 		handler:   proxy,
 		headers:   processedHeaders,
 	}
@@ -312,6 +299,29 @@ func newProxyEntry(targetURI string, isDefault bool, port int, headers map[strin
 	return pe, nil
 }
 
+func (pe *proxyEntry) key() string {
+	if pe.isDefault {
+		return "default"
+	}
+	if pe.hashCode == "" {
+
+		key := pe.TargetURI
+
+		if len(pe.headers) > 0 {
+			// Create a unique key that includes headers to allow different header sets for the same URI
+			headerKey := ""
+			for k, v := range pe.headers {
+				headerKey += fmt.Sprintf("|%s=%s", k, v)
+			}
+			key = key + headerKey
+		}
+		hash := hashString(key)
+		pe.hashCode = fmt.Sprintf("%d", hash)
+	}
+	return pe.hashCode
+
+}
+
 func (pe *proxyEntry) addResponseHeader(name, value string) {
 	if pe.responseHeaders == nil {
 		pe.responseHeaders = make(map[string]string)
@@ -337,5 +347,5 @@ func (pe *proxyEntry) encodeProxyUri(targetURI string, port int, isDefault bool)
 		parsedTarget.Scheme = parsedProxyURI.Scheme
 		return parsedTarget.String()
 	}
-	return fmt.Sprintf("%s/!%d!", baseProxyURI, hashString(targetURI))
+	return fmt.Sprintf("%s/!%s!", baseProxyURI, pe.key())
 }

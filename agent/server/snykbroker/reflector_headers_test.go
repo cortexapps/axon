@@ -33,19 +33,20 @@ func TestAcceptFileHeadersAppliedToLiveRequests(t *testing.T) {
 
 	tests := []struct {
 		name            string
-		acceptContent   map[string]interface{}
+		acceptContent   map[string]any
 		expectedHeaders map[string]string
 		testPath        string
+		index           int
 	}{
 		{
 			name: "single header with env var",
-			acceptContent: map[string]interface{}{
-				"private": []interface{}{
-					map[string]interface{}{
+			acceptContent: map[string]any{
+				"private": []any{
+					map[string]any{
 						"method": "GET",
 						"path":   "/api/*",
 						"origin": "http://example.com",
-						"headers": map[string]interface{}{
+						"headers": map[string]any{
 							"x-api-key": "${TEST_API_KEY}",
 						},
 					},
@@ -58,13 +59,13 @@ func TestAcceptFileHeadersAppliedToLiveRequests(t *testing.T) {
 		},
 		{
 			name: "multiple headers with env vars",
-			acceptContent: map[string]interface{}{
-				"private": []interface{}{
-					map[string]interface{}{
+			acceptContent: map[string]any{
+				"private": []any{
+					map[string]any{
 						"method": "POST",
 						"path":   "/graphql",
 						"origin": "http://graphql.example.com",
-						"headers": map[string]interface{}{
+						"headers": map[string]any{
 							"authorization": "Bearer ${TEST_AUTH_TOKEN}",
 							"x-api-key":     "${TEST_API_KEY}",
 							"x-static":      "static-value",
@@ -81,13 +82,13 @@ func TestAcceptFileHeadersAppliedToLiveRequests(t *testing.T) {
 		},
 		{
 			name: "headers with wildcard path",
-			acceptContent: map[string]interface{}{
-				"private": []interface{}{
-					map[string]interface{}{
+			acceptContent: map[string]any{
+				"private": []any{
+					map[string]any{
 						"method": "any",
 						"path":   "/*",
 						"origin": "http://api.example.com",
-						"headers": map[string]interface{}{
+						"headers": map[string]any{
 							"x-service-key": "${TEST_API_KEY}",
 						},
 					},
@@ -97,6 +98,34 @@ func TestAcceptFileHeadersAppliedToLiveRequests(t *testing.T) {
 				"x-service-key": "secret-api-key-123",
 			},
 			testPath: "/any/nested/path",
+		},
+		{
+			name: "multiple routes different headers",
+			acceptContent: map[string]any{
+				"private": []any{
+					map[string]any{
+						"method": "GET",
+						"path":   "/api/*",
+						"origin": "http://example.com",
+						"headers": map[string]any{
+							"x-api-key": "route1",
+						},
+					},
+					map[string]any{
+						"method": "GET",
+						"path":   "/api-v2/*",
+						"origin": "http://example.com",
+						"headers": map[string]any{
+							"x-api-key": "route2",
+						},
+					},
+				},
+			},
+			expectedHeaders: map[string]string{
+				"x-api-key": "route2",
+			},
+			index:    1,
+			testPath: "/api-v2/test",
 		},
 	}
 
@@ -158,7 +187,7 @@ func TestAcceptFileHeadersAppliedToLiveRequests(t *testing.T) {
 			assert.Equal(t, tt.expectedHeaders, capturedHeaders)
 
 			// Make a live HTTP request through the proxy
-			proxyURL := fmt.Sprintf("%s%s", info.Routes[0].ProxyOrigin, tt.testPath)
+			proxyURL := fmt.Sprintf("%s%s", info.Routes[tt.index].ProxyOrigin, tt.testPath)
 			resp, err := http.Get(proxyURL)
 			require.NoError(t, err)
 			defer resp.Body.Close()
@@ -185,13 +214,13 @@ func TestAcceptFileHeadersWithMissingEnvVars(t *testing.T) {
 	// Ensure env var is not set
 	os.Unsetenv("MISSING_ENV_VAR")
 
-	acceptContent := map[string]interface{}{
-		"private": []interface{}{
-			map[string]interface{}{
+	acceptContent := map[string]any{
+		"private": []any{
+			map[string]any{
 				"method": "GET",
 				"path":   "/api/*",
 				"origin": "http://example.com",
-				"headers": map[string]interface{}{
+				"headers": map[string]any{
 					"x-api-key": "${MISSING_ENV_VAR}",
 				},
 			},
@@ -254,22 +283,22 @@ func TestMultipleRoutesWithDifferentHeaders(t *testing.T) {
 	}))
 	defer server2.Close()
 
-	acceptContent := map[string]interface{}{
-		"private": []interface{}{
-			map[string]interface{}{
+	acceptContent := map[string]any{
+		"private": []any{
+			map[string]any{
 				"method": "GET",
 				"path":   "/api1/*",
 				"origin": server1.URL,
-				"headers": map[string]interface{}{
+				"headers": map[string]any{
 					"x-api-key": "${API_KEY_1}",
 					"x-service": "service-1",
 				},
 			},
-			map[string]interface{}{
+			map[string]any{
 				"method": "GET",
 				"path":   "/api2/*",
 				"origin": server2.URL,
-				"headers": map[string]interface{}{
+				"headers": map[string]any{
 					"x-api-key": "${API_KEY_2}",
 					"x-service": "service-2",
 				},
@@ -338,7 +367,7 @@ func TestMultipleRoutesWithDifferentHeaders(t *testing.T) {
 
 // Helper functions
 
-func createTempAcceptFile(t *testing.T, content map[string]interface{}) string {
+func createTempAcceptFile(t *testing.T, content map[string]any) string {
 	jsonContent, err := json.MarshalIndent(content, "", "  ")
 	require.NoError(t, err)
 
@@ -354,10 +383,10 @@ func createTempAcceptFile(t *testing.T, content map[string]interface{}) string {
 	return tmpFile.Name()
 }
 
-func updateOriginInAcceptContent(content map[string]interface{}, newOrigin string) {
-	if private, ok := content["private"].([]interface{}); ok {
+func updateOriginInAcceptContent(content map[string]any, newOrigin string) {
+	if private, ok := content["private"].([]any); ok {
 		for _, entry := range private {
-			if entryMap, ok := entry.(map[string]interface{}); ok {
+			if entryMap, ok := entry.(map[string]any); ok {
 				entryMap["origin"] = newOrigin
 			}
 		}

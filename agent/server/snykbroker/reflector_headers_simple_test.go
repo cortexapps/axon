@@ -145,6 +145,8 @@ func TestProxyWithNoHeaders(t *testing.T) {
 	reflector := NewRegistrationReflector(RegistrationReflectorParams{
 		Logger: logger,
 	})
+	reflector.Start()
+	defer reflector.Stop()
 
 	// Create proxy without headers
 	proxyEntry, err := reflector.getProxy(backendServer.URL, false, nil)
@@ -193,6 +195,8 @@ func TestHeaderOverwriting(t *testing.T) {
 	reflector := NewRegistrationReflector(RegistrationReflectorParams{
 		Logger: logger,
 	})
+	reflector.Start()
+	defer reflector.Stop()
 
 	// Headers that will overwrite the request headers
 	headers := map[string]string{
