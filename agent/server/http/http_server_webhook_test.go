@@ -12,6 +12,7 @@ import (
 	"github.com/cortexapps/axon/config"
 	"github.com/cortexapps/axon/server/cron"
 	"github.com/cortexapps/axon/server/handler"
+	"github.com/gorilla/mux"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
@@ -38,7 +39,9 @@ func TestHandleWebhook(t *testing.T) {
 	require.NoError(t, err)
 
 	webhookHandler := NewWebhookHandler(config.AgentConfig{}, logger, manager, nil)
-	ts := httptest.NewServer(webhookHandler)
+	mux := mux.NewRouter()
+	webhookHandler.RegisterRoutes(mux)
+	ts := httptest.NewServer(mux)
 
 	// The handler should not have been invoked yet
 	assert.Nil(t, manager.GetByTag("my-webhook-id").LastInvoked())
