@@ -73,4 +73,4 @@ services:
       test: ["CMD", "curl", "-f", "http://localhost:8081/healthcheck"]
       interval: 1s
       timeout: 1s
-      retries: 10
+      retries: 30

@@ -76,6 +76,7 @@ func main() {
 	// Register the /api/v1/relay/register route
 	http.HandleFunc("/api/v1/relay/register", handleRegister)
 	http.HandleFunc("/healthcheck", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Println("Received request /healthcheck")
 		w.WriteHeader(http.StatusOK)
 	})
 
