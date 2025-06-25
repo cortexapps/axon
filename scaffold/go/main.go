@@ -24,9 +24,9 @@ func main() {
 		),
 	)
 
-	_, err = agentClient.RegisterHandler(myExampleWebhooklHandler,
+	_, err = agentClient.RegisterHandler(myExampleWebhookHandler,
 		axon.WithInvokeOption(
-			pb.HandlerInvokeType_WEBHOOK, "my-webhook-id",
+			pb.HandlerInvokeType_WEBHOOK, "my-webhook-1",
 		),
 	)
 
@@ -87,11 +87,11 @@ func myExampleIntervalHandler(ctx axon.HandlerContext) interface{} {
 }
 
 // Here we have our example handler that will be called every one second
-func myExampleWebhooklHandler(ctx axon.HandlerContext) interface{} {
+func myExampleWebhookHandler(ctx axon.HandlerContext) interface{} {
 
 	body := ctx.Args()["body"]
 	contentType := ctx.Args()["content-type"]
 
-	ctx.Logger().Info("Hello from myExampleIntervalHandler!", zap.String("body", body), zap.String("content-type", contentType))
+	ctx.Logger().Info("Hello from myExampleWebhookHandler webhook handler!", zap.String("body", body), zap.String("content-type", contentType))
 	return nil
 }

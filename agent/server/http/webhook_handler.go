@@ -1,6 +1,7 @@
 package http
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -44,7 +45,7 @@ func NewWebhookHandler(config config.AgentConfig, logger *zap.Logger, handlerMan
 }
 
 func (h *webhookHandler) RegisterRoutes(mux *mux.Router) error {
-	mux.Handle(webhookPathRoot, h)
+	mux.PathPrefix(webhookPathRoot).Handler(h)
 	return nil
 }
 
@@ -105,5 +106,22 @@ func (h *webhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeStatus(http.StatusOK)
+	response := map[string]any{
+		"status":    "ok",
+		"webhookId": webhookId,
+	}
+	jsonResponse, err := json.Marshal(response)
+	if err != nil {
+		h.logger.Error("Failed to marshal response", zap.Error(err))
+		writeStatus(http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, err = w.Write(jsonResponse)
+	if err != nil {
+		h.logger.Error("Failed to write response", zap.Error(err))
+		writeStatus(http.StatusInternalServerError)
+		return
+	}
+	h.logger.Info("Webhook processed successfully", zap.String("webhookId", webhookId))
 }

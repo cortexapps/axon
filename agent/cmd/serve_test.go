@@ -105,7 +105,7 @@ func testAxonHealthcheck(t *testing.T, port int) {
 }
 
 func testWebhook(t *testing.T, port int) {
-	resp, err := http.Get(fmt.Sprintf("http://localhost:%d/webhook/12345", port))
+	resp, err := http.Post(fmt.Sprintf("http://localhost:%d/webhook/12345", port), "application/json", nil)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 

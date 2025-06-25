@@ -67,8 +67,9 @@ docker build --secret "id=github_token,env=GITHUB_TOKEN" --build-arg "GITHUB_ID=
 
 echo "Running docker image for scaffold"
 docker_http_port=9797
+docker_http_webhook_port=9798
 docker_hostname="docker-test-scaffold"
-docker_id=$(docker run -e "DRYRUN=1" -e "HOSTNAME=$docker_hostname" -p "$docker_http_port:80" -d $docker_tag)
+docker_id=$(docker run -e "DRYRUN=1" -e "HOSTNAME=$docker_hostname" -p "$docker_http_port:80" -p "$docker_http_webhook_port:8081" -d $docker_tag)
 
 # Define a cleanup function
 cleanup() {
@@ -97,13 +98,42 @@ echo "${docker_id}"
 
 logs=$(docker logs $docker_id 2>&1)
 
-echo $logs
-
 if echo "$logs" | grep -i "handler called"
 then
   echo "SUCCESS! Found expected output in logs"
 else 
   echo "Failed to find expected output ("handler called") in logs"
+  echo "Logs:"
+  echo "$logs"
+  FAILURE=true
+  exit 1
+fi
+
+# Test webhook
+echo "Testing webhook"
+if ! response=$(curl -s --data-raw '{"data":1234}' -X POST  http://localhost:$docker_http_webhook_port/webhook/my-webhook-1)
+then
+  echo "Failed to call webhook"
+  echo "Response: $response"
+  FAILURE=true
+  exit 1
+fi
+
+if ! echo "$response" | grep -q "my-webhook-1"
+then
+  echo "Failed to call webhook"
+  echo "Response: $response"
+  FAILURE=true
+  exit 1
+fi
+
+# check logs again
+logs=$(docker logs $docker_id 2>&1)
+if echo "$logs" | grep -i "webhook handler"
+then
+  echo "SUCCESS! Found expected output in logs for webhook"
+else 
+  echo "Failed to find expected output (webhook handler) in logs"
   echo "Logs:"
   echo "$logs"
   FAILURE=true
