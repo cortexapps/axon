@@ -7,8 +7,6 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
-	"os"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -96,11 +94,8 @@ func (rr *RegistrationReflector) Stop() error {
 	return nil
 }
 
-func (rr *RegistrationReflector) getProxy(targetURI string, isDefault bool) (*proxyEntry, error) {
-	return rr.getProxyWithHeaders(targetURI, isDefault, nil)
-}
+func (rr *RegistrationReflector) getProxy(targetURI string, isDefault bool, headers map[string]string) (*proxyEntry, error) {
 
-func (rr *RegistrationReflector) getProxyWithHeaders(targetURI string, isDefault bool, headers map[string]string) (*proxyEntry, error) {
 	if targetURI == "" {
 		return nil, fmt.Errorf("target URI cannot be empty")
 	}
@@ -126,51 +121,19 @@ func (rr *RegistrationReflector) getProxyWithHeaders(targetURI string, isDefault
 			panic(fmt.Sprintf("failed to start registration reflector: %v", err))
 		}
 
-		asUri, err := url.Parse(targetURI)
+		newEntry, err := newProxyEntry(targetURI, isDefault, rr.server.Port(), headers, rr.transport)
 		if err != nil {
-			return nil, fmt.Errorf("invalid target URI: %w", err)
+			return nil, err
 		}
-
-		proxy := httputil.NewSingleHostReverseProxy(asUri)
-
-		// Process headers and substitute environment variables
-		processedHeaders := make(map[string]string)
-		if headers != nil {
-			for k, v := range headers {
-				processedHeaders[k] = substituteEnvVars(v)
-			}
-		}
-
-		// The proxy needs to override the Host and the URL host to not get erroneous 404s
-		// https://stackoverflow.com/questions/23164547/golang-reverseproxy-not-working
-		// https://github.com/golang/go/issues/14413
-		defaultDirector := proxy.Director
-		proxy.Director = func(req *http.Request) {
-			defaultDirector(req)
-			req.Host = asUri.Host
-			
-			// Inject custom headers
-			for headerName, headerValue := range processedHeaders {
-				req.Header.Set(headerName, headerValue)
-			}
-		}
-		proxy.ModifyResponse = func(resp *http.Response) error {
-			resp.Header.Set("x-axon-relay-instance", rr.config.InstanceId)
-			return nil
-		}
-
-		if rr.transport != nil {
-			proxy.Transport = rr.transport
-		}
-
-		newEntry := newProxyEntryWithHeaders(targetURI, isDefault, proxy, rr.server.Port(), processedHeaders)
 		rr.targets[key] = *newEntry
+		newEntry.addResponseHeader("x-axon-relay-instance", rr.config.InstanceId)
+
 		entry = *newEntry
 
 		rr.logger.Info("Registered redirector",
-			zap.String("targetURI", entry.targetURI),
+			zap.String("targetURI", entry.TargetURI),
 			zap.String("proxyURI", entry.proxyURI),
-			zap.Any("headers", processedHeaders),
+			zap.Any("headers", headers),
 		)
 	}
 	return &entry, nil
@@ -219,11 +182,23 @@ type ProxyOption func(*proxyOption)
 
 type proxyOption struct {
 	isDefault bool
+	headers   map[string]string
 }
 
 func WithDefault(value bool) ProxyOption {
 	return func(option *proxyOption) {
 		option.isDefault = value
+	}
+}
+
+func WithHeaders(headers map[string]string) ProxyOption {
+	return func(option *proxyOption) {
+		if option.headers == nil {
+			option.headers = make(map[string]string)
+		}
+		for k, v := range headers {
+			option.headers[k] = v
+		}
 	}
 }
 
@@ -235,25 +210,9 @@ func (rr *RegistrationReflector) ProxyURI(target string, options ...ProxyOption)
 		opt(opts)
 	}
 
-	proxy, err := rr.getProxy(target, opts.isDefault)
+	proxy, err := rr.getProxy(target, opts.isDefault, opts.headers)
 	if err != nil {
 		rr.logger.Error("Failed to get proxy URI", zap.Error(err))
-		return target
-	}
-	return proxy.proxyURI
-}
-
-func (rr *RegistrationReflector) ProxyURIWithHeaders(target string, headers map[string]string, options ...ProxyOption) string {
-
-	opts := &proxyOption{}
-
-	for _, opt := range options {
-		opt(opts)
-	}
-
-	proxy, err := rr.getProxyWithHeaders(target, opts.isDefault, headers)
-	if err != nil {
-		rr.logger.Error("Failed to get proxy URI with headers", zap.Error(err))
 		return target
 	}
 	return proxy.proxyURI
@@ -287,56 +246,77 @@ func hashString(s string) uint32 {
 	return h.Sum32()
 }
 
-// substituteEnvVars replaces environment variable placeholders in the format ${VAR_NAME}
-func substituteEnvVars(value string) string {
-	re := regexp.MustCompile(`\$\{([^}]+)\}`)
-	return re.ReplaceAllStringFunc(value, func(match string) string {
-		varName := match[2 : len(match)-1] // Remove ${ and }
-		if envValue := os.Getenv(varName); envValue != "" {
-			return envValue
-		}
-		return match // Return original if env var not found
-	})
-}
-
 type proxyEntry struct {
-	isDefault bool
-	targetURI string
-	hashCode  string
-	proxyURI  string
-	handler   http.Handler
-	headers   map[string]string // Custom headers to inject
+	isDefault       bool
+	TargetURI       string // Exported for clean access
+	hashCode        string
+	proxyURI        string
+	handler         http.Handler
+	headers         map[string]string
+	responseHeaders map[string]string
 }
 
-func newProxyEntry(targetURI string, isDefault bool, handler http.Handler, port int) *proxyEntry {
+func newProxyEntry(targetURI string, isDefault bool, port int, headers map[string]string, transport *http.Transport) (*proxyEntry, error) {
+	if targetURI == "" {
+		return nil, fmt.Errorf("target URI cannot be empty")
+	}
+
+	// Parse the target URI
+	asUri, err := url.Parse(targetURI)
+	if err != nil {
+		return nil, fmt.Errorf("invalid target URI: %w", err)
+	}
+
+	// Create the reverse proxy
+	proxy := httputil.NewSingleHostReverseProxy(asUri)
+
+	// Copy headers to avoid mutation
+	processedHeaders := make(map[string]string)
+	for k, v := range headers {
+		processedHeaders[k] = v
+	}
 
 	pe := &proxyEntry{
 		isDefault: isDefault,
-		targetURI: targetURI,
+		TargetURI: targetURI,
 		hashCode:  strconv.Itoa(int(hashString(targetURI))),
-		handler:   handler,
-		headers:   make(map[string]string),
+		handler:   proxy,
+		headers:   processedHeaders,
 	}
+
+	// Set up the director to handle host and headers
+	defaultDirector := proxy.Director
+	proxy.Director = func(req *http.Request) {
+		defaultDirector(req)
+		req.Host = asUri.Host
+
+		// Inject custom headers
+		for headerName, headerValue := range processedHeaders {
+			req.Header.Set(headerName, headerValue)
+		}
+	}
+	proxy.ModifyResponse = func(resp *http.Response) error {
+		for headerName, headerValue := range pe.responseHeaders {
+			resp.Header.Set(headerName, headerValue)
+		}
+		return nil
+	}
+
+	// Set transport if provided
+	if transport != nil {
+		proxy.Transport = transport
+	}
+
 	pe.proxyURI = pe.encodeProxyUri(targetURI, port, isDefault)
 
-	return pe
+	return pe, nil
 }
 
-func newProxyEntryWithHeaders(targetURI string, isDefault bool, handler http.Handler, port int, headers map[string]string) *proxyEntry {
-
-	pe := &proxyEntry{
-		isDefault: isDefault,
-		targetURI: targetURI,
-		hashCode:  strconv.Itoa(int(hashString(targetURI))),
-		handler:   handler,
-		headers:   headers,
+func (pe *proxyEntry) addResponseHeader(name, value string) {
+	if pe.responseHeaders == nil {
+		pe.responseHeaders = make(map[string]string)
 	}
-	if pe.headers == nil {
-		pe.headers = make(map[string]string)
-	}
-	pe.proxyURI = pe.encodeProxyUri(targetURI, port, isDefault)
-
-	return pe
+	pe.responseHeaders[name] = value
 }
 
 func (pe *proxyEntry) encodeProxyUri(targetURI string, port int, isDefault bool) string {

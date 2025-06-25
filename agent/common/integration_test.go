@@ -201,7 +201,7 @@ func TestAcceptRewrite(t *testing.T) {
 		Integration:    IntegrationGithub,
 		AcceptFilePath: acceptFilePath,
 	}
-	rewritten, err := info.RewriteOrigins(acceptFilePath, func(origin string) string {
+	rewritten, err := info.RewriteOrigins(acceptFilePath, func(origin string, headers map[string]string) string {
 
 		if strings.Contains(origin, "http://localhost") {
 			require.Fail(t, "should not rewrite localhost origins")
@@ -213,7 +213,7 @@ func TestAcceptRewrite(t *testing.T) {
 		return origin
 	})
 	require.NoError(t, err)
-	contents, err := os.ReadFile(rewritten)
+	contents, err := os.ReadFile(rewritten.RewrittenPath)
 	require.NoError(t, err)
 	require.Equal(t, `{"private":[{"method":"any","origin":"http://new-python-server","path":"/*"},{"method":"any","origin":"http://localhost","path":"/*"},{"method":"any","origin":"http://localhost:9999","path":"/stuff/*"},{"method":"any","origin":"https://api.foo.com","path":"/*"}],"public":[{"method":"any","path":"/*"}]}`, string(contents))
 }
@@ -233,11 +233,9 @@ func TestGetOrigin(t *testing.T) {
 			{"http://${USER}@${API}/path", "http://testuser@api.example.com/path"},
 		}
 
-	ii := IntegrationInfo{}
-
 	for _, c := range cases {
 		t.Run(c.input, func(t *testing.T) {
-			origin := ii.getOrigin(c.input)
+			origin := os.ExpandEnv(c.input)
 			require.Equal(t, c.expected, origin)
 		})
 	}

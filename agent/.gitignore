@@ -3,3 +3,4 @@ __debug*
 *_mock.go
 axon-agent
 *.pyc
+test/relay/.mitmproxy
