@@ -113,8 +113,8 @@ func (rr *RegistrationReflector) getProxy(targetURI string, isDefault bool, head
 
 	entry, exists := rr.targets[key]
 	if !exists {
-
-		rr.targets[key] = *newEntry
+		entry = *newEntry
+		rr.targets[key] = entry
 		newEntry.addResponseHeader("x-axon-relay-instance", rr.config.InstanceId)
 
 		rr.logger.Info("Registered redirector",
@@ -122,7 +122,7 @@ func (rr *RegistrationReflector) getProxy(targetURI string, isDefault bool, head
 			zap.String("proxyURI", entry.proxyURI),
 			zap.Any("headers", headers),
 		)
-		return newEntry, nil
+		return &entry, nil
 	}
 	return &entry, nil
 }

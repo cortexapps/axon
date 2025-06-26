@@ -18,7 +18,6 @@ set -e
 export TOKEN=0e481b34-76ac-481a-a92f-c94a6cf6f6c1
 export SERVER_PORT=57341
 
-
 if [ "$PROXY" == "1" ]
 then
     echo "TESTING WITH PROXY"
@@ -130,13 +129,12 @@ if [ "$result" != "$TOKEN" ]; then
     exit 1
 fi
 
-
 # To validate this we call out to the AXON readme, which hits an HTTPS server
 # so we validate proxy and cert handling
-if ! result=$(curlw -f -v http://localhost:$SERVER_PORT/broker/$TOKEN/cortexapps/axon/refs/heads/main/README.md 2>&1)
+if ! proxy_result=$(curlw -f -v http://localhost:$SERVER_PORT/broker/$TOKEN/cortexapps/axon/refs/heads/main/README.md 2>&1)
 then
     echo "FAIL: Expected to be able to read the axon readme from github, but got error"
-    echo "$result"
+    echo "$proxy_result"
     exit 1
 fi
 
@@ -146,7 +144,7 @@ fi
 # 
 if [ "$PROXY" == "1" ]; then
     echo "Checking relay HTTP_PROXY config..."
-    if ! (echo "$result" | grep -i "x-proxy-mitmproxy")
+    if ! (echo "$proxy_result" | grep -i "x-proxy-mitmproxy")
     then
         echo "FAIL: Expected 'x-proxy-mitmproxy' header, got nothing"
         exit 1
@@ -154,12 +152,28 @@ if [ "$PROXY" == "1" ]; then
         echo "Success: Found 'x-proxy-mitmproxy' header"
     fi
 
-    if ! (echo "$result" | grep -i "x-axon-relay-instance:")
+    if ! (echo "$proxy_result" | grep -i "x-axon-relay-instance:")
     then
         echo "FAIL: Expected 'x-axon-relayinstance' header, got nothing"
         exit 1
     else
         echo "Success: Found 'x-axon-relayinstance' header"
+    fi
+
+
+    if ! proxy_result=$(curlw -f -v http://localhost:$SERVER_PORT/broker/$TOKEN/echo/foobar 2>&1)
+    then
+        echo "FAIL: Expected to echo 'foobar' via the proxy, but got error"
+        echo "$proxy_result"
+        exit 1
+    fi
+    # Make sure result has the header value
+    if ! echo "$proxy_result" | grep -q "added-fake-server"; then
+        echo "FAIL: Expected injected header value but not found"
+        echo "$proxy_result"
+        exit 1
+    else
+        echo "Success: Found expected injected header value in result"    
     fi
 else
     echo "Checking relay non proxy config..."

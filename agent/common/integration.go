@@ -217,7 +217,8 @@ func (afi *AcceptFileInfo) Rewrite() (string, error) {
 		}
 
 		for _, entry := range entries {
-			rawOrigin, ok := entry.(map[string]interface{})["origin"].(string)
+			values := entry.(map[string]any)
+			rawOrigin, ok := values["origin"].(string)
 			if !ok {
 				continue
 			}
@@ -240,7 +241,7 @@ func (afi *AcceptFileInfo) Rewrite() (string, error) {
 
 			// Extract headers if present
 			var headers map[string]string
-			if headersInterface, hasHeaders := entry.(map[string]interface{})["headers"]; hasHeaders {
+			if headersInterface, hasHeaders := values["headers"]; hasHeaders {
 				if headersMap, ok := headersInterface.(map[string]interface{}); ok {
 					headers = make(map[string]string)
 					for k, v := range headersMap {
@@ -255,7 +256,7 @@ func (afi *AcceptFileInfo) Rewrite() (string, error) {
 			// rewrite the origin to use the writer function
 			newOrigin := afi.originRewriter(origin, headers)
 			if newOrigin != "" {
-				entry.(map[string]interface{})["origin"] = newOrigin
+				values["origin"] = newOrigin
 			}
 			afi.Routes = append(afi.Routes, AcceptFileRoute{
 				ResolvedOrigin: origin,

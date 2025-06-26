@@ -459,6 +459,7 @@ func (r *relayInstanceManager) applyAcceptFileTransforms(acceptFile string) stri
 	if r.config.HttpRelayReflectorMode == config.RelayReflectorAllTraffic && r.reflector != nil {
 
 		info, err := r.integrationInfo.RewriteOrigins(acceptFile, func(uri string, headers map[string]string) string {
+			r.logger.Info("Rewriting accept file URI", zap.String("uri", uri), zap.Any("headers", headers))
 			return r.reflector.ProxyURI(uri, WithHeaders(headers))
 		})
 

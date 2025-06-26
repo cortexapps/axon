@@ -67,7 +67,7 @@ services:
     environment:
       PORT: 8081
       BROKER_SERVER_URL: http://snyk-broker:7341
-      TOKEN: ${TOKEN}
+      TOKEN: ${TOKEN:-0e481b34-76ac-481a-a92f-c94a6cf6f6c2}
     command: sh -c "apk add curl && cd /src && go run cortex-registration-fake.go"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8081/healthcheck"]
