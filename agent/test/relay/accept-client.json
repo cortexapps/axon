@@ -9,12 +9,27 @@
        {
         "method": "any",
         "path": "/cortexapps/axon/*",
-        "origin": "https://raw.githubusercontent.com"
+        "origin": "https://raw.githubusercontent.com",
+        "headers": {
+          "x-test-header": "${HEADER_PROXY_VALUE}-github"          
+        }
       },
       {
         "method": "any",
+        "path": "/echo/*",
+        "origin": "http://cortex-fake:8081",
+        "headers": {
+          "x-test-header": "added-fake-server"          
+        }
+      },
+      
+      {
+        "method": "any",
         "path": "/*",
-        "origin": "http://python-server"
+        "origin": "http://python-server",
+        "headers": {
+          "x-test-header": "${HEADER_PROXY_VALUE}-python-server"          
+        }
       }
      
     ]

@@ -242,6 +242,7 @@ func TestApplyAcceptTransforms(t *testing.T) {
 	mgr := &relayInstanceManager{
 		config:    cfg,
 		reflector: reflector,
+		logger:    zap.NewNop(),
 	}
 
 	cases := []struct {

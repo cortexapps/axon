@@ -143,81 +143,162 @@ func (ii IntegrationInfo) AcceptFile(localhostBase string) (string, error) {
 	return expectedPath, err
 }
 
-func (ii IntegrationInfo) RewriteOrigins(acceptFilePath string, writer func(string) string) (string, error) {
+func (ii IntegrationInfo) RewriteOrigins(acceptFilePath string, writer func(string, map[string]string) string) (*AcceptFileInfo, error) {
 
-	stat, err := os.Stat(acceptFilePath)
+	info, err := newAcceptFileInfo(acceptFilePath, writer)
 	if err != nil {
-		return acceptFilePath, err
+		return nil, err
 	}
-
-	rawFile, err := os.ReadFile(acceptFilePath)
+	_, err = info.Rewrite()
 	if err != nil {
-		return acceptFilePath, err
+		return nil, err
 	}
-	dict := map[string]interface{}{}
-	err = json.Unmarshal(rawFile, &dict)
-	if err != nil {
-		return acceptFilePath, err
-	}
-
-	entries, ok := dict["private"].([]interface{})
-	if !ok {
-		return acceptFilePath, nil
-	}
-
-	for _, entry := range entries {
-		rawOrigin, ok := entry.(map[string]interface{})["origin"].(string)
-		if !ok {
-			continue
-		}
-
-		origin := ii.getOrigin(rawOrigin)
-
-		parsed, err := url.Parse(origin)
-		if err != nil {
-			return acceptFilePath, fmt.Errorf("failed to parse origin %q: %w", origin, err)
-		}
-
-		if strings.HasPrefix(parsed.Host, "localhost") || strings.HasPrefix(parsed.Host, "127.0.0.1") {
-			continue
-		}
-		if parsed.Scheme == "" {
-			parsed.Scheme = "https"
-			origin = parsed.String()
-		}
-
-		// rewrite the origin to use the writer function
-		newOrigin := writer(ii.getOrigin(origin))
-		if newOrigin != "" {
-			entry.(map[string]interface{})["origin"] = newOrigin
-		}
-
-	}
-
-	newFilePath := path.Join(
-		os.TempDir(),
-		"accept-files-written",
-		fmt.Sprintf("rewrite.%v.%v", time.Now().UnixMilli(), stat.Name()),
-	)
-	err = os.MkdirAll(path.Dir(newFilePath), os.ModeDir|os.ModePerm)
-	if err != nil {
-		return acceptFilePath, err
-	}
-
-	json, err := json.Marshal(dict)
-	if err != nil {
-		return acceptFilePath, err
-	}
-	err = os.WriteFile(newFilePath, json, os.ModePerm)
-	if err != nil {
-		return acceptFilePath, err
-	}
-	return newFilePath, nil
+	return info, nil
 }
 
-func (ii IntegrationInfo) getOrigin(rawOrigin string) string {
-	expandedOrigin := os.ExpandEnv(rawOrigin)
-	return expandedOrigin
+type AcceptFileInfo struct {
+	OriginalPath   string
+	RewrittenPath  string
+	Content        string
+	rawContent     []byte
+	Routes         []AcceptFileRoute
+	originRewriter func(uri string, headers map[string]string) string
+}
+
+var IgnoreHosts = []string{
+	"localhost",
+	"127.0.0.1",
+}
+
+func newAcceptFileInfo(acceptFilePath string, originRewriter func(string, map[string]string) string) (*AcceptFileInfo, error) {
+	stat, err := os.Stat(acceptFilePath)
+	if err != nil {
+		return nil, err
+	}
+
+	if stat.IsDir() {
+		return nil, fmt.Errorf("accept file path %q is a directory, expected a file", acceptFilePath)
+	}
+
+	info := &AcceptFileInfo{
+		OriginalPath:   acceptFilePath,
+		originRewriter: originRewriter,
+	}
+
+	info.rawContent, err = os.ReadFile(acceptFilePath)
+	if err != nil {
+		return nil, err
+	}
+
+	return info, nil
+}
+
+func (afi *AcceptFileInfo) isIgnoredHost(host string) bool {
+	for _, ignoreHost := range IgnoreHosts {
+		if strings.HasPrefix(host, ignoreHost) {
+			return true
+		}
+	}
+	return false
+}
+
+func (afi *AcceptFileInfo) Rewrite() (string, error) {
+
+	if afi.Content == "" {
+		dict := map[string]interface{}{}
+		err := json.Unmarshal(afi.rawContent, &dict)
+		if err != nil {
+			return "", err
+		}
+
+		entries, ok := dict["private"].([]interface{})
+		if !ok {
+			return "", nil
+		}
+
+		for _, entry := range entries {
+			values := entry.(map[string]any)
+			rawOrigin, ok := values["origin"].(string)
+			if !ok {
+				continue
+			}
+
+			origin := os.ExpandEnv(rawOrigin)
+
+			parsed, err := url.Parse(origin)
+			if err != nil {
+				return "", fmt.Errorf("failed to parse origin %q: %w", origin, err)
+			}
+
+			if afi.isIgnoredHost(parsed.Host) {
+				continue
+			}
+
+			if parsed.Scheme == "" {
+				parsed.Scheme = "https"
+				origin = parsed.String()
+			}
+
+			// Extract headers if present
+			var headers map[string]string
+			if headersInterface, hasHeaders := values["headers"]; hasHeaders {
+				if headersMap, ok := headersInterface.(map[string]interface{}); ok {
+					headers = make(map[string]string)
+					for k, v := range headersMap {
+						if strVal, ok := v.(string); ok {
+							// Resolve environment variables in header values
+							headers[k] = os.ExpandEnv(strVal)
+						}
+					}
+				}
+			}
+
+			// rewrite the origin to use the writer function
+			newOrigin := afi.originRewriter(origin, headers)
+			if newOrigin != "" {
+				values["origin"] = newOrigin
+			}
+			afi.Routes = append(afi.Routes, AcceptFileRoute{
+				ResolvedOrigin: origin,
+				ProxyOrigin:    newOrigin,
+				Headers:        headers,
+			})
+		}
+
+		json, err := json.Marshal(dict)
+		if err != nil {
+			return "", err
+		}
+		afi.Content = string(json)
+
+		stat, err := os.Stat(afi.OriginalPath)
+
+		if err != nil {
+			return "", err
+		}
+		newFilePath := path.Join(
+			os.TempDir(),
+			"accept-files-written",
+			fmt.Sprintf("rewrite.%v.%v", time.Now().UnixMilli(), stat.Name()),
+		)
+		err = os.MkdirAll(path.Dir(newFilePath), os.ModeDir|os.ModePerm)
+		if err != nil {
+			return "", err
+		}
+
+		err = os.WriteFile(newFilePath, json, os.ModePerm)
+		if err != nil {
+			return "", err
+		}
+		afi.RewrittenPath = newFilePath
+	}
+	return afi.Content, nil
+}
+
+type AcceptFileRoute struct {
+	ResolvedOrigin string
+	ProxyOrigin    string
+	Headers        map[string]string
 }
 
 func (ii IntegrationInfo) getAcceptFileContents() (string, error) {

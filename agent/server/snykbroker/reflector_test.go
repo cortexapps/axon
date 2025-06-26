@@ -40,10 +40,10 @@ func newTestReflectorEnv(t *testing.T) *testReflectorEnv {
 func TestGetProxyAndProxyURI(t *testing.T) {
 	env := newTestReflectorEnv(t)
 	target := env.Server.URL
-	proxyEntry, err := env.Reflector.getProxy(target, false)
+	proxyEntry, err := env.Reflector.getProxy(target, false, nil)
 	require.NoError(t, err)
 	require.NotNil(t, proxyEntry)
-	require.Equal(t, target, proxyEntry.targetURI)
+	require.Equal(t, target, proxyEntry.TargetURI)
 
 	uri := env.Reflector.ProxyURI(target)
 	require.Contains(t, uri, "localhost")
@@ -55,22 +55,6 @@ func TestDefaultProxyURI(t *testing.T) {
 	uri := env.Reflector.ProxyURI(target, WithDefault(true))
 	require.Equal(t, fmt.Sprintf("http://localhost:%d", env.Reflector.server.Port()), uri)
 }
-
-// func TestEncodeAndParseProxyUri(t *testing.T) {
-// 	env := newTestReflectorEnv(t)
-// 	target := "http://example.com"
-// 	proxyEntry, err := env.Reflector.getProxy(target, false)
-// 	require.NoError(t, err)
-
-// 	uri := env.Reflector.encodeProxyUri(target)
-// 	require.Contains(t, uri, "!")
-
-// 	entry, newPath, err := env.Reflector.parseTargetUri(uri[len("http://localhost:12345/"):]) // simulate path
-// 	require.NoError(t, err)
-// 	require.NotNil(t, entry)
-// 	require.Equal(t, proxyEntry.hashCode, entry.hashCode)
-// 	require.Equal(t, "/", newPath)
-// }
 
 func TestServeHTTP_Proxy(t *testing.T) {
 	env := newTestReflectorEnv(t)

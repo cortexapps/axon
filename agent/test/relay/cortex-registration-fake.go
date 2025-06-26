@@ -76,6 +76,23 @@ func main() {
 	// Register the /api/v1/relay/register route
 	http.HandleFunc("/api/v1/relay/register", handleRegister)
 	http.HandleFunc("/healthcheck", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Println("Received request /healthcheck")
+		w.WriteHeader(http.StatusOK)
+	})
+	http.HandleFunc("/echo/", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Println("Received request /echo")
+		responseBody := map[string]string{
+			"message": "Echo response",
+			"uri":     r.RequestURI,
+			"headers": fmt.Sprintf("%v", r.Header),
+		}
+		err := json.NewEncoder(w).Encode(responseBody)
+		w.Header().Set("Content-Type", "application/json")
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Error encoding response: %v", err), http.StatusInternalServerError)
+			return
+		}
+
 		w.WriteHeader(http.StatusOK)
 	})
 

@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
-	"strconv"
 	"strings"
 	"sync/atomic"
 
@@ -94,57 +93,36 @@ func (rr *RegistrationReflector) Stop() error {
 	return nil
 }
 
-func (rr *RegistrationReflector) getProxy(targetURI string, isDefault bool) (*proxyEntry, error) {
+func (rr *RegistrationReflector) getProxy(targetURI string, isDefault bool, headers map[string]string) (*proxyEntry, error) {
+
 	if targetURI == "" {
 		return nil, fmt.Errorf("target URI cannot be empty")
 	}
 
-	key := targetURI
-
-	if isDefault {
-		key = "default"
+	_, err := rr.Start()
+	if err != nil {
+		panic(fmt.Sprintf("failed to start registration reflector: %v", err))
 	}
+
+	newEntry, err := newProxyEntry(targetURI, isDefault, rr.server.Port(), headers, rr.transport)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create new proxy entry: %w", err)
+	}
+
+	key := newEntry.key()
 
 	entry, exists := rr.targets[key]
 	if !exists {
-
-		_, err := rr.Start()
-		if err != nil {
-			panic(fmt.Sprintf("failed to start registration reflector: %v", err))
-		}
-
-		asUri, err := url.Parse(targetURI)
-		if err != nil {
-			return nil, fmt.Errorf("invalid target URI: %w", err)
-		}
-
-		proxy := httputil.NewSingleHostReverseProxy(asUri)
-
-		// The proxy needs to override the Host and the URL host to not get erroneous 404s
-		// https://stackoverflow.com/questions/23164547/golang-reverseproxy-not-working
-		// https://github.com/golang/go/issues/14413
-		defaultDirector := proxy.Director
-		proxy.Director = func(req *http.Request) {
-			defaultDirector(req)
-			req.Host = asUri.Host
-		}
-		proxy.ModifyResponse = func(resp *http.Response) error {
-			resp.Header.Set("x-axon-relay-instance", rr.config.InstanceId)
-			return nil
-		}
-
-		if rr.transport != nil {
-			proxy.Transport = rr.transport
-		}
-
-		newEntry := newProxyEntry(targetURI, isDefault, proxy, rr.server.Port())
-		rr.targets[key] = *newEntry
 		entry = *newEntry
+		rr.targets[key] = entry
+		newEntry.addResponseHeader("x-axon-relay-instance", rr.config.InstanceId)
 
 		rr.logger.Info("Registered redirector",
-			zap.String("targetURI", entry.targetURI),
+			zap.String("targetURI", entry.TargetURI),
 			zap.String("proxyURI", entry.proxyURI),
+			zap.Any("headers", headers),
 		)
+		return &entry, nil
 	}
 	return &entry, nil
 }
@@ -179,7 +157,7 @@ func (rr *RegistrationReflector) parseTargetUri(proxyPath string) (*proxyEntry, 
 	}
 
 	for _, entry := range rr.targets {
-		if entry.hashCode == hash {
+		if entry.key() == hash {
 			// Found the target URI
 			return &entry, remainder, nil
 		}
@@ -192,11 +170,23 @@ type ProxyOption func(*proxyOption)
 
 type proxyOption struct {
 	isDefault bool
+	headers   map[string]string
 }
 
 func WithDefault(value bool) ProxyOption {
 	return func(option *proxyOption) {
 		option.isDefault = value
+	}
+}
+
+func WithHeaders(headers map[string]string) ProxyOption {
+	return func(option *proxyOption) {
+		if option.headers == nil {
+			option.headers = make(map[string]string)
+		}
+		for k, v := range headers {
+			option.headers[k] = v
+		}
 	}
 }
 
@@ -208,7 +198,7 @@ func (rr *RegistrationReflector) ProxyURI(target string, options ...ProxyOption)
 		opt(opts)
 	}
 
-	proxy, err := rr.getProxy(target, opts.isDefault)
+	proxy, err := rr.getProxy(target, opts.isDefault, opts.headers)
 	if err != nil {
 		rr.logger.Error("Failed to get proxy URI", zap.Error(err))
 		return target
@@ -245,24 +235,98 @@ func hashString(s string) uint32 {
 }
 
 type proxyEntry struct {
-	isDefault bool
-	targetURI string
-	hashCode  string
-	proxyURI  string
-	handler   http.Handler
+	isDefault       bool
+	TargetURI       string // Exported for clean access
+	proxyURI        string
+	handler         http.Handler
+	headers         map[string]string
+	responseHeaders map[string]string
+	hashCode        string
 }
 
-func newProxyEntry(targetURI string, isDefault bool, handler http.Handler, port int) *proxyEntry {
+func newProxyEntry(targetURI string, isDefault bool, port int, headers map[string]string, transport *http.Transport) (*proxyEntry, error) {
+	if targetURI == "" {
+		return nil, fmt.Errorf("target URI cannot be empty")
+	}
+
+	// Parse the target URI
+	asUri, err := url.Parse(targetURI)
+	if err != nil {
+		return nil, fmt.Errorf("invalid target URI: %w", err)
+	}
+
+	// Create the reverse proxy
+	proxy := httputil.NewSingleHostReverseProxy(asUri)
+
+	// Copy headers to avoid mutation
+	processedHeaders := make(map[string]string)
+	for k, v := range headers {
+		processedHeaders[k] = v
+	}
 
 	pe := &proxyEntry{
 		isDefault: isDefault,
-		targetURI: targetURI,
-		hashCode:  strconv.Itoa(int(hashString(targetURI))),
-		handler:   handler,
+		TargetURI: targetURI,
+		handler:   proxy,
+		headers:   processedHeaders,
 	}
+
+	// Set up the director to handle host and headers
+	defaultDirector := proxy.Director
+	proxy.Director = func(req *http.Request) {
+		defaultDirector(req)
+		req.Host = asUri.Host
+
+		// Inject custom headers
+		for headerName, headerValue := range processedHeaders {
+			req.Header.Set(headerName, headerValue)
+		}
+	}
+	proxy.ModifyResponse = func(resp *http.Response) error {
+		for headerName, headerValue := range pe.responseHeaders {
+			resp.Header.Set(headerName, headerValue)
+		}
+		return nil
+	}
+
+	// Set transport if provided
+	if transport != nil {
+		proxy.Transport = transport
+	}
+
 	pe.proxyURI = pe.encodeProxyUri(targetURI, port, isDefault)
 
-	return pe
+	return pe, nil
+}
+
+func (pe *proxyEntry) key() string {
+	if pe.isDefault {
+		return "default"
+	}
+	if pe.hashCode == "" {
+
+		key := pe.TargetURI
+
+		if len(pe.headers) > 0 {
+			// Create a unique key that includes headers to allow different header sets for the same URI
+			headerKey := ""
+			for k, v := range pe.headers {
+				headerKey += fmt.Sprintf("|%s=%s", k, v)
+			}
+			key = key + headerKey
+		}
+		hash := hashString(key)
+		pe.hashCode = fmt.Sprintf("%d", hash)
+	}
+	return pe.hashCode
+
+}
+
+func (pe *proxyEntry) addResponseHeader(name, value string) {
+	if pe.responseHeaders == nil {
+		pe.responseHeaders = make(map[string]string)
+	}
+	pe.responseHeaders[name] = value
 }
 
 func (pe *proxyEntry) encodeProxyUri(targetURI string, port int, isDefault bool) string {
@@ -283,5 +347,5 @@ func (pe *proxyEntry) encodeProxyUri(targetURI string, port int, isDefault bool)
 		parsedTarget.Scheme = parsedProxyURI.Scheme
 		return parsedTarget.String()
 	}
-	return fmt.Sprintf("%s/!%d!", baseProxyURI, hashString(targetURI))
+	return fmt.Sprintf("%s/!%s!", baseProxyURI, pe.key())
 }
