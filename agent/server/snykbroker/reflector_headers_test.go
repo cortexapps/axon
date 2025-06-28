@@ -173,10 +173,10 @@ func TestAcceptFileHeadersAppliedToLiveRequests(t *testing.T) {
 
 			info, err := integrationInfo.RewriteOrigins(
 				acceptFile,
-				func(originalURI string, headers map[string]string) string {
+				func(originalURI string, headers common.ResolverMap) string {
 					capturedOrigin = originalURI
-					capturedHeaders = headers
-					return reflector.ProxyURI(originalURI, WithHeaders(headers))
+					capturedHeaders = headers.Resolve()
+					return reflector.ProxyURI(originalURI, WithHeaders(headers.Resolve()))
 				},
 			)
 			require.NoError(t, err)
@@ -247,9 +247,9 @@ func TestAcceptFileHeadersWithMissingEnvVars(t *testing.T) {
 
 	_, err := integrationInfo.RewriteOrigins(
 		acceptFile,
-		func(originalURI string, headers map[string]string) string {
-			capturedHeaders = headers
-			return reflector.ProxyURI(originalURI, WithHeaders(headers))
+		func(originalURI string, headers common.ResolverMap) string {
+			capturedHeaders = headers.Resolve()
+			return reflector.ProxyURI(originalURI, WithHeadersResolver(headers))
 		},
 	)
 	require.NoError(t, err)
@@ -330,9 +330,9 @@ func TestMultipleRoutesWithDifferentHeaders(t *testing.T) {
 	headerExtractionCount := 0
 	info, err := integrationInfo.RewriteOrigins(
 		acceptFile,
-		func(originalURI string, headers map[string]string) string {
+		func(originalURI string, headers common.ResolverMap) string {
 			headerExtractionCount++
-			return reflector.ProxyURI(originalURI, WithHeaders(headers))
+			return reflector.ProxyURI(originalURI, WithHeadersResolver(headers))
 		},
 	)
 	require.NotNil(t, info)
