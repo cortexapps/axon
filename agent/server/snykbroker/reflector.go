@@ -279,7 +279,7 @@ func newProxyEntry(targetURI string, isDefault bool, port int, headers common.Re
 		req.Host = asUri.Host
 
 		// Copy headers to avoid mutation
-		processedHeaders := headers.Resolve()
+		processedHeaders := headers.ToStringMap()
 
 		// Inject custom headers
 		for headerName, headerValue := range processedHeaders {
@@ -314,8 +314,8 @@ func (pe *proxyEntry) key() string {
 		if len(pe.headers) > 0 {
 			// Create a unique key that includes headers to allow different header sets for the same URI
 			headerKey := ""
-			for k, v := range pe.headers {
-				headerKey += fmt.Sprintf("|%s=%s", k, v())
+			for k := range pe.headers {
+				headerKey += fmt.Sprintf("|%s=%s", k, pe.headers.Resolve(k))
 			}
 			key = key + headerKey
 		}

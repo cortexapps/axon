@@ -175,8 +175,8 @@ func TestAcceptFileHeadersAppliedToLiveRequests(t *testing.T) {
 				acceptFile,
 				func(originalURI string, headers common.ResolverMap) string {
 					capturedOrigin = originalURI
-					capturedHeaders = headers.Resolve()
-					return reflector.ProxyURI(originalURI, WithHeaders(headers.Resolve()))
+					capturedHeaders = headers.ToStringMap()
+					return reflector.ProxyURI(originalURI, WithHeaders(headers.ToStringMap()))
 				},
 			)
 			require.NoError(t, err)
@@ -248,7 +248,7 @@ func TestAcceptFileHeadersWithMissingEnvVars(t *testing.T) {
 	_, err := integrationInfo.RewriteOrigins(
 		acceptFile,
 		func(originalURI string, headers common.ResolverMap) string {
-			capturedHeaders = headers.Resolve()
+			capturedHeaders = headers.ToStringMap()
 			return reflector.ProxyURI(originalURI, WithHeadersResolver(headers))
 		},
 	)

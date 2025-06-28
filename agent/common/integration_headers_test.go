@@ -149,7 +149,7 @@ func TestRewriteOriginsWithHeaderExtraction(t *testing.T) {
 				if len(headers) > 0 {
 					headerCalls = append(headerCalls, headerCall{
 						origin:  origin,
-						headers: headers.Resolve(),
+						headers: headers.ToStringMap(),
 					})
 				}
 				return "proxy-" + origin // Mocking the proxy URI generation
@@ -206,7 +206,7 @@ func TestHeaderEnvironmentVariableResolution(t *testing.T) {
 
 	var capturedHeaders map[string]string
 	headerExtractor := func(_ string, headers ResolverMap) {
-		capturedHeaders = headers.Resolve()
+		capturedHeaders = headers.ToStringMap()
 	}
 
 	_, err := integrationInfo.RewriteOrigins(
@@ -259,7 +259,7 @@ func TestComplexEnvironmentVariablePatterns(t *testing.T) {
 
 	var capturedHeaders map[string]string
 	headerExtractor := func(origin string, headers ResolverMap) string {
-		capturedHeaders = headers.Resolve()
+		capturedHeaders = headers.ToStringMap()
 		return origin
 	}
 
@@ -302,7 +302,7 @@ func TestEmptyAndInvalidHeaderValues(t *testing.T) {
 
 	var capturedHeaders map[string]string
 	headerExtractor := func(origin string, headers ResolverMap) string {
-		capturedHeaders = headers.Resolve()
+		capturedHeaders = headers.ToStringMap()
 		return origin
 	}
 
