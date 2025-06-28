@@ -161,7 +161,7 @@ func NewResolverMapFromMap(m map[string]string) ResolverMap {
 	return rm
 }
 
-func (rm ResolverMap) Resolve() map[string]string {
+func (rm ResolverMap) ToStringMap() map[string]string {
 	resolved := make(map[string]string, len(rm))
 	for key, resolver := range rm {
 		resolved[key] = resolver()
@@ -169,7 +169,7 @@ func (rm ResolverMap) Resolve() map[string]string {
 	return resolved
 }
 
-func (rm ResolverMap) ResolveKey(key string) string {
+func (rm ResolverMap) Resolve(key string) string {
 	resolver, ok := rm[key]
 	if !ok {
 		return ""
