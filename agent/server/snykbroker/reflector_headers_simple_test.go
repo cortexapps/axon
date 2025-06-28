@@ -6,6 +6,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/cortexapps/axon/common"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
@@ -39,7 +40,7 @@ func TestHeaderApplicationInProxy(t *testing.T) {
 	}
 
 	// Create proxy with headers
-	proxyEntry, err := newProxyEntry(backendServer.URL, false, 8080, headers, nil)
+	proxyEntry, err := newProxyEntry(backendServer.URL, false, 8080, common.NewResolverMapFromMap(headers), nil)
 	proxyEntry.addResponseHeader("x-response", "response-value")
 	require.NoError(t, err)
 	require.NotNil(t, proxyEntry)
@@ -97,7 +98,7 @@ func TestMultipleProxiesWithDifferentHeaders(t *testing.T) {
 		"x-api-key": "key-for-server-1",
 		"x-service": "service-1",
 	}
-	proxy1, err := newProxyEntry(server1.URL, false, 8080, headers1, nil)
+	proxy1, err := newProxyEntry(server1.URL, false, 8080, common.NewResolverMapFromMap(headers1), nil)
 	require.NoError(t, err)
 
 	// Create second proxy with different headers
@@ -105,7 +106,7 @@ func TestMultipleProxiesWithDifferentHeaders(t *testing.T) {
 		"x-api-key": "key-for-server-2",
 		"x-service": "service-2",
 	}
-	proxy2, err := newProxyEntry(server2.URL, false, 8080, headers2, nil)
+	proxy2, err := newProxyEntry(server2.URL, false, 8080, common.NewResolverMapFromMap(headers2), nil)
 	require.NoError(t, err)
 
 	// Send requests through both proxies
@@ -205,7 +206,7 @@ func TestHeaderOverwriting(t *testing.T) {
 	}
 
 	// Create proxy with headers
-	proxyEntry, err := reflector.getProxy(backendServer.URL, false, headers)
+	proxyEntry, err := reflector.getProxy(backendServer.URL, false, common.NewResolverMapFromMap(headers))
 	require.NoError(t, err)
 
 	// Create request with original headers

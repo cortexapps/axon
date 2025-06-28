@@ -233,11 +233,14 @@ func NewAgentEnvConfig() AgentConfig {
 		cfg.HttpCaCertFilePath = filepath.Clean(cfg.HttpCaCertFilePath)
 	}
 
+	cfg.HttpRelayReflectorMode = RelayReflectorAllTraffic
 	if relayReflector := os.Getenv("ENABLE_RELAY_REFLECTOR"); relayReflector != "" {
 		switch relayReflector {
-		case "true", "registration":
+		case "false", "disabled":
+			cfg.HttpRelayReflectorMode = RelayReflectorDisabled
+		case "registration":
 			cfg.HttpRelayReflectorMode = RelayReflectorRegistrationOnly
-		case "all":
+		case "true", "all":
 			cfg.HttpRelayReflectorMode = RelayReflectorAllTraffic
 		}
 	}

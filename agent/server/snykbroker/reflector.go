@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"github.com/cortexapps/axon/common"
 	"github.com/cortexapps/axon/config"
 	cortexHttp "github.com/cortexapps/axon/server/http"
 	"github.com/gorilla/mux"
@@ -93,7 +94,7 @@ func (rr *RegistrationReflector) Stop() error {
 	return nil
 }
 
-func (rr *RegistrationReflector) getProxy(targetURI string, isDefault bool, headers map[string]string) (*proxyEntry, error) {
+func (rr *RegistrationReflector) getProxy(targetURI string, isDefault bool, headers common.ResolverMap) (*proxyEntry, error) {
 
 	if targetURI == "" {
 		return nil, fmt.Errorf("target URI cannot be empty")
@@ -169,8 +170,8 @@ func (rr *RegistrationReflector) parseTargetUri(proxyPath string) (*proxyEntry, 
 type ProxyOption func(*proxyOption)
 
 type proxyOption struct {
-	isDefault bool
-	headers   map[string]string
+	isDefault       bool
+	headerResolvers common.ResolverMap
 }
 
 func WithDefault(value bool) ProxyOption {
@@ -181,12 +182,18 @@ func WithDefault(value bool) ProxyOption {
 
 func WithHeaders(headers map[string]string) ProxyOption {
 	return func(option *proxyOption) {
-		if option.headers == nil {
-			option.headers = make(map[string]string)
+		if option.headerResolvers == nil {
+			option.headerResolvers = make(common.ResolverMap, len(headers))
 		}
 		for k, v := range headers {
-			option.headers[k] = v
+			option.headerResolvers[k] = common.StringValueResolver(v)
 		}
+	}
+}
+
+func WithHeadersResolver(headers common.ResolverMap) ProxyOption {
+	return func(option *proxyOption) {
+		option.headerResolvers = headers
 	}
 }
 
@@ -198,7 +205,7 @@ func (rr *RegistrationReflector) ProxyURI(target string, options ...ProxyOption)
 		opt(opts)
 	}
 
-	proxy, err := rr.getProxy(target, opts.isDefault, opts.headers)
+	proxy, err := rr.getProxy(target, opts.isDefault, opts.headerResolvers)
 	if err != nil {
 		rr.logger.Error("Failed to get proxy URI", zap.Error(err))
 		return target
@@ -239,12 +246,12 @@ type proxyEntry struct {
 	TargetURI       string // Exported for clean access
 	proxyURI        string
 	handler         http.Handler
-	headers         map[string]string
+	headers         common.ResolverMap
 	responseHeaders map[string]string
 	hashCode        string
 }
 
-func newProxyEntry(targetURI string, isDefault bool, port int, headers map[string]string, transport *http.Transport) (*proxyEntry, error) {
+func newProxyEntry(targetURI string, isDefault bool, port int, headers common.ResolverMap, transport *http.Transport) (*proxyEntry, error) {
 	if targetURI == "" {
 		return nil, fmt.Errorf("target URI cannot be empty")
 	}
@@ -258,17 +265,11 @@ func newProxyEntry(targetURI string, isDefault bool, port int, headers map[strin
 	// Create the reverse proxy
 	proxy := httputil.NewSingleHostReverseProxy(asUri)
 
-	// Copy headers to avoid mutation
-	processedHeaders := make(map[string]string)
-	for k, v := range headers {
-		processedHeaders[k] = v
-	}
-
 	pe := &proxyEntry{
 		isDefault: isDefault,
 		TargetURI: targetURI,
 		handler:   proxy,
-		headers:   processedHeaders,
+		headers:   headers,
 	}
 
 	// Set up the director to handle host and headers
@@ -276,6 +277,9 @@ func newProxyEntry(targetURI string, isDefault bool, port int, headers map[strin
 	proxy.Director = func(req *http.Request) {
 		defaultDirector(req)
 		req.Host = asUri.Host
+
+		// Copy headers to avoid mutation
+		processedHeaders := headers.Resolve()
 
 		// Inject custom headers
 		for headerName, headerValue := range processedHeaders {
@@ -311,7 +315,7 @@ func (pe *proxyEntry) key() string {
 			// Create a unique key that includes headers to allow different header sets for the same URI
 			headerKey := ""
 			for k, v := range pe.headers {
-				headerKey += fmt.Sprintf("|%s=%s", k, v)
+				headerKey += fmt.Sprintf("|%s=%s", k, v())
 			}
 			key = key + headerKey
 		}

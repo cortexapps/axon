@@ -31,7 +31,7 @@ func TestRewriteOriginsWithHeaderExtraction(t *testing.T) {
 						"method": "GET",
 						"path":   "/api/*",
 						"origin": "https://api.example.com",
-						"headers": map[string]interface{}{
+						"headers": map[string]any{
 							"x-api-key": "${TEST_API_KEY}",
 							"x-static":  "static-value",
 						},
@@ -145,11 +145,11 @@ func TestRewriteOriginsWithHeaderExtraction(t *testing.T) {
 
 			// Capture header extraction calls
 			var headerCalls []headerCall
-			headerExtractor := func(origin string, headers map[string]string) string {
+			headerExtractor := func(origin string, headers ResolverMap) string {
 				if len(headers) > 0 {
 					headerCalls = append(headerCalls, headerCall{
 						origin:  origin,
-						headers: headers,
+						headers: headers.Resolve(),
 					})
 				}
 				return "proxy-" + origin // Mocking the proxy URI generation
@@ -205,13 +205,13 @@ func TestHeaderEnvironmentVariableResolution(t *testing.T) {
 	}
 
 	var capturedHeaders map[string]string
-	headerExtractor := func(_ string, headers map[string]string) {
-		capturedHeaders = headers
+	headerExtractor := func(_ string, headers ResolverMap) {
+		capturedHeaders = headers.Resolve()
 	}
 
 	_, err := integrationInfo.RewriteOrigins(
 		acceptFile,
-		func(originalURI string, headers map[string]string) string {
+		func(originalURI string, headers ResolverMap) string {
 			headerExtractor(originalURI, headers)
 			return originalURI
 		},
@@ -258,8 +258,8 @@ func TestComplexEnvironmentVariablePatterns(t *testing.T) {
 	}
 
 	var capturedHeaders map[string]string
-	headerExtractor := func(origin string, headers map[string]string) string {
-		capturedHeaders = headers
+	headerExtractor := func(origin string, headers ResolverMap) string {
+		capturedHeaders = headers.Resolve()
 		return origin
 	}
 
@@ -301,8 +301,8 @@ func TestEmptyAndInvalidHeaderValues(t *testing.T) {
 	}
 
 	var capturedHeaders map[string]string
-	headerExtractor := func(origin string, headers map[string]string) string {
-		capturedHeaders = headers
+	headerExtractor := func(origin string, headers ResolverMap) string {
+		capturedHeaders = headers.Resolve()
 		return origin
 	}
 

@@ -143,7 +143,56 @@ func (ii IntegrationInfo) AcceptFile(localhostBase string) (string, error) {
 	return expectedPath, err
 }
 
-func (ii IntegrationInfo) RewriteOrigins(acceptFilePath string, writer func(string, map[string]string) string) (*AcceptFileInfo, error) {
+type ValueResolver func() string
+
+func StringValueResolver(value string) ValueResolver {
+	return func() string {
+		return value
+	}
+}
+
+type ResolverMap map[string]ValueResolver
+
+func NewResolverMapFromMap(m map[string]string) ResolverMap {
+	rm := make(ResolverMap, len(m))
+	for key, value := range m {
+		rm[key] = StringValueResolver(value)
+	}
+	return rm
+}
+
+func (rm ResolverMap) Resolve() map[string]string {
+	resolved := make(map[string]string, len(rm))
+	for key, resolver := range rm {
+		resolved[key] = resolver()
+	}
+	return resolved
+}
+
+func (rm ResolverMap) ResolveKey(key string) string {
+	resolver, ok := rm[key]
+	if !ok {
+		return ""
+	}
+	return resolver()
+}
+
+func EnvValueResolver(envVar string, defaultValue string, capture bool) ValueResolver {
+
+	captured := os.ExpandEnv(envVar)
+	return func() string {
+		if capture {
+			return captured
+		}
+		if val := os.ExpandEnv(envVar); val != "" {
+			return val
+		}
+
+		return defaultValue
+	}
+}
+
+func (ii IntegrationInfo) RewriteOrigins(acceptFilePath string, writer func(string, ResolverMap) string) (*AcceptFileInfo, error) {
 
 	info, err := newAcceptFileInfo(acceptFilePath, writer)
 	if err != nil {
@@ -162,7 +211,7 @@ type AcceptFileInfo struct {
 	Content        string
 	rawContent     []byte
 	Routes         []AcceptFileRoute
-	originRewriter func(uri string, headers map[string]string) string
+	originRewriter func(uri string, headers ResolverMap) string
 }
 
 var IgnoreHosts = []string{
@@ -170,7 +219,7 @@ var IgnoreHosts = []string{
 	"127.0.0.1",
 }
 
-func newAcceptFileInfo(acceptFilePath string, originRewriter func(string, map[string]string) string) (*AcceptFileInfo, error) {
+func newAcceptFileInfo(acceptFilePath string, originRewriter func(string, ResolverMap) string) (*AcceptFileInfo, error) {
 	stat, err := os.Stat(acceptFilePath)
 	if err != nil {
 		return nil, err
@@ -240,14 +289,14 @@ func (afi *AcceptFileInfo) Rewrite() (string, error) {
 			}
 
 			// Extract headers if present
-			var headers map[string]string
+			var headers ResolverMap
 			if headersInterface, hasHeaders := values["headers"]; hasHeaders {
 				if headersMap, ok := headersInterface.(map[string]interface{}); ok {
-					headers = make(map[string]string)
+					headers = make(ResolverMap, len(headersMap))
 					for k, v := range headersMap {
 						if strVal, ok := v.(string); ok {
 							// Resolve environment variables in header values
-							headers[k] = os.ExpandEnv(strVal)
+							headers[k] = EnvValueResolver(strVal, "", true)
 						}
 					}
 				}
@@ -298,7 +347,7 @@ func (afi *AcceptFileInfo) Rewrite() (string, error) {
 type AcceptFileRoute struct {
 	ResolvedOrigin string
 	ProxyOrigin    string
-	Headers        map[string]string
+	Headers        ResolverMap
 }
 
 func (ii IntegrationInfo) getAcceptFileContents() (string, error) {

@@ -201,7 +201,7 @@ func TestAcceptRewrite(t *testing.T) {
 		Integration:    IntegrationGithub,
 		AcceptFilePath: acceptFilePath,
 	}
-	rewritten, err := info.RewriteOrigins(acceptFilePath, func(origin string, headers map[string]string) string {
+	rewritten, err := info.RewriteOrigins(acceptFilePath, func(origin string, headers ResolverMap) string {
 
 		if strings.Contains(origin, "http://localhost") {
 			require.Fail(t, "should not rewrite localhost origins")
