@@ -29,6 +29,7 @@ const (
 	IntegrationSonarqube  Integration = "sonarqube"
 	IntegrationBitbucket  Integration = "bitbucket"
 	IntegrationPrometheus Integration = "prometheus"
+	IntegrationServiceNow Integration = "servicenow"
 )
 
 var subtypes = map[Integration][]string{
@@ -60,7 +61,7 @@ func ParseIntegration(s string) (Integration, error) {
 }
 
 func ValidIntegrations() []Integration {
-	return []Integration{IntegrationGithub, IntegrationJira, IntegrationGitlab, IntegrationBitbucket, IntegrationSonarqube, IntegrationPrometheus}
+	return []Integration{IntegrationGithub, IntegrationJira, IntegrationGitlab, IntegrationBitbucket, IntegrationSonarqube, IntegrationPrometheus, IntegrationServiceNow}
 }
 
 type IntegrationInfo struct {
