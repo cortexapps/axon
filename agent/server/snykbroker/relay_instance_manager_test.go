@@ -2,7 +2,6 @@ package snykbroker
 
 import (
 	"context"
-	"encoding/json"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -11,14 +10,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PaesslerAG/jsonpath"
 	"github.com/cortexapps/axon/common"
 	"github.com/cortexapps/axon/config"
 	cortex_http "github.com/cortexapps/axon/server/http"
 	"github.com/cortexapps/axon/util"
 	"github.com/gorilla/mux"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/fx/fxtest"
 	"go.uber.org/mock/gomock"
@@ -56,7 +53,7 @@ func TestManagerSuccessWithReflector(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Equal(t, 1, len(mgr.requestUrls), "Expected one request to the reflector URI")
-	assert.Equal(t, "/foo/bar", mgr.requestUrls[0].Path, "Expected request to the reflector URI to have the correct path")
+	require.Equal(t, "/foo/bar", mgr.requestUrls[0].Path, "Expected request to the reflector URI to have the correct path")
 
 }
 
@@ -87,9 +84,9 @@ func TestApplyValidationConfig(t *testing.T) {
 	mgr := &relayInstanceManager{}
 
 	mgr.applyClientValidationConfig(validationConfig, envVars)
-	assert.Equal(t, "https://api.github.com/user", envVars["BROKER_CLIENT_VALIDATION_URL"])
-	assert.Equal(t, "POST", envVars["BROKER_CLIENT_VALIDATION_METHOD"])
-	assert.Equal(t, "bearer the-token", envVars["BROKER_CLIENT_VALIDATION_AUTHORIZATION_HEADER"])
+	require.Equal(t, "https://api.github.com/user", envVars["BROKER_CLIENT_VALIDATION_URL"])
+	require.Equal(t, "POST", envVars["BROKER_CLIENT_VALIDATION_METHOD"])
+	require.Equal(t, "bearer the-token", envVars["BROKER_CLIENT_VALIDATION_AUTHORIZATION_HEADER"])
 
 }
 
@@ -97,14 +94,14 @@ func TestLoadCertsDir(t *testing.T) {
 	mgr := &relayInstanceManager{}
 
 	path := mgr.getCertFilePath("../../test/certs")
-	assert.Equal(t, "../../test/certs/selfsigned-1.pem", path)
+	require.Equal(t, "../../test/certs/selfsigned-1.pem", path)
 }
 
 func TestLoadCertsFile(t *testing.T) {
 	mgr := &relayInstanceManager{}
 
 	path := mgr.getCertFilePath("../../test/certs/selfsigned-2.pem")
-	assert.Equal(t, "../../test/certs/selfsigned-2.pem", path)
+	require.Equal(t, "../../test/certs/selfsigned-2.pem", path)
 }
 
 func TestHttpProxy(t *testing.T) {
@@ -124,10 +121,10 @@ func TestHttpProxy(t *testing.T) {
 	env := map[string]string{}
 	mgr.setHttpProxyEnvVars(env)
 
-	assert.Equal(t, "http://proxy.example.com:8080", env["HTTP_PROXY"])
-	assert.Equal(t, "http://proxy.example.com:8080", env["HTTPS_PROXY"])
-	assert.Equal(t, "localhost,127.0.0.1", env["NO_PROXY"])
-	assert.Equal(t, cfg.HttpCaCertFilePath, env["NODE_EXTRA_CA_CERTS"])
+	require.Equal(t, "http://proxy.example.com:8080", env["HTTP_PROXY"])
+	require.Equal(t, "http://proxy.example.com:8080", env["HTTPS_PROXY"])
+	require.Equal(t, "localhost,127.0.0.1", env["NO_PROXY"])
+	require.Equal(t, cfg.HttpCaCertFilePath, env["NODE_EXTRA_CA_CERTS"])
 
 }
 
@@ -145,8 +142,8 @@ func TestRelayRestartServer(t *testing.T) {
 	httpHandler.RegisterRoutes(mux)
 	mux.ServeHTTP(w, req)
 
-	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, 2, int(mgr.Instance().startCount.Load()))
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, 2, int(mgr.Instance().startCount.Load()))
 
 }
 
@@ -163,8 +160,8 @@ func TestRelayReRegisterServer(t *testing.T) {
 	httpHandler.RegisterRoutes(mux)
 	mux.ServeHTTP(w, req)
 
-	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, 1, int(mgr.Instance().startCount.Load()))
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, 1, int(mgr.Instance().startCount.Load()))
 
 }
 
@@ -217,99 +214,8 @@ func TestSystemCheck(t *testing.T) {
 	mux.ServeHTTP(w, req)
 
 	// Verify the response
-	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, jsonPayload, w.Body.String())
-}
-
-func TestApplyAcceptTransforms(t *testing.T) {
-
-	lifecycle := fxtest.NewLifecycle(t)
-	cfg := config.NewAgentEnvConfig()
-	logger := zap.NewNop()
-	cfg.HttpRelayReflectorMode = config.RelayReflectorAllTraffic
-
-	params := RegistrationReflectorParams{
-		Lifecycle: lifecycle,
-		Logger:    logger.Named("reflector"),
-		Config:    cfg,
-	}
-	reflector := NewRegistrationReflector(
-		params,
-	)
-	reflector.Start()
-	defer reflector.Stop()
-
-	mgr := &relayInstanceManager{
-		config:    cfg,
-		reflector: reflector,
-		logger:    zap.NewNop(),
-	}
-
-	cases := []struct {
-		acceptFile string
-		env        map[string]string
-	}{
-		{
-			acceptFile: "accept_files/accept.github.json",
-			env: map[string]string{
-				"GITHUB_API":     "api.github.com",
-				"GITHUB_GRAPHQL": "api.github.com/graphql",
-			},
-		},
-		{
-			acceptFile: "accept_files/accept.bitbucket.basic.json",
-			env: map[string]string{
-				"BITBUCKET_API": "api.bitbucket.com",
-			},
-		},
-	}
-
-	for _, c := range cases {
-		t.Run(c.acceptFile, func(t *testing.T) {
-			// Set environment variables
-			for k, v := range c.env {
-				t.Setenv(k, v)
-			}
-
-			// validate it doesn't do it when mode is
-			cfgCopy := cfg
-			cfgCopy.HttpRelayReflectorMode = config.RelayReflectorRegistrationOnly
-			mgr.config = cfgCopy
-
-			newFile := mgr.applyAcceptFileTransforms(c.acceptFile)
-			// Check that the new file is the same as the original
-			assert.Equal(t, c.acceptFile, newFile, "Expected the accept file to not be transformed when reflector mode is disabled")
-
-			mgr.config = cfg // reset the config to the original
-
-			// Apply the accept file transforms
-			newFile = mgr.applyAcceptFileTransforms(c.acceptFile)
-			// Check that the new file is not the same as the original
-			assert.NotEqual(t, c.acceptFile, newFile, "Expected the accept file to be transformed")
-
-			// gather all of the "origin" values
-			newFileContent, err := os.ReadFile(newFile)
-			require.NoError(t, err, "Failed to read transformed accept file")
-
-			v := any(nil)
-
-			err = json.Unmarshal(newFileContent, &v)
-			require.NoError(t, err, "Failed to unmarshal transformed accept file")
-			origins, err := jsonpath.Get("$.private[*].origin", v)
-			require.NoError(t, err, "Failed to get origins from transformed accept file")
-			for _, origin := range origins.([]any) {
-				originStr, ok := origin.(string)
-				require.True(t, ok, "Expected origin to be a string")
-				// Check that the origin is not empty
-				assert.NotEmpty(t, originStr, "Expected origin to be non-empty")
-				// Check that the origin is a valid URL
-				url, err := url.ParseRequestURI(originStr)
-				assert.NoError(t, err, "Expected origin to be a valid URL")
-				require.Contains(t, url.Host, "localhost:", "Expected origin to contain localhost")
-			}
-		})
-
-	}
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, jsonPayload, w.Body.String())
 }
 
 type wrappedRelayInstanceManager struct {

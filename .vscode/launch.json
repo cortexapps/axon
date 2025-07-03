@@ -78,8 +78,8 @@
             "program": "${workspaceFolder}/agent/main.go",
             "args": [
                 "relay",
-                "-i",
-                "github",
+                "-f",
+                "/Users/shawn/dev/cortex/axon/agent/test/accept.test.json",
                 "--alias",
                 "relay2",
                 "-v"
@@ -91,7 +91,9 @@
                 "PORT" : "7399",
                 "GITHUB_API": "api.github.com",
                 "GITHUB_GRAPHQL": "api.github.com/graphql",
-                "ENABLE_RELAY_REFLECTOR": "true"
+                "ENABLE_RELAY_REFLECTOR": "all",
+                "BROKER_TOKEN": "abc123",
+                "PLUGIN_DIRS": "${workspaceFolder}/agent/server/snykbroker/acceptfile",
             }        
         },
 

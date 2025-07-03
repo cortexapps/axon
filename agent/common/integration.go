@@ -1,18 +1,15 @@
 package common
 
 import (
-	"crypto/sha256"
 	_ "embed"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"os"
 	"path"
-	"regexp"
-	"sort"
 	"strings"
-	"time"
+
+	"github.com/cortexapps/axon/config"
+	"github.com/cortexapps/axon/server/snykbroker/acceptfile"
 )
 
 type Integration string
@@ -60,7 +57,7 @@ func ParseIntegration(s string) (Integration, error) {
 }
 
 func ValidIntegrations() []Integration {
-	return []Integration{IntegrationGithub, IntegrationJira, IntegrationGitlab, IntegrationBitbucket, IntegrationSonarqube, IntegrationPrometheus}
+	return []Integration{IntegrationCustom, IntegrationGithub, IntegrationJira, IntegrationGitlab, IntegrationBitbucket, IntegrationSonarqube, IntegrationPrometheus}
 }
 
 type IntegrationInfo struct {
@@ -70,284 +67,26 @@ type IntegrationInfo struct {
 	AcceptFilePath string
 }
 
-func (ii IntegrationInfo) AcceptFile(localhostBase string) (string, error) {
+func (ii IntegrationInfo) ToAcceptFile(cfg config.AgentConfig) (*acceptfile.AcceptFile, error) {
 
-	// load/locate the accept file then fix it up to have
-	// an entry to talk to the axon HTTP server itself
-	// which we use for status, etc
-	alias := ii.Alias
-	if len(alias) == 0 {
-		alias = "default"
+	if err := ii.Integration.Validate(); err != nil {
+		return nil, err
+	}
+
+	if _, err := ii.ValidateSubtype(); err != nil {
+		return nil, err
 	}
 
 	content, err := ii.getAcceptFileContents()
 	if err != nil {
-		return "", err
-	}
-
-	rawFile := []byte(content)
-	h := sha256.New()
-	h.Write(rawFile)
-	expectedPath := path.Join(
-		os.TempDir(),
-		"accept-files",
-		ii.Integration.String(),
-		alias,
-		hex.EncodeToString(h.Sum(nil)),
-		"accept.json",
-	)
-
-	dict := map[string]interface{}{}
-	err = json.Unmarshal(rawFile, &dict)
-	if err != nil {
-		return "", err
-	}
-
-	// we add a section like this to allow the server side
-	// to hit the axon agent via an HTTP bridge
-	// "private": [
-	// 	{
-	// 	  "method": "any",
-	// 	  "path": "/__axon/*",
-	// 	  "origin": "http://localhost"
-	// 	}
-	//   ]
-
-	entries, ok := dict["private"].([]interface{})
-	if !ok {
-		entries = []interface{}{}
-		dict["private"] = entries
-	}
-
-	entry := map[string]string{
-		"method": "any",
-		"path":   "/__axon/*",
-		"origin": localhostBase,
-	}
-	dict["private"] = append([]interface{}{entry}, entries...)
-
-	if _, ok := dict["public"]; !ok {
-		dict["public"] = []interface{}{}
-	}
-
-	json, err := json.Marshal(dict)
-	if err != nil {
-		return "", err
-	}
-	err = os.MkdirAll(path.Dir(expectedPath), os.ModeDir|os.ModePerm)
-	if err != nil {
-		return "", err
-	}
-	err = os.WriteFile(expectedPath, json, os.ModePerm)
-
-	return expectedPath, err
-}
-
-type ValueResolver func() string
-
-func StringValueResolver(value string) ValueResolver {
-	return func() string {
-		return value
-	}
-}
-
-type ResolverMap map[string]ValueResolver
-
-func NewResolverMapFromMap(m map[string]string) ResolverMap {
-	rm := make(ResolverMap, len(m))
-	for key, value := range m {
-		rm[key] = StringValueResolver(value)
-	}
-	return rm
-}
-
-func (rm ResolverMap) ToStringMap() map[string]string {
-	resolved := make(map[string]string, len(rm))
-	for key, resolver := range rm {
-		resolved[key] = resolver()
-	}
-	return resolved
-}
-
-func (rm ResolverMap) Resolve(key string) string {
-	resolver, ok := rm[key]
-	if !ok {
-		return ""
-	}
-	return resolver()
-}
-
-func EnvValueResolver(envVar string, defaultValue string, capture bool) ValueResolver {
-
-	captured := os.ExpandEnv(envVar)
-	return func() string {
-		if capture {
-			return captured
-		}
-		if val := os.ExpandEnv(envVar); val != "" {
-			return val
-		}
-
-		return defaultValue
-	}
-}
-
-func (ii IntegrationInfo) RewriteOrigins(acceptFilePath string, writer func(string, ResolverMap) string) (*AcceptFileInfo, error) {
-
-	info, err := newAcceptFileInfo(acceptFilePath, writer)
-	if err != nil {
 		return nil, err
 	}
-	_, err = info.Rewrite()
-	if err != nil {
+	file := acceptfile.NewAcceptFile([]byte(content), acceptfile.WithAgentConfig(cfg))
+
+	if err := file.Validate(); err != nil {
 		return nil, err
 	}
-	return info, nil
-}
-
-type AcceptFileInfo struct {
-	OriginalPath   string
-	RewrittenPath  string
-	Content        string
-	rawContent     []byte
-	Routes         []AcceptFileRoute
-	originRewriter func(uri string, headers ResolverMap) string
-}
-
-var IgnoreHosts = []string{
-	"localhost",
-	"127.0.0.1",
-}
-
-func newAcceptFileInfo(acceptFilePath string, originRewriter func(string, ResolverMap) string) (*AcceptFileInfo, error) {
-	stat, err := os.Stat(acceptFilePath)
-	if err != nil {
-		return nil, err
-	}
-
-	if stat.IsDir() {
-		return nil, fmt.Errorf("accept file path %q is a directory, expected a file", acceptFilePath)
-	}
-
-	info := &AcceptFileInfo{
-		OriginalPath:   acceptFilePath,
-		originRewriter: originRewriter,
-	}
-
-	info.rawContent, err = os.ReadFile(acceptFilePath)
-	if err != nil {
-		return nil, err
-	}
-
-	return info, nil
-}
-
-func (afi *AcceptFileInfo) isIgnoredHost(host string) bool {
-	for _, ignoreHost := range IgnoreHosts {
-		if strings.HasPrefix(host, ignoreHost) {
-			return true
-		}
-	}
-	return false
-}
-
-func (afi *AcceptFileInfo) Rewrite() (string, error) {
-
-	if afi.Content == "" {
-		dict := map[string]interface{}{}
-		err := json.Unmarshal(afi.rawContent, &dict)
-		if err != nil {
-			return "", err
-		}
-
-		entries, ok := dict["private"].([]interface{})
-		if !ok {
-			return "", nil
-		}
-
-		for _, entry := range entries {
-			values := entry.(map[string]any)
-			rawOrigin, ok := values["origin"].(string)
-			if !ok {
-				continue
-			}
-
-			origin := os.ExpandEnv(rawOrigin)
-
-			parsed, err := url.Parse(origin)
-			if err != nil {
-				return "", fmt.Errorf("failed to parse origin %q: %w", origin, err)
-			}
-
-			if afi.isIgnoredHost(parsed.Host) {
-				continue
-			}
-
-			if parsed.Scheme == "" {
-				parsed.Scheme = "https"
-				origin = parsed.String()
-			}
-
-			// Extract headers if present
-			var headers ResolverMap
-			if headersInterface, hasHeaders := values["headers"]; hasHeaders {
-				if headersMap, ok := headersInterface.(map[string]interface{}); ok {
-					headers = make(ResolverMap, len(headersMap))
-					for k, v := range headersMap {
-						if strVal, ok := v.(string); ok {
-							// Resolve environment variables in header values
-							headers[k] = EnvValueResolver(strVal, "", true)
-						}
-					}
-				}
-			}
-
-			// rewrite the origin to use the writer function
-			newOrigin := afi.originRewriter(origin, headers)
-			if newOrigin != "" {
-				values["origin"] = newOrigin
-			}
-			afi.Routes = append(afi.Routes, AcceptFileRoute{
-				ResolvedOrigin: origin,
-				ProxyOrigin:    newOrigin,
-				Headers:        headers,
-			})
-		}
-
-		json, err := json.Marshal(dict)
-		if err != nil {
-			return "", err
-		}
-		afi.Content = string(json)
-
-		stat, err := os.Stat(afi.OriginalPath)
-
-		if err != nil {
-			return "", err
-		}
-		newFilePath := path.Join(
-			os.TempDir(),
-			"accept-files-written",
-			fmt.Sprintf("rewrite.%v.%v", time.Now().UnixMilli(), stat.Name()),
-		)
-		err = os.MkdirAll(path.Dir(newFilePath), os.ModeDir|os.ModePerm)
-		if err != nil {
-			return "", err
-		}
-
-		err = os.WriteFile(newFilePath, json, os.ModePerm)
-		if err != nil {
-			return "", err
-		}
-		afi.RewrittenPath = newFilePath
-	}
-	return afi.Content, nil
-}
-
-type AcceptFileRoute struct {
-	ResolvedOrigin string
-	ProxyOrigin    string
-	Headers        ResolverMap
+	return file, nil
 }
 
 func (ii IntegrationInfo) getAcceptFileContents() (string, error) {
@@ -478,31 +217,5 @@ func (ii IntegrationInfo) getIntegrationAcceptFile() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := ii.ensureAcceptFileVars(strContent); err != nil {
-		return "", err
-	}
 	return strContent, nil
-}
-
-var reContentVars = regexp.MustCompile(`\$\{(.*?)\}`)
-
-func (ii IntegrationInfo) ensureAcceptFileVars(content string) error {
-	varMatch := reContentVars.FindAllStringSubmatch(content, -1)
-
-	envVars := []string{}
-
-	// sort these so they have a stable order
-
-	for _, match := range varMatch {
-		envVars = append(envVars, match[1])
-	}
-
-	sort.Strings(envVars)
-
-	for _, envVar := range envVars {
-		if os.Getenv(envVar) == "" && os.Getenv(envVar+"_POOL") == "" {
-			return fmt.Errorf("missing required environment variable %q for integration %s", envVar, ii.Integration.String())
-		}
-	}
-	return nil
 }

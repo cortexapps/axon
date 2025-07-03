@@ -10,9 +10,9 @@ import (
 	"strings"
 	"sync/atomic"
 
-	"github.com/cortexapps/axon/common"
 	"github.com/cortexapps/axon/config"
 	cortexHttp "github.com/cortexapps/axon/server/http"
+	"github.com/cortexapps/axon/server/snykbroker/acceptfile"
 	"github.com/gorilla/mux"
 	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/fx"
@@ -94,7 +94,7 @@ func (rr *RegistrationReflector) Stop() error {
 	return nil
 }
 
-func (rr *RegistrationReflector) getProxy(targetURI string, isDefault bool, headers common.ResolverMap) (*proxyEntry, error) {
+func (rr *RegistrationReflector) getProxy(targetURI string, isDefault bool, headers acceptfile.ResolverMap) (*proxyEntry, error) {
 
 	if targetURI == "" {
 		return nil, fmt.Errorf("target URI cannot be empty")
@@ -171,7 +171,7 @@ type ProxyOption func(*proxyOption)
 
 type proxyOption struct {
 	isDefault       bool
-	headerResolvers common.ResolverMap
+	headerResolvers acceptfile.ResolverMap
 }
 
 func WithDefault(value bool) ProxyOption {
@@ -183,15 +183,15 @@ func WithDefault(value bool) ProxyOption {
 func WithHeaders(headers map[string]string) ProxyOption {
 	return func(option *proxyOption) {
 		if option.headerResolvers == nil {
-			option.headerResolvers = make(common.ResolverMap, len(headers))
+			option.headerResolvers = make(acceptfile.ResolverMap, len(headers))
 		}
 		for k, v := range headers {
-			option.headerResolvers[k] = common.StringValueResolver(v)
+			option.headerResolvers[k] = acceptfile.StringValueResolver(v)
 		}
 	}
 }
 
-func WithHeadersResolver(headers common.ResolverMap) ProxyOption {
+func WithHeadersResolver(headers acceptfile.ResolverMap) ProxyOption {
 	return func(option *proxyOption) {
 		option.headerResolvers = headers
 	}
@@ -246,12 +246,12 @@ type proxyEntry struct {
 	TargetURI       string // Exported for clean access
 	proxyURI        string
 	handler         http.Handler
-	headers         common.ResolverMap
+	headers         acceptfile.ResolverMap
 	responseHeaders map[string]string
 	hashCode        string
 }
 
-func newProxyEntry(targetURI string, isDefault bool, port int, headers common.ResolverMap, transport *http.Transport) (*proxyEntry, error) {
+func newProxyEntry(targetURI string, isDefault bool, port int, headers acceptfile.ResolverMap, transport *http.Transport) (*proxyEntry, error) {
 	if targetURI == "" {
 		return nil, fmt.Errorf("target URI cannot be empty")
 	}

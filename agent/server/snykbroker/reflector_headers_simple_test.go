@@ -6,7 +6,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/cortexapps/axon/common"
+	"github.com/cortexapps/axon/server/snykbroker/acceptfile"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
@@ -40,7 +40,7 @@ func TestHeaderApplicationInProxy(t *testing.T) {
 	}
 
 	// Create proxy with headers
-	proxyEntry, err := newProxyEntry(backendServer.URL, false, 8080, common.NewResolverMapFromMap(headers), nil)
+	proxyEntry, err := newProxyEntry(backendServer.URL, false, 8080, acceptfile.NewResolverMapFromMap(headers), nil)
 	proxyEntry.addResponseHeader("x-response", "response-value")
 	require.NoError(t, err)
 	require.NotNil(t, proxyEntry)
@@ -56,18 +56,18 @@ func TestHeaderApplicationInProxy(t *testing.T) {
 	proxyEntry.handler.ServeHTTP(rr, req)
 
 	// Verify the request was successful
-	assert.Equal(t, http.StatusOK, rr.Code)
+	require.Equal(t, http.StatusOK, rr.Code)
 
 	// Verify that headers were applied to the backend request
-	assert.Equal(t, "secret-key-123", receivedHeaders.Get("x-api-key"))
-	assert.Equal(t, "Bearer bearer-token-456", receivedHeaders.Get("authorization"))
-	assert.Equal(t, "static-value", receivedHeaders.Get("x-static"))
-	assert.Equal(t, "", receivedHeaders.Get("x-response"))
+	require.Equal(t, "secret-key-123", receivedHeaders.Get("x-api-key"))
+	require.Equal(t, "Bearer bearer-token-456", receivedHeaders.Get("authorization"))
+	require.Equal(t, "static-value", receivedHeaders.Get("x-static"))
+	require.Equal(t, "", receivedHeaders.Get("x-response"))
 
 	// Verify original headers are preserved
-	assert.Equal(t, "test-client", receivedHeaders.Get("user-agent"))
+	require.Equal(t, "test-client", receivedHeaders.Get("user-agent"))
 
-	assert.Equal(t, "response-value", rr.Header().Get("x-response"))
+	require.Equal(t, "response-value", rr.Header().Get("x-response"))
 
 	// Verify the response body
 	assert.JSONEq(t, `{"message": "success"}`, rr.Body.String())
@@ -98,7 +98,7 @@ func TestMultipleProxiesWithDifferentHeaders(t *testing.T) {
 		"x-api-key": "key-for-server-1",
 		"x-service": "service-1",
 	}
-	proxy1, err := newProxyEntry(server1.URL, false, 8080, common.NewResolverMapFromMap(headers1), nil)
+	proxy1, err := newProxyEntry(server1.URL, false, 8080, acceptfile.NewResolverMapFromMap(headers1), nil)
 	require.NoError(t, err)
 
 	// Create second proxy with different headers
@@ -106,7 +106,7 @@ func TestMultipleProxiesWithDifferentHeaders(t *testing.T) {
 		"x-api-key": "key-for-server-2",
 		"x-service": "service-2",
 	}
-	proxy2, err := newProxyEntry(server2.URL, false, 8080, common.NewResolverMapFromMap(headers2), nil)
+	proxy2, err := newProxyEntry(server2.URL, false, 8080, acceptfile.NewResolverMapFromMap(headers2), nil)
 	require.NoError(t, err)
 
 	// Send requests through both proxies
@@ -119,15 +119,15 @@ func TestMultipleProxiesWithDifferentHeaders(t *testing.T) {
 	proxy2.handler.ServeHTTP(rr2, req2)
 
 	// Verify both requests were successful
-	assert.Equal(t, http.StatusOK, rr1.Code)
-	assert.Equal(t, http.StatusOK, rr2.Code)
+	require.Equal(t, http.StatusOK, rr1.Code)
+	require.Equal(t, http.StatusOK, rr2.Code)
 
 	// Verify correct headers were sent to each server
-	assert.Equal(t, "key-for-server-1", server1Headers.Get("x-api-key"))
-	assert.Equal(t, "service-1", server1Headers.Get("x-service"))
+	require.Equal(t, "key-for-server-1", server1Headers.Get("x-api-key"))
+	require.Equal(t, "service-1", server1Headers.Get("x-service"))
 
-	assert.Equal(t, "key-for-server-2", server2Headers.Get("x-api-key"))
-	assert.Equal(t, "service-2", server2Headers.Get("x-service"))
+	require.Equal(t, "key-for-server-2", server2Headers.Get("x-api-key"))
+	require.Equal(t, "service-2", server2Headers.Get("x-service"))
 }
 
 // TestProxyWithNoHeaders tests that proxies work correctly without headers
@@ -166,11 +166,11 @@ func TestProxyWithNoHeaders(t *testing.T) {
 	proxyEntry.handler.ServeHTTP(rr, req)
 
 	// Verify the request was successful
-	assert.Equal(t, http.StatusOK, rr.Code)
+	require.Equal(t, http.StatusOK, rr.Code)
 
 	// Verify original headers are preserved (no custom headers added)
-	assert.Equal(t, "test-client", receivedHeaders.Get("user-agent"))
-	assert.Equal(t, "application/json", receivedHeaders.Get("content-type"))
+	require.Equal(t, "test-client", receivedHeaders.Get("user-agent"))
+	require.Equal(t, "application/json", receivedHeaders.Get("content-type"))
 
 	// Verify no custom headers were added
 	assert.Empty(t, receivedHeaders.Get("x-api-key"))
@@ -206,7 +206,7 @@ func TestHeaderOverwriting(t *testing.T) {
 	}
 
 	// Create proxy with headers
-	proxyEntry, err := reflector.getProxy(backendServer.URL, false, common.NewResolverMapFromMap(headers))
+	proxyEntry, err := reflector.getProxy(backendServer.URL, false, acceptfile.NewResolverMapFromMap(headers))
 	require.NoError(t, err)
 
 	// Create request with original headers
@@ -221,12 +221,12 @@ func TestHeaderOverwriting(t *testing.T) {
 	proxyEntry.handler.ServeHTTP(rr, req)
 
 	// Verify the request was successful
-	assert.Equal(t, http.StatusOK, rr.Code)
+	require.Equal(t, http.StatusOK, rr.Code)
 
 	// Verify that custom headers overwrote original headers
-	assert.Equal(t, "proxy-agent", receivedHeaders.Get("user-agent")) // Should be overwritten
-	assert.Equal(t, "Bearer custom-token", receivedHeaders.Get("authorization"))
+	require.Equal(t, "proxy-agent", receivedHeaders.Get("user-agent")) // Should be overwritten
+	require.Equal(t, "Bearer custom-token", receivedHeaders.Get("authorization"))
 
 	// Verify that non-conflicting headers are preserved
-	assert.Equal(t, "application/json", receivedHeaders.Get("content-type"))
+	require.Equal(t, "application/json", receivedHeaders.Get("content-type"))
 }

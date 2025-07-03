@@ -51,6 +51,7 @@ type AgentConfig struct {
 	FailWaitTime          time.Duration
 	AutoRegisterFrequency time.Duration
 	VerboseOutput         bool
+	PluginDirs            []string
 
 	HandlerHistoryPath         string
 	HandlerHistoryMaxAge       time.Duration
@@ -205,23 +206,30 @@ func NewAgentEnvConfig() AgentConfig {
 	}
 
 	cfg := AgentConfig{
-		GrpcPort:          port,
-		CortexApiBaseUrl:  baseUrl,
-		CortexApiToken:    token,
-		DryRun:            dryRun,
-		DequeueWaitTime:   dequeueWaitTime,
-		InstanceId:        getInstanceId(),
-		IntegrationAlias:  identifier,
-		HttpServerPort:    httpPort,
-		WebhookServerPort: WebhookServerPort,
-		SnykBrokerPort:    snykBrokerPort,
-		EnableApiProxy:    true,
-		FailWaitTime:      time.Second * 2,
-
+		GrpcPort:                   port,
+		CortexApiBaseUrl:           baseUrl,
+		CortexApiToken:             token,
+		DryRun:                     dryRun,
+		DequeueWaitTime:            dequeueWaitTime,
+		InstanceId:                 getInstanceId(),
+		IntegrationAlias:           identifier,
+		HttpServerPort:             httpPort,
+		WebhookServerPort:          WebhookServerPort,
+		SnykBrokerPort:             snykBrokerPort,
+		EnableApiProxy:             true,
+		FailWaitTime:               time.Second * 2,
+		PluginDirs:                 []string{"./plugins"},
 		AutoRegisterFrequency:      reregisterFrequency,
 		HandlerHistoryPath:         historyPath,
 		HandlerHistoryMaxAge:       handlerHistoryMaxAge,
 		HandlerHistoryMaxSizeBytes: handlerHistoryMaxSizeBytes,
+	}
+
+	if pluginDirsEnv := os.Getenv("PLUGIN_DIRS"); pluginDirsEnv != "" {
+		pluginDirs := filepath.SplitList(pluginDirsEnv)
+		for _, dir := range pluginDirs {
+			cfg.PluginDirs = append(cfg.PluginDirs, filepath.Clean(dir))
+		}
 	}
 
 	if DisableTLS := os.Getenv("DISABLE_TLS"); DisableTLS == "true" {
