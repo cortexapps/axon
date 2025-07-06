@@ -25,12 +25,9 @@ func TestEmptyAcceptFile(t *testing.T) {
 		t.Run(acceptFileContents, func(t *testing.T) {
 			cfg := axonConfig.NewAgentEnvConfig()
 			cfg.HttpServerPort = 9999
-			acceptFile := NewAcceptFile([]byte(acceptFileContents), WithAgentConfig(cfg))
+			acceptFile, err := NewAcceptFile([]byte(acceptFileContents), cfg)
+			require.NoError(t, err)
 			contents, err := acceptFile.Render(zap.NewNop())
-			require.NoError(t, err)
-			err = acceptFile.Validate()
-			require.NoError(t, err)
-
 			require.NoError(t, err)
 			require.Equal(t, fmt.Sprintf("{\"private\":[{\"method\":\"any\",\"origin\":\"%s\",\"path\":\"/__axon/*\"}],\"public\":[]}", cfg.HttpBaseUrl()), string(contents))
 		})
@@ -38,6 +35,9 @@ func TestEmptyAcceptFile(t *testing.T) {
 }
 
 func TestAcceptFileValidate(t *testing.T) {
+
+	cfg := axonConfig.NewAgentEnvConfig()
+
 	files := []struct {
 		content string
 		valid   bool
@@ -85,8 +85,6 @@ func TestAcceptFileValidate(t *testing.T) {
 
 	for _, file := range files {
 		t.Run(file.content, func(t *testing.T) {
-			acceptFile := NewAcceptFile([]byte(file.content))
-
 			if file.envVars != nil {
 				for k, v := range file.envVars {
 					os.Setenv(k, v)
@@ -97,13 +95,14 @@ func TestAcceptFileValidate(t *testing.T) {
 					}
 				})
 			}
-
-			err := acceptFile.Validate()
+			_, err := NewAcceptFile([]byte(file.content), cfg)
 			if file.valid {
 				require.NoError(t, err)
 			} else {
 				require.Error(t, err)
+				return
 			}
+
 		})
 	}
 
@@ -126,13 +125,17 @@ func TestRenderEnvVars(t *testing.T) {
 		}
 	})
 
+	cfg := axonConfig.NewAgentEnvConfig()
+
 	content := `{
 		"$vars":["${env:API}", "${OTHER}", "${plugin:foo}", "${OTHER}"], "private": []}`
 
-	af, err := NewAcceptFile([]byte(content)).Render(zap.NewNop())
+	af, err := NewAcceptFile([]byte(content), cfg)
+	require.NoError(t, err)
+	rendered, err := af.Render(zap.NewNop())
 	require.NoError(t, err)
 	expected := `{"$vars":["${API}","${OTHER}","{{plugin:foo}}","${OTHER}"],"private":[{"method":"any","origin":"http://localhost:80","path":"/__axon/*"}],"public":[]}`
-	require.Equal(t, expected, string(af), "Rendered accept file does not match expected output")
+	require.Equal(t, expected, string(rendered), "Rendered accept file does not match expected output")
 }
 
 func TestExtraRenderSteps(t *testing.T) {
@@ -145,11 +148,12 @@ func TestExtraRenderSteps(t *testing.T) {
 	cfg := axonConfig.NewAgentEnvConfig()
 	cfg.HttpServerPort = 9999
 	logger := zap.NewNop()
-	acceptFile := NewAcceptFile([]byte(acceptFileContents), WithAgentConfig(cfg))
+	acceptFile, err := NewAcceptFile([]byte(acceptFileContents), cfg)
+	require.NoError(t, err)
 
 	rendered, err := acceptFile.Render(logger, func(renderContext RenderContext) error {
 
-		for _, entry := range renderContext.AcceptFile.Routes("private") {
+		for _, entry := range renderContext.AcceptFile.PrivateRules() {
 			if !strings.Contains(entry.Path(), "axon") {
 				entry.SetOrigin("http://localhost:8888")
 			}

@@ -28,11 +28,13 @@ services:
     volumes:
       - .:/src
       - ./.mitmproxy:/certs
+      - ../../server/snykbroker/acceptfile:/agent/plugins
     environment:
       CORTEX_API_TOKEN: fake-token
       CORTEX_API_BASE_URL: http://cortex-fake:8081
       PORT: 7433
-    env_file: ${ENVFILE:-noproxy.env}
+      PLUGIN_DIRS: /agent/plugins
+    env_file: ${ENVFILE:-noproxy.env}        
     command: relay -f /src/accept-client.json -i github -a axon-test
     depends_on:
       mitmproxy:

@@ -60,9 +60,9 @@ func TestCreatePluginResolver(t *testing.T) {
 	resolver := CreateResolver("{{plugin:plugin.sh}}", logger, []string{"."})
 
 	// Execute the resolver and get the output
-	output := resolver()
+	output := resolver.Resolve()
 	require.NotEmpty(t, output, "Output should not be empty")
-	require.Contains(t, output, os.Getenv("HOME"), "Output should contain $HOME, but was: "+output)
+	require.Contains(t, output, "HOME="+os.Getenv("HOME"), "Output should contain $HOME, but was: "+output)
 }
 
 func TestPluginNotPresent(t *testing.T) {
@@ -80,7 +80,7 @@ func TestPluginExecution(t *testing.T) {
 	output, err := plugin.Execute()
 	require.NoError(t, err, "Plugin execution should not return an error")
 	require.NotEmpty(t, output, "Output should not be empty")
-	require.Contains(t, output, os.Getenv("HOME"), "Output should contain $HOME, but was: "+output)
+	require.Contains(t, output, "HOME="+os.Getenv("HOME"), "Output should contain $HOME, but was: "+output)
 }
 
 func TestPluginExecutionFail(t *testing.T) {
@@ -107,4 +107,12 @@ func TestFindPlugin(t *testing.T) {
 	// Test finding a non-existing plugin
 	_, err = FindPlugin("nonexistent.sh", []string{"."}, logger)
 	require.Error(t, err, "Should not find a non-existing plugin")
+
+	// Test finding non-executable plugin
+	pluginFile = "plugin_test.go"
+	_, err = os.Stat(pluginFile)
+	require.NoError(t, err, "Should be able to stat the plugin file")
+	_, err = FindPlugin(pluginFile, []string{"."}, logger)
+	require.Error(t, err, "Should not find a non-executable plugin")
+
 }

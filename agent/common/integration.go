@@ -67,13 +67,19 @@ type IntegrationInfo struct {
 	AcceptFilePath string
 }
 
+func (ii IntegrationInfo) Validate() error {
+	if err := ii.Integration.Validate(); err != nil {
+		return err
+	}
+	if _, err := ii.ValidateSubtype(); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (ii IntegrationInfo) ToAcceptFile(cfg config.AgentConfig) (*acceptfile.AcceptFile, error) {
 
-	if err := ii.Integration.Validate(); err != nil {
-		return nil, err
-	}
-
-	if _, err := ii.ValidateSubtype(); err != nil {
+	if err := ii.Validate(); err != nil {
 		return nil, err
 	}
 
@@ -81,12 +87,7 @@ func (ii IntegrationInfo) ToAcceptFile(cfg config.AgentConfig) (*acceptfile.Acce
 	if err != nil {
 		return nil, err
 	}
-	file := acceptfile.NewAcceptFile([]byte(content), acceptfile.WithAgentConfig(cfg))
-
-	if err := file.Validate(); err != nil {
-		return nil, err
-	}
-	return file, nil
+	return acceptfile.NewAcceptFile([]byte(content), cfg)
 }
 
 func (ii IntegrationInfo) getAcceptFileContents() (string, error) {

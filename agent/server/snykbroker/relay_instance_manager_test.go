@@ -2,9 +2,11 @@ package snykbroker
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
 	"net/url"
 	"os"
 	"testing"
@@ -22,11 +24,15 @@ import (
 	"go.uber.org/zap"
 )
 
+var defaultIntegrationInfo = common.IntegrationInfo{
+	Integration: common.IntegrationGithub,
+}
+
 func TestManagerSuccess(t *testing.T) {
 	controller := gomock.NewController(t)
 	defer controller.Finish()
 
-	mgr := createTestRelayInstanceManager(t, controller, nil, false)
+	mgr := createTestRelayInstanceManager(t, controller, nil, false, defaultIntegrationInfo)
 
 	err := mgr.Close()
 	require.NoError(t, err)
@@ -37,7 +43,7 @@ func TestManagerSuccessWithReflector(t *testing.T) {
 	controller := gomock.NewController(t)
 	defer controller.Finish()
 
-	mgr := createTestRelayInstanceManager(t, controller, nil, true)
+	mgr := createTestRelayInstanceManager(t, controller, nil, true, defaultIntegrationInfo)
 
 	// call the reflector uri
 	uri := mgr.reflector.ProxyURI(mgr.serverUri)
@@ -57,11 +63,86 @@ func TestManagerSuccessWithReflector(t *testing.T) {
 
 }
 
+func TestManagerSuccessWithReflectorHeadersAndProxy(t *testing.T) {
+
+	var mgr *wrappedRelayInstanceManager
+	controller := gomock.NewController(t)
+	defer controller.Finish()
+
+	os.Setenv("PLUGIN_DIRS", "./acceptfile")
+
+	// This is janky but we have a circular dep where we need to know the
+	// target server URI before we create the file, but we need to create the file
+	// before calling createTestRelayInstanceManager.  So as a hack we create a second
+	// server that just forwards requests to the test server URI, once we know it.
+	knownTestServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// forward to the the test server
+		url, err := url.Parse(mgr.serverUri)
+		require.NoError(t, err, "Failed to parse test server URL")
+		proxy := httputil.NewSingleHostReverseProxy(url)
+		proxy.ServeHTTP(w, r)
+	}))
+
+	t.Cleanup(knownTestServer.Close)
+
+	content := fmt.Sprintf(`
+	{
+		"private": [
+			{
+				"method": "GET", 
+				"origin": "%s", 
+				"path": "/foo/bar",
+				"headers": {
+					"x-plugin-value": "${plugin:plugin.sh}",
+					"x-other-header": "other-value"
+				}
+			}
+		]
+	}	
+	`, knownTestServer.URL)
+
+	tmpFile := t.TempDir() + "/github.json"
+	err := os.WriteFile(tmpFile, []byte(content), 0644)
+	require.NoError(t, err, "Failed to write test accept file")
+
+	ii := common.IntegrationInfo{
+		Integration:    common.IntegrationGithub,
+		AcceptFilePath: tmpFile,
+	}
+
+	mgr = createTestRelayInstanceManager(t, controller, nil, true, ii)
+
+	t.Cleanup(func() {
+		os.Remove(tmpFile)
+		os.Unsetenv("PLUGIN_DIRS")
+	})
+
+	// call the reflector uri
+	uri, err := mgr.reflector.getUriForTarget(knownTestServer.URL)
+	require.NoError(t, err, "Failed to get URI for target")
+
+	req, err := http.NewRequest(http.MethodGet, uri+"/foo/bar", nil)
+	require.NoError(t, err)
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	err = mgr.Close()
+	require.NoError(t, err)
+
+	require.Equal(t, 1, len(mgr.requests), "Expected one request to the reflector URI")
+	require.Equal(t, "/foo/bar", mgr.requests[0].URL.Path, "Expected request to the reflector URI to have the correct path")
+	require.Equal(t, "HOME="+os.Getenv("HOME"), mgr.requests[0].Header.Get("x-plugin-value"), "Expected request to the reflector URI to have the correct plugin header value")
+	require.Equal(t, "other-value", mgr.requests[0].Header.Get("x-other-header"), "Expected request to the reflector URI to have the correct header value")
+
+}
+
 func TestManagerUnauthorized(t *testing.T) {
 	controller := gomock.NewController(t)
 	defer controller.Finish()
 
-	mgr := createTestRelayInstanceManager(t, controller, ErrUnauthorized, false)
+	mgr := createTestRelayInstanceManager(t, controller, ErrUnauthorized, false, defaultIntegrationInfo)
 
 	err := mgr.Start()
 	require.Error(t, err, ErrUnauthorized)
@@ -132,7 +213,7 @@ func TestHttpProxy(t *testing.T) {
 func TestRelayRestartServer(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
-	mgr := createTestRelayInstanceManager(t, ctrl, nil, false)
+	mgr := createTestRelayInstanceManager(t, ctrl, nil, false, defaultIntegrationInfo)
 
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/__axon/broker/restart", nil)
@@ -150,7 +231,7 @@ func TestRelayRestartServer(t *testing.T) {
 func TestRelayReRegisterServer(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
-	mgr := createTestRelayInstanceManager(t, ctrl, nil, false)
+	mgr := createTestRelayInstanceManager(t, ctrl, nil, false, defaultIntegrationInfo)
 
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/__axon/broker/reregister", nil)
@@ -223,6 +304,7 @@ type wrappedRelayInstanceManager struct {
 	mockRegistration *MockRegistration
 	reflector        *RegistrationReflector
 	requestUrls      []url.URL
+	requests         []*http.Request
 	serverUri        string
 }
 
@@ -230,7 +312,7 @@ func (w *wrappedRelayInstanceManager) Instance() *relayInstanceManager {
 	return w.RelayInstanceManager.(*relayInstanceManager)
 }
 
-func createTestRelayInstanceManager(t *testing.T, controller *gomock.Controller, expectedError error, useReflector bool) *wrappedRelayInstanceManager {
+func createTestRelayInstanceManager(t *testing.T, controller *gomock.Controller, expectedError error, useReflector bool, ii common.IntegrationInfo) *wrappedRelayInstanceManager {
 	envVars := map[string]string{
 		"ACCEPTFILE_DIR":   "./accept_files",
 		"GITHUB_TOKEN":     "the-token",
@@ -249,10 +331,9 @@ func createTestRelayInstanceManager(t *testing.T, controller *gomock.Controller,
 	if useReflector {
 		cfg.HttpRelayReflectorMode = config.RelayReflectorAllTraffic
 	}
-	logger := zap.NewNop()
-	ii := common.IntegrationInfo{
-		Integration: common.IntegrationGithub,
-	}
+	loggerConfig := zap.NewDevelopmentConfig()
+	loggerConfig.Level = zap.NewAtomicLevelAt(zap.DebugLevel)
+	logger := zap.Must(loggerConfig.Build())
 	mockServer := cortex_http.NewMockServer(controller)
 	mockServer.EXPECT().RegisterHandler(gomock.Any()).MinTimes(1)
 
@@ -293,7 +374,10 @@ func createTestRelayInstanceManager(t *testing.T, controller *gomock.Controller,
 
 	testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mgr.requestUrls = append(mgr.requestUrls, *r.URL)
+		mgr.requests = append(mgr.requests, r)
 	}))
+
+	t.Cleanup(testServer.Close)
 
 	response := &RegistrationInfoResponse{
 		ServerUri: testServer.URL,
@@ -306,6 +390,8 @@ func createTestRelayInstanceManager(t *testing.T, controller *gomock.Controller,
 	} else {
 		mockRegistration.EXPECT().Register(gomock.Eq(common.IntegrationGithub), gomock.Eq("")).MinTimes(1).Return(response, nil)
 	}
+
+	os.Setenv("TEST_SERVER_URL", testServer.URL)
 
 	lifecycle.Start(context.Background())
 

@@ -308,7 +308,7 @@ func (r *relayInstanceManager) Start() error {
 
 	rendered, err := af.Render(r.logger, func(renderContext acceptfile.RenderContext) error {
 		if r.reflector != nil {
-			for _, route := range renderContext.AcceptFile.Routes("private") {
+			for _, route := range renderContext.AcceptFile.PrivateRules() {
 				headers := route.Headers()
 				if len(headers) > 0 && r.config.HttpRelayReflectorMode != config.RelayReflectorAllTraffic {
 					panic("Headers are set on private routes but HttpRelayReflectorMode is not set to 'all'")

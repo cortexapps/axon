@@ -37,20 +37,22 @@ func CreateResolver(value string, logger *zap.Logger, pluginDirs []string) Value
 	content := os.ExpandEnv(value)
 	plugins := findPlugins(content, pluginDirs, logger)
 
-	return func() string {
+	return ValueResolver{
+		Key: value,
+		Resolve: func() string {
 
-		execContent := content
-		for _, plugin := range plugins {
-			// replace the plugin variable with the output of the plugin
-			pluginOutput, err := plugin.Plugin.Execute()
-			if err != nil {
-				logger.Error("failed to execute plugin", zap.String("plugin", plugin.Plugin.FullPath), zap.Error(err))
-				continue
+			execContent := content
+			for _, plugin := range plugins {
+				// replace the plugin variable with the output of the plugin
+				pluginOutput, err := plugin.Plugin.Execute()
+				if err != nil {
+					logger.Error("failed to execute plugin", zap.String("plugin", plugin.Plugin.FullPath), zap.Error(err))
+					continue
+				}
+				execContent = strings.ReplaceAll(execContent, plugin.Content, strings.Trim(pluginOutput, "\n"))
 			}
-			execContent = strings.ReplaceAll(execContent, plugin.Content, strings.Trim(pluginOutput, "\n"))
-		}
-
-		return execContent
+			return execContent
+		},
 	}
 }
 
@@ -59,6 +61,8 @@ type PluginResult struct {
 	Content string
 }
 
+// findPlugins finds all plugin invocations in the content and returns a list of PluginResults
+// each of which represents a plugin that was found and its content in the accept file.
 func findPlugins(content string, pluginDirs []string, logger *zap.Logger) []PluginResult {
 
 	pluginStrings := reInterpolation.FindAllString(content, -1)
@@ -78,7 +82,11 @@ func findPlugins(content string, pluginDirs []string, logger *zap.Logger) []Plug
 		}
 		plugin, err := FindPlugin(result.Name, pluginDirs, logger)
 		if err != nil {
-			logger.Panic(fmt.Sprintf("failed to find plugin from %q", result.Name), zap.String("plugin", result.Name), zap.Error(err))
+			logger.Panic(
+				fmt.Sprintf("failed to find plugin from %q", result.Name),
+				zap.String("plugin", result.Name),
+				zap.String("workingDir", os.Getenv("PWD")),
+				zap.Error(err))
 		}
 		plugins = append(plugins, PluginResult{
 			Plugin:  plugin,
@@ -90,11 +98,17 @@ func findPlugins(content string, pluginDirs []string, logger *zap.Logger) []Plug
 	return plugins
 }
 
-type ValueResolver func() string
+type ValueResolver struct {
+	Resolve func() string
+	Key     string
+}
 
 func StringValueResolver(value string) ValueResolver {
-	return func() string {
-		return value
+	return ValueResolver{
+		Resolve: func() string {
+			return value
+		},
+		Key: value,
 	}
 }
 
@@ -111,7 +125,7 @@ func NewResolverMapFromMap(m map[string]string) ResolverMap {
 func (rm ResolverMap) ToStringMap() map[string]string {
 	resolved := make(map[string]string, len(rm))
 	for key, resolver := range rm {
-		resolved[key] = resolver()
+		resolved[key] = resolver.Resolve()
 	}
 	return resolved
 }
@@ -121,9 +135,20 @@ func (rm ResolverMap) Resolve(key string) string {
 	if !ok {
 		return ""
 	}
-	return resolver()
+	return resolver.Resolve()
 }
 
+func (rm ResolverMap) ResolverKey(key string) string {
+	resolver, ok := rm[key]
+	if !ok {
+		return ""
+
+	}
+	return resolver.Key
+}
+
+// Parsing code for extracting environment variables and plugin invocations from content
+// Examples: `${env:API}`, `${plugin:my-plugin}`, `${API}`
 var reContentVars = regexp.MustCompile(`(?m)\$\{([^:}]+):([^}]+)\}|\$\{([^}]+)\}`)
 
 const VAR_TYPE_INDEX = 1
@@ -155,6 +180,8 @@ func (vt varType) String() string {
 	}
 }
 
+// Parser for interpolation in the accept file
+// This is used to parse the `{{plugin:my-plugin}}` format in the accept file.
 var reInterpolation = regexp.MustCompile(`\{\{([^}]+)\}\}`)
 
 func parseInterpolation(content string) fileVar {

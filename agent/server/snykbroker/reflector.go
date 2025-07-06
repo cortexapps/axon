@@ -121,6 +121,8 @@ func (rr *RegistrationReflector) getProxy(targetURI string, isDefault bool, head
 		rr.logger.Info("Registered redirector",
 			zap.String("targetURI", entry.TargetURI),
 			zap.String("proxyURI", entry.proxyURI),
+			zap.Bool("isDefault", entry.isDefault),
+			zap.String("key", key),
 			zap.Any("headers", headers),
 		)
 		return &entry, nil
@@ -197,6 +199,20 @@ func WithHeadersResolver(headers acceptfile.ResolverMap) ProxyOption {
 	}
 }
 
+func (rr *RegistrationReflector) getUriForTarget(target string) (string, error) {
+
+	if target == "" {
+		return "", fmt.Errorf("target URI cannot be empty")
+	}
+
+	for _, entry := range rr.targets {
+		if entry.TargetURI == target {
+			return entry.proxyURI, nil
+		}
+	}
+	return "", fmt.Errorf("no proxy entry found for target URI: %s", target)
+}
+
 func (rr *RegistrationReflector) ProxyURI(target string, options ...ProxyOption) string {
 
 	opts := &proxyOption{}
@@ -220,9 +236,13 @@ func (rr *RegistrationReflector) RegisterRoutes(mux *mux.Router) error {
 
 func (rr *RegistrationReflector) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
+	rr.logger.Debug("Received request for proxy",
+		zap.String("method", r.Method),
+		zap.String("path", r.URL.Path),
+	)
 	entry, newPath, err := rr.parseTargetUri(r.URL.Path)
 	if err != nil {
-		rr.logger.Error("Failed to parse target URI", zap.Error(err))
+		rr.logger.Error("Failed to find Entry for target URI", zap.Error(err))
 		http.Error(w, "Invalid target URI", http.StatusBadGateway)
 		w.WriteHeader(http.StatusBadGateway)
 		return
@@ -232,6 +252,12 @@ func (rr *RegistrationReflector) ServeHTTP(w http.ResponseWriter, r *http.Reques
 		newPath = "/" + newPath
 	}
 	r.URL.Path = newPath
+	rr.logger.Debug("Proxying request",
+		zap.String("targetURI", entry.TargetURI),
+		zap.String("proxyURI", entry.proxyURI),
+		zap.String("key", entry.key()),
+		zap.String("newPath", newPath),
+	)
 	entry.handler.ServeHTTP(w, r)
 }
 
@@ -315,7 +341,7 @@ func (pe *proxyEntry) key() string {
 			// Create a unique key that includes headers to allow different header sets for the same URI
 			headerKey := ""
 			for k := range pe.headers {
-				headerKey += fmt.Sprintf("|%s=%s", k, pe.headers.Resolve(k))
+				headerKey += fmt.Sprintf("|%s=%s", k, pe.headers.ResolverKey(k))
 			}
 			key = key + headerKey
 		}

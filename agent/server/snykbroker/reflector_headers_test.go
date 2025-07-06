@@ -144,7 +144,7 @@ func TestAcceptFileHeadersAppliedToLiveRequests(t *testing.T) {
 			},
 			expectedHeaders: map[string]string{
 				"x-api-key":       "secret-api-key-123",
-				"x-plugin-header": os.Getenv("HOME"),
+				"x-plugin-header": "HOME=" + os.Getenv("HOME"),
 			},
 			testPath: "/api/test",
 		},
@@ -187,13 +187,14 @@ func TestAcceptFileHeadersAppliedToLiveRequests(t *testing.T) {
 			jsonContent, err := json.MarshalIndent(tt.acceptContent, "", "  ")
 			require.NoError(t, err)
 
-			af := acceptfile.NewAcceptFile(jsonContent, acceptfile.WithAgentConfig(cfg))
+			af, err := acceptfile.NewAcceptFile(jsonContent, cfg)
+			require.NoError(t, err)
 			proxyUris := []string{}
 
 			_, err = af.Render(
 				logger,
 				func(renderContext acceptfile.RenderContext) error {
-					for _, entry := range renderContext.AcceptFile.Routes("private") {
+					for _, entry := range renderContext.AcceptFile.PrivateRules() {
 						originalURI := entry.Origin()
 						if originalURI == cfg.HttpBaseUrl() {
 							continue
@@ -311,13 +312,14 @@ func TestMultipleRoutesWithDifferentHeaders(t *testing.T) {
 	jsonContent, err := json.MarshalIndent(acceptContent, "", "  ")
 	require.NoError(t, err)
 
-	af := acceptfile.NewAcceptFile(jsonContent, acceptfile.WithAgentConfig(cfg))
+	af, err := acceptfile.NewAcceptFile(jsonContent, cfg)
+	require.NoError(t, err)
 	proxyUris := []string{}
 
 	_, err = af.Render(
 		logger,
 		func(renderContext acceptfile.RenderContext) error {
-			for _, entry := range renderContext.AcceptFile.Routes("private") {
+			for _, entry := range renderContext.AcceptFile.PrivateRules() {
 				originalURI := entry.Origin()
 				if originalURI == cfg.HttpBaseUrl() {
 					continue

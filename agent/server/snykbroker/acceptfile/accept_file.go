@@ -8,48 +8,37 @@ import (
 	"go.uber.org/zap"
 )
 
+// AcceptFile is an abstraction over the Snyk Broker "accept.json" format.
+// It owns manipulating a raw file into one that is customized for Axon including
+// adding the Axon rules, and doing replacements for the reflector (eg all traffic is sent through the agent
+// instead of directly to the target), as well as adding support for adding outbound headers.
 type AcceptFile struct {
 	wrapper acceptFileWrapper
 	content []byte
-	options acceptFileOptions
+	config  config.AgentConfig
 }
 
-type acceptFileOptions struct {
-	Config config.AgentConfig
-}
+// NewAcceptFile creates a new AcceptFile instance, taking the raw content of the accept file
+// and the agent configuration. It preprocesses the content to handle plugin invocations.
+func NewAcceptFile(content []byte, cfg config.AgentConfig) (*AcceptFile, error) {
 
-type AcceptFileOption func(*acceptFileOptions)
-
-func WithAgentConfig(cfg config.AgentConfig) AcceptFileOption {
-	return func(opts *acceptFileOptions) {
-		opts.Config = cfg // Copy the config to avoid modifying the original
-	}
-}
-
-func NewAcceptFile(content []byte, opts ...AcceptFileOption) *AcceptFile {
-	options := acceptFileOptions{
-		Config: config.NewAgentEnvConfig(),
-	}
-	for _, opt := range opts {
-		opt(&options)
-	}
-
-	// Pre-process content to handle plugin invocations
+	// Fixup ${} references to support plugins without confusing with env vars
 	processedContent, err := preProcessContent(content)
 	if err != nil {
-		panic(fmt.Errorf("failed to preprocess accept file content: %w", err))
+		return nil, fmt.Errorf("failed to preprocess accept file content: %w", err)
 	}
 
 	af := &AcceptFile{
 		content: processedContent,
-		options: options,
+		config:  cfg,
 	}
-	af.wrapper = newAcceptFileWrapper(processedContent, af)
-	return af
-}
 
-func (a *AcceptFile) Validate() error {
-	return ensureAcceptFileVars(string(a.content))
+	if err := ensureAcceptFileVars(string(af.content)); err != nil {
+		return nil, err
+	}
+
+	af.wrapper = newAcceptFileWrapper(processedContent, af)
+	return af, nil
 }
 
 type RenderContext struct {
@@ -64,13 +53,12 @@ var IgnoreHosts = []string{
 	"127.0.0.1",
 }
 
-func (a *AcceptFile) Render(logger *zap.Logger, extraRenderSteps ...RenderStep) ([]byte, error) {
+const RULES_PRIVATE = "private"
+const RULES_PUBLIC = "public"
 
-	err := a.Validate()
-	if err != nil {
-		logger.Error("failed to validate accept file", zap.Error(err))
-		return nil, err
-	}
+// Render renders the accept file by applying Axon updates plus any additional render steps provided.
+// It returns the rendered JSON content of the accept file.
+func (a *AcceptFile) Render(logger *zap.Logger, extraRenderSteps ...RenderStep) ([]byte, error) {
 
 	renderContext := RenderContext{
 		Logger:     logger,
@@ -96,12 +84,11 @@ func (a *AcceptFile) Render(logger *zap.Logger, extraRenderSteps ...RenderStep) 
 	}
 
 	return json, nil
-
 }
 
 func (a *AcceptFile) ensurePublicAndPrivate(renderContext RenderContext) error {
-	renderContext.AcceptFile.Routes("public")
-	renderContext.AcceptFile.Routes("private")
+	renderContext.AcceptFile.PrivateRules()
+	renderContext.AcceptFile.PublicRules()
 	return nil
 }
 
@@ -119,13 +106,22 @@ func (a *AcceptFile) addAxonRoute(renderContext RenderContext) error {
 	entry := acceptFileRule{
 		Method: "any",
 		Path:   "/__axon/*",
-		Origin: a.options.Config.HttpBaseUrl(),
+		Origin: a.config.HttpBaseUrl(),
 	}
 
-	renderContext.AcceptFile.AddRoute("private", entry)
+	renderContext.AcceptFile.AddRule("private", entry)
 	return nil
 }
 
+//
+// The wrapper classes below provide strongly typed access to the accept file
+// which is parsed as a map[string]any.  We do this to ensure full compatibility
+// with the Snyk Broker accept file format while also being able to add extra functionality.
+// In other words, if we simply mapped the file to a struct here, its possible there would be content
+// in the accept file that we don't know about, and we would lose that content on a round trip.
+//
+
+// acceptFileWrapper provides a strongly typed wrapper around the accept file content.
 type acceptFileWrapper struct {
 	dict       map[string]any
 	acceptFile *AcceptFile
@@ -135,26 +131,34 @@ func newAcceptFileWrapper(content []byte, af *AcceptFile) acceptFileWrapper {
 	dict := make(map[string]any)
 	err := json.Unmarshal(content, &dict)
 	if err != nil {
-		panic(fmt.Errorf("failed to unmarshal accept file content: %w", err))
+		panic(fmt.Errorf("failed to unmarshal accept file content: %w, content was:\n%s", err, string(content)))
 	}
 
 	return acceptFileWrapper{dict: dict, acceptFile: af}
 }
 
-func (w acceptFileWrapper) Routes(routeType string) []acceptFileRouteWrapper {
+func (w acceptFileWrapper) PrivateRules() []acceptFileRuleWrapper {
+	return w.rules(RULES_PRIVATE)
+}
+
+func (w acceptFileWrapper) PublicRules() []acceptFileRuleWrapper {
+	return w.rules(RULES_PUBLIC)
+}
+
+func (w acceptFileWrapper) rules(routeType string) []acceptFileRuleWrapper {
 	routesEntry, ok := w.dict[routeType].([]interface{})
 	if !ok {
 		routesEntry = []any{}
 		w.dict[routeType] = routesEntry
 	}
 
-	routes := make([]acceptFileRouteWrapper, len(routesEntry))
+	routes := make([]acceptFileRuleWrapper, len(routesEntry))
 	for i, route := range routesEntry {
 		routeDict, ok := route.(map[string]any)
 		if !ok {
 			return nil
 		}
-		routes[i] = acceptFileRouteWrapper{
+		routes[i] = acceptFileRuleWrapper{
 			dict:       routeDict,
 			acceptFile: w.acceptFile,
 		}
@@ -162,7 +166,13 @@ func (w acceptFileWrapper) Routes(routeType string) []acceptFileRouteWrapper {
 	return routes
 }
 
-func (w acceptFileWrapper) AddRoute(routeType string, entry acceptFileRule) acceptFileRouteWrapper {
+// AddRule adds a new route to the accept file for the specified route type.
+func (w acceptFileWrapper) AddRule(routeType string, entry acceptFileRule) acceptFileRuleWrapper {
+
+	// with a little extra work here we could probably just directly use
+	// the entry structure above, but the acceptFileRuleWrapper takes a dict so we need
+	// to convert it to a map[string]any first, so we round trip it through JSON.
+
 	routeAsJson, err := json.Marshal(entry)
 	if err != nil {
 		panic(fmt.Errorf("failed to marshal accept file route: %w", err))
@@ -174,7 +184,7 @@ func (w acceptFileWrapper) AddRoute(routeType string, entry acceptFileRule) acce
 	}
 	existingRoutes := w.dict[routeType].([]any)
 	w.dict[routeType] = append([]any{routeDict}, existingRoutes...)
-	return acceptFileRouteWrapper{dict: routeDict}
+	return acceptFileRuleWrapper{dict: routeDict}
 }
 
 func (w acceptFileWrapper) toJSON() ([]byte, error) {
@@ -185,12 +195,12 @@ func (w acceptFileWrapper) toJSON() ([]byte, error) {
 	return jsonData, nil
 }
 
-type acceptFileRouteWrapper struct {
+type acceptFileRuleWrapper struct {
 	dict       map[string]any
 	acceptFile *AcceptFile
 }
 
-func (r acceptFileRouteWrapper) Origin() string {
+func (r acceptFileRuleWrapper) Origin() string {
 	origin, ok := r.dict["origin"].(string)
 	if !ok {
 		return ""
@@ -198,7 +208,7 @@ func (r acceptFileRouteWrapper) Origin() string {
 	return origin
 }
 
-func (r acceptFileRouteWrapper) Path() string {
+func (r acceptFileRuleWrapper) Path() string {
 	path, ok := r.dict["path"].(string)
 	if !ok {
 		return ""
@@ -206,11 +216,11 @@ func (r acceptFileRouteWrapper) Path() string {
 	return path
 }
 
-func (r acceptFileRouteWrapper) SetOrigin(origin string) {
+func (r acceptFileRuleWrapper) SetOrigin(origin string) {
 	r.dict["origin"] = origin
 }
 
-func (r acceptFileRouteWrapper) Headers() ResolverMap {
+func (r acceptFileRuleWrapper) Headers() ResolverMap {
 	headers, ok := r.dict["headers"].(map[string]any)
 	if !ok {
 		return nil
@@ -219,18 +229,15 @@ func (r acceptFileRouteWrapper) Headers() ResolverMap {
 	result := make(ResolverMap)
 	for k, v := range headers {
 		if str, ok := v.(string); ok {
-			result[k] = CreateResolver(str, zap.NewNop(), r.acceptFile.options.Config.PluginDirs)
+			result[k] = CreateResolver(str, zap.NewNop(), r.acceptFile.config.PluginDirs)
 		}
 	}
 	return result
 }
 
-type acceptFileRuleAuth struct {
-	Scheme   string `json:"scheme"`
-	Username string `json:"username,omitempty"`
-	Password string `json:"password,omitempty"`
-	Token    string `json:"token,omitempty"`
-}
+// Here are our JSON structed types that represent the accept file rules.
+// that we can use for things that we are generating such that we don't need to worry
+// about additional fields that might be in the accept file that we don't know about.
 
 type acceptFileRule struct {
 	Method  string              `json:"method"`
@@ -238,4 +245,11 @@ type acceptFileRule struct {
 	Origin  string              `json:"origin"`
 	Auth    *acceptFileRuleAuth `json:"auth,omitempty"`
 	Headers map[string]string   `json:"headers,omitempty"`
+}
+
+type acceptFileRuleAuth struct {
+	Scheme   string `json:"scheme"`
+	Username string `json:"username,omitempty"`
+	Password string `json:"password,omitempty"`
+	Token    string `json:"token,omitempty"`
 }
