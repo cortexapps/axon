@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/cortexapps/axon/config"
+	axonHttp "github.com/cortexapps/axon/server/http"
 	"go.uber.org/zap"
 )
 
@@ -105,11 +106,11 @@ func (a *AcceptFile) addAxonRoute(renderContext RenderContext) error {
 
 	entry := acceptFileRule{
 		Method: "any",
-		Path:   "/__axon/*",
+		Path:   fmt.Sprintf("%s/*", axonHttp.AxonPathRoot),
 		Origin: a.config.HttpBaseUrl(),
 	}
 
-	renderContext.AcceptFile.AddRule("private", entry)
+	renderContext.AcceptFile.AddRule(RULES_PRIVATE, entry)
 	return nil
 }
 

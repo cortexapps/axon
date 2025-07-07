@@ -25,12 +25,12 @@ setup:
 
 test:
 	$(MAKE) -C agent test
-	$(MAKE) -C sdks/python test
 	@echo "TODO: sdk go test"
 	$(MAKE) -C sdks/go test
 	$(MAKE) -C scaffold test
 	$(MAKE) -C agent relay-test
 	$(MAKE) -C examples test
+	$(MAKE) -C sdks/python test
 
 publish:
 	$(MAKE) -C sdks publish-go-sdk

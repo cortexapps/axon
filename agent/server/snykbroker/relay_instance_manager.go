@@ -308,10 +308,20 @@ func (r *relayInstanceManager) Start() error {
 
 	rendered, err := af.Render(r.logger, func(renderContext acceptfile.RenderContext) error {
 		if r.reflector != nil {
+
+			// Here we loop all the private (incoming) routes and do two things
+			// 1. We rewrite the origin to point back to the reflector.  This captures the original URI so
+			//    that the reflector can proxy the request to the correct origin.
+			// 2. We add any custom headers that are defined in the route, which is a functional addition not available
+			//    in the original accept file / snyk-broker.
+			//
+			// The returned proxyURI is an encoded URI path that has an additional path section which is used
+			// to identify the original route and headers.
+
 			for _, route := range renderContext.AcceptFile.PrivateRules() {
 				headers := route.Headers()
 				if len(headers) > 0 && r.config.HttpRelayReflectorMode != config.RelayReflectorAllTraffic {
-					panic("Headers are set on private routes but HttpRelayReflectorMode is not set to 'all'")
+					panic("HttpRelayReflectorMode must be set to 'all' to add custom headers")
 				}
 
 				routeUri := r.reflector.ProxyURI(route.Origin(), WithHeadersResolver(headers))
