@@ -4,36 +4,15 @@ import (
 	"fmt"
 	"os"
 	"path"
-	"strings"
 	"testing"
 	"time"
 
+	"github.com/cortexapps/axon/config"
+	"github.com/cortexapps/axon/server/snykbroker/acceptfile"
+
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 )
-
-func TestEmptyAcceptFile(t *testing.T) {
-
-	acceptFileContents := "{}"
-	acceptFilePath := writeTempFile(t, acceptFileContents)
-
-	info := IntegrationInfo{
-		Integration:    IntegrationGithub,
-		Alias:          fmt.Sprintf("%v", time.Now().UnixMilli()),
-		AcceptFilePath: acceptFilePath,
-	}
-
-	defer func() {
-		os.Remove(info.AcceptFilePath)
-	}()
-
-	resultPath, err := info.AcceptFile("http://localhost:9999")
-	require.NoError(t, err)
-
-	contents, err := os.ReadFile(resultPath)
-	require.NoError(t, err)
-	require.Equal(t, "{\"private\":[{\"method\":\"any\",\"origin\":\"http://localhost:9999\",\"path\":\"/__axon/*\"}],\"public\":[]}", string(contents))
-
-}
 
 func TestGithubDefaultAcceptFile(t *testing.T) {
 
@@ -48,10 +27,9 @@ func TestGithubDefaultAcceptFile(t *testing.T) {
 		Alias:       fmt.Sprintf("%v", time.Now().UnixMilli()),
 	}
 
-	resultPath, err := info.AcceptFile("http://localhost:9999")
+	file, err := info.ToAcceptFile(config.NewAgentEnvConfig())
 	require.NoError(t, err)
-	_, err = os.Stat(resultPath)
-	require.NoError(t, err)
+	require.NotNil(t, file)
 }
 
 func TestGithubDefaultAcceptFileSubtypeInvalid(t *testing.T) {
@@ -68,7 +46,7 @@ func TestGithubDefaultAcceptFileSubtypeInvalid(t *testing.T) {
 		Alias:       fmt.Sprintf("%v", time.Now().UnixMilli()),
 	}
 
-	_, err := info.AcceptFile("http://localhost:9999")
+	_, err := info.ToAcceptFile(config.NewAgentEnvConfig())
 	require.Error(t, err)
 }
 
@@ -98,16 +76,16 @@ func TestExistingAcceptFile(t *testing.T) {
 		AcceptFilePath: acceptFilePath,
 	}
 
-	defer func() {
+	t.Cleanup(func() {
 		os.Remove(info.AcceptFilePath)
-	}()
+	})
 
-	resultPath, err := info.AcceptFile("http://localhost:9999")
+	af, err := info.ToAcceptFile(config.NewAgentEnvConfig())
 	require.NoError(t, err)
 
-	contents, err := os.ReadFile(resultPath)
+	contents, err := af.Render(zap.NewNop())
 	require.NoError(t, err)
-	require.Equal(t, `{"private":[{"method":"any","origin":"http://localhost:9999","path":"/__axon/*"},{"method":"any","origin":"http://python-server","path":"/*"}],"public":[{"method":"any","path":"/*"}]}`, string(contents))
+	require.Equal(t, `{"private":[{"method":"any","origin":"http://localhost:80","path":"/__axon/*"},{"method":"any","origin":"http://python-server","path":"/*"}],"public":[{"method":"any","path":"/*"}]}`, string(contents))
 
 }
 
@@ -118,12 +96,12 @@ func setAcceptFileDir(t *testing.T) {
 	os.Setenv("ACCEPTFILE_DIR", acceptFileDir)
 }
 
-func loadAcceptFile(t *testing.T, integration Integration) (string, error) {
+func loadAcceptFile(t *testing.T, integration Integration) (*acceptfile.AcceptFile, error) {
 	setAcceptFileDir(t)
 	ii := IntegrationInfo{
 		Integration: integration,
 	}
-	return ii.AcceptFile("http://localhost:9999")
+	return ii.ToAcceptFile(config.NewAgentEnvConfig())
 }
 func init() {
 	setAcceptFileDir(&testing.T{})
@@ -135,9 +113,8 @@ func TestLoadIntegrationAcceptFileSuccess(t *testing.T) {
 	os.Setenv("GITHUB_API", "foo.github.com")
 	os.Setenv("GITHUB_GRAPHQL", "foo.github.com/graphql")
 
-	acceptFile, err := loadAcceptFile(t, IntegrationGithub)
+	_, err := loadAcceptFile(t, IntegrationGithub)
 	require.NoError(t, err)
-	require.NotEmpty(t, acceptFile)
 }
 
 func TestLoadIntegrationAcceptFileMissingVars(t *testing.T) {
@@ -157,65 +134,10 @@ func TestLoadIntegrationAcceptFilePoolVars(t *testing.T) {
 
 	acceptFile, err := loadAcceptFile(t, IntegrationGithub)
 	require.NoError(t, err)
-	contents, err := os.ReadFile(acceptFile)
+	contents, err := acceptFile.Render(zap.NewNop())
 	require.NoError(t, err)
 	require.Contains(t, string(contents), "GITHUB_TOKEN")
 	require.NotContains(t, string(contents), "GITHUB_TOKEN_POOL")
-}
-
-func TestAcceptRewrite(t *testing.T) {
-	acceptFileContents := `
-	{
-		"public": [
-		{
-			"method": "any",
-			"path": "/*"
-		}
-		],
-		"private": [
-		{
-			"method": "any",
-			"path": "/*",
-			"origin": "http://python-server"
-		},
-		{
-			"method": "any",
-			"path": "/*",
-			"origin": "http://localhost"
-		},
-		{
-			"method": "any",
-			"path": "/stuff/*",
-			"origin": "http://localhost:9999"
-		},
-		{
-			"method": "any",
-			"path": "/*",
-			"origin": "api.foo.com"
-		}
-		]
-	}	
-	`
-	acceptFilePath := writeTempFile(t, acceptFileContents)
-	info := IntegrationInfo{
-		Integration:    IntegrationGithub,
-		AcceptFilePath: acceptFilePath,
-	}
-	rewritten, err := info.RewriteOrigins(acceptFilePath, func(origin string, headers ResolverMap) string {
-
-		if strings.Contains(origin, "http://localhost") {
-			require.Fail(t, "should not rewrite localhost origins")
-		}
-
-		if origin == "http://python-server" {
-			return "http://new-python-server"
-		}
-		return origin
-	})
-	require.NoError(t, err)
-	contents, err := os.ReadFile(rewritten.RewrittenPath)
-	require.NoError(t, err)
-	require.Equal(t, `{"private":[{"method":"any","origin":"http://new-python-server","path":"/*"},{"method":"any","origin":"http://localhost","path":"/*"},{"method":"any","origin":"http://localhost:9999","path":"/stuff/*"},{"method":"any","origin":"https://api.foo.com","path":"/*"}],"public":[{"method":"any","path":"/*"}]}`, string(contents))
 }
 
 func TestGetOrigin(t *testing.T) {
@@ -310,6 +232,9 @@ func writeTempFile(t *testing.T, contents string) string {
 	f, err := os.CreateTemp(t.TempDir(), "accept.*.json")
 	require.NoError(t, err)
 	defer f.Close()
+	t.Cleanup(func() {
+		os.Remove(f.Name())
+	})
 
 	_, err = f.WriteString(contents)
 	require.NoError(t, err)

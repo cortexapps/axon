@@ -175,7 +175,9 @@ type responseRecorder struct {
 
 func (rr *responseRecorder) WriteHeader(code int) {
 	rr.statusCode = code
-	rr.ResponseWriter.WriteHeader(code)
+	if code != http.StatusOK {
+		rr.ResponseWriter.WriteHeader(code)
+	}
 }
 
 // needed for websockets/HTTP2

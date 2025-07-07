@@ -55,7 +55,7 @@ func TestHandleWebhook(t *testing.T) {
 	resp, err := http.DefaultClient.Do(req)
 	assert.NoError(t, err)
 	defer resp.Body.Close()
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
 
 	/**
 	Ensure that the handler was invoked

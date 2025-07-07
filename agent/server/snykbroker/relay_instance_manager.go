@@ -15,6 +15,7 @@ import (
 	"github.com/cortexapps/axon/common"
 	"github.com/cortexapps/axon/config"
 	cortexHttp "github.com/cortexapps/axon/server/http"
+	"github.com/cortexapps/axon/server/snykbroker/acceptfile"
 	"github.com/cortexapps/axon/util"
 	"github.com/gorilla/mux"
 	"github.com/prometheus/client_golang/prometheus"
@@ -299,10 +300,52 @@ func (r *relayInstanceManager) Start() error {
 		executable = directPath
 	}
 
-	acceptFile, err := r.integrationInfo.AcceptFile(r.config.HttpBaseUrl())
+	af, err := r.integrationInfo.ToAcceptFile(r.config)
+	if err != nil {
+		r.logger.Error("Error creating accept file", zap.Error(err))
+		return fmt.Errorf("error creating accept file: %w", err)
+	}
+
+	rendered, err := af.Render(r.logger, func(renderContext acceptfile.RenderContext) error {
+		if r.reflector != nil {
+
+			// Here we loop all the private (incoming) routes and do two things
+			// 1. We rewrite the origin to point back to the reflector.  This captures the original URI so
+			//    that the reflector can proxy the request to the correct origin.
+			// 2. We add any custom headers that are defined in the route, which is a functional addition not available
+			//    in the original accept file / snyk-broker.
+			//
+			// The returned proxyURI is an encoded URI path that has an additional path section which is used
+			// to identify the original route and headers.
+
+			for _, route := range renderContext.AcceptFile.PrivateRules() {
+				headers := route.Headers()
+				if len(headers) > 0 && r.config.HttpRelayReflectorMode != config.RelayReflectorAllTraffic {
+					panic("HttpRelayReflectorMode must be set to 'all' to add custom headers")
+				}
+
+				routeUri := r.reflector.ProxyURI(route.Origin(), WithHeadersResolver(headers))
+				route.SetOrigin(routeUri)
+			}
+		}
+		return nil
+	})
 
 	if err != nil {
-		fmt.Println("Error getting accept file", err)
+		r.logger.Error("Error rendering accept file", zap.Error(err))
+		return fmt.Errorf("error rendering accept file: %w", err)
+	}
+
+	tmpDir, err := os.MkdirTemp(os.TempDir(), "axon-accept-files-*")
+	if err != nil {
+		r.logger.Error("Error creating temp directory for accept file", zap.Error(err))
+		return fmt.Errorf("error creating temp directory for accept file: %w", err)
+	}
+	tmpAcceptFile := path.Join(tmpDir, "accept.json")
+	err = os.WriteFile(tmpAcceptFile, rendered, 0644)
+
+	if err != nil {
+		fmt.Println("Error writing accept file", err)
 		panic(err)
 	}
 
@@ -388,13 +431,11 @@ func (r *relayInstanceManager) Start() error {
 			zap.Strings("args", args),
 			zap.String("token", info.Token),
 			zap.String("uri", info.ServerUri),
-			zap.String("acceptFile", acceptFile),
+			zap.String("acceptFile", tmpAcceptFile),
 		)
 
-		acceptFile = r.applyAcceptFileTransforms(acceptFile)
-
 		brokerEnv := map[string]string{
-			"ACCEPT":            acceptFile,
+			"ACCEPT":            tmpAcceptFile,
 			"BROKER_SERVER_URL": info.ServerUri,
 			"BROKER_TOKEN":      info.Token,
 			"PORT":              fmt.Sprintf("%d", r.getSnykBrokerPort()),
@@ -453,31 +494,6 @@ func (r *relayInstanceManager) Start() error {
 	case <-time.After(r.config.FailWaitTime):
 	}
 	return err
-}
-
-func (r *relayInstanceManager) applyAcceptFileTransforms(acceptFile string) string {
-	if r.config.HttpRelayReflectorMode == config.RelayReflectorAllTraffic && r.reflector != nil {
-
-		info, err := r.integrationInfo.RewriteOrigins(acceptFile, func(uri string, headers common.ResolverMap) string {
-			r.logger.Info("Rewriting accept file URI", zap.String("uri", uri), zap.Any("headers", headers))
-			return r.reflector.ProxyURI(uri, WithHeadersResolver(headers))
-		})
-
-		if err != nil {
-			r.logger.Error("Error creating accept file", zap.String("acceptFile", acceptFile), zap.Error(err))
-			return acceptFile // return original if error occurs
-		}
-		_, err = info.Rewrite()
-
-		if err != nil {
-			r.logger.Error("Error rewriting accept file", zap.String("acceptFile", acceptFile),
-
-				zap.Error(err))
-			return acceptFile // return original if error occurs
-		}
-		return info.RewrittenPath
-	}
-	return acceptFile
 }
 
 func (r *relayInstanceManager) setHttpProxyEnvVars(brokerEnv map[string]string) {

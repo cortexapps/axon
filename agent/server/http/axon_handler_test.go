@@ -70,7 +70,7 @@ func TestInvokeEndpoint(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	assert.NoError(t, err)
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
 
 	assert.NotNil(t, manager.GetByTag("test-handler").LastInvoked())
 	body, err := io.ReadAll(resp.Body)
@@ -127,7 +127,7 @@ func TestInvokeEndpointErr(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	assert.NoError(t, err)
-	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+	require.Equal(t, http.StatusInternalServerError, resp.StatusCode)
 
 	assert.NotNil(t, manager.GetByTag("test-handler").LastInvoked())
 	body, err := io.ReadAll(resp.Body)

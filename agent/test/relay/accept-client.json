@@ -19,7 +19,8 @@
         "path": "/echo/*",
         "origin": "http://cortex-fake:8081",
         "headers": {
-          "x-test-header": "added-fake-server"          
+          "x-test-header": "added-fake-server",
+          "x-test-header-plugin": "${plugin:plugin.sh}"         
         }
       },
       

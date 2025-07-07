@@ -175,6 +175,15 @@ if [ "$PROXY" == "1" ]; then
     else
         echo "Success: Found expected injected header value in result"    
     fi
+
+    # Make sure the plugin header is also injected
+    if ! echo "$proxy_result" | grep -q "HOME=/root"; then
+        echo "FAIL: Expected injected plugin header value but not found"
+        echo "$proxy_result"
+        exit 1      
+    else 
+        echo "Success: Found expected injected plugin header value in result"
+    fi
 else
     echo "Checking relay non proxy config..."
     if echo "$result" | grep -i "x-proxy-mitmproxy"
