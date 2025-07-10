@@ -73,9 +73,9 @@ Generally the naming works like:
 
 | Integration    | Environment Variables                                                                                               |
 |----------------|---------------------------------------------------------------------------------------------------------------------|
-| **GitHub**     | `GITHUB_API=api.github.com`, `GITHUB_GRAPHQL=api.github.com/graphql`, `GITHUB_TOKEN`                |
+| **GitHub**     | `GITHUB_API=https://api.github.com`, `GITHUB_GRAPHQL=https://api.github.com/graphql`, `GITHUB_TOKEN`                |
 | **GitHub Hosted** | `GITHUB_API=https://myapp.github.com/api/v3`, `GITHUB_GRAPHQL=https://myapp.github.com/api/graphql`, `GITHUB_TOKEN` |
-| **GitHub App** | Arg `-s app`, `GITHUB_API=https://api.github.com`, `GITHUB_GRAPHQL=https://api.github.com/graphql`, `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_PEM` (either path to PEM or PEM contents), `GITHUB_INSTALLATION_ID` (optional, defaults to `GITHUB_APP_CLIENT_ID`) |
+| **GitHub App** | Arg `-s app`, `GITHUB_API=https://api.github.com`, `GITHUB_GRAPHQL=https://api.github.com/graphql`, `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_PEM` (either path to PEM or PEM contents), `GITHUB_INSTALLATION_ID` |
 | **Prometheus** | `PROMETHEUS_API=http://mycompany.prometheus.internal`, `PROMETHEUS_USERNAME`, `PROMETHEUS_PASSWORD`                 |
 | **Gitlab**     | `GITLAB_API=https://gitlab.com`, `GITLAB_TOKEN`                                                                     |
 | **Sonarqube**  | `SONARQUBE_API=https://sonarqube.mycompany.com`, `SONARQUBE_TOKEN`                                                 |

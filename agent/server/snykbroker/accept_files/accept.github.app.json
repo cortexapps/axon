@@ -1,7 +1,8 @@
 {
   "$vars": [
     "${GITHUB_APP_CLIENT_ID}",
-    "${GITHUB_APP_CLIENT_PEM}"
+    "${GITHUB_APP_CLIENT_PEM}",
+    "${GITHUB_INSTALLATION_ID}"
   ],
   "private": [
     {

@@ -12,17 +12,19 @@ echo_to_stderr() {
 }
 
 if [ -z "$GITHUB_APP_CLIENT_ID" ]; then
-    echo_to_stderr "Error: GITHUB_APP_CLIENT_ID is not set. Please set it in your environment or provide it as an argument."
+    echo_to_stderr "Error: GITHUB_APP_CLIENT_ID is not set."
     exit 1
 fi
 
 if [ -z "$GITHUB_APP_CLIENT_PEM" ]; then
-    echo_to_stderr "Error: GITHUB_APP_CLIENT_PEM is not set. Please set it in your environment or provide it as an argument."
+    echo_to_stderr "Error: GITHUB_APP_CLIENT_PEM is not set."
     exit 1
 fi
 
-GITHUB_INSTALLATION_ID=${GITHUB_INSTALLATION_ID:-$GITHUB_APP_CLIENT_ID}
-
+if [ -z "$GITHUB_INSTALLATION_ID" ]; then
+    echo_to_stderr "Error: GITHUB_INSTALLATION_ID is not set."
+    exit 1
+fi
 
 generate_github_jwt() {
     # THIS CONTENT FROMS FROM GITHUB DOCS
