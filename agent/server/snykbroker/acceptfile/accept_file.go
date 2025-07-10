@@ -3,6 +3,7 @@ package acceptfile
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 
 	"github.com/cortexapps/axon/config"
@@ -208,11 +209,22 @@ type acceptFileRuleWrapper struct {
 }
 
 func (r acceptFileRuleWrapper) Origin() string {
-	origin, ok := r.dict["origin"].(string)
+	rawOrigin, ok := r.dict["origin"].(string)
 	if !ok {
 		return ""
 	}
-	return os.ExpandEnv(origin)
+	origin := os.ExpandEnv(rawOrigin)
+	asUrl, err := url.Parse(origin)
+	if err != nil {
+		r.acceptFile.logger.Panic("failed to parse origin URL", zap.String("origin", rawOrigin), zap.Error(err))
+	}
+	if asUrl.Scheme == "" {
+		r.acceptFile.logger.Warn("origin URL has no scheme, defaulting to https", zap.String("origin", rawOrigin))
+		asUrl.Scheme = "https"
+		return asUrl.String()
+	}
+	return origin
+
 }
 
 func (r acceptFileRuleWrapper) Path() string {

@@ -59,14 +59,14 @@ func TestAcceptFileValidate(t *testing.T) {
 			content: `{"private": [
 				{"method": "GET", "origin": "${API}", "path": "/*"}
 			]}`,
-			valid:   false,
-			envVars: nil,
+			valid:   true,
+			envVars: map[string]string{"API": "api.example.com"},
 		},
 		{
 			content: `{"private": [
-				{"method": "GET", "origin": "${plugin:API}", "path": "/*"}
+				{"method": "GET", "origin": "${API}", "path": "/*"}
 			]}`,
-			valid:   true,
+			valid:   false,
 			envVars: nil,
 		},
 		{
