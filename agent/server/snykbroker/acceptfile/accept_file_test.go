@@ -25,7 +25,7 @@ func TestEmptyAcceptFile(t *testing.T) {
 		t.Run(acceptFileContents, func(t *testing.T) {
 			cfg := axonConfig.NewAgentEnvConfig()
 			cfg.HttpServerPort = 9999
-			acceptFile, err := NewAcceptFile([]byte(acceptFileContents), cfg)
+			acceptFile, err := NewAcceptFile([]byte(acceptFileContents), cfg, nil)
 			require.NoError(t, err)
 			contents, err := acceptFile.Render(zap.NewNop())
 			require.NoError(t, err)
@@ -95,7 +95,7 @@ func TestAcceptFileValidate(t *testing.T) {
 					}
 				})
 			}
-			_, err := NewAcceptFile([]byte(file.content), cfg)
+			_, err := NewAcceptFile([]byte(file.content), cfg, nil)
 			if file.valid {
 				require.NoError(t, err)
 			} else {
@@ -130,7 +130,7 @@ func TestRenderEnvVars(t *testing.T) {
 	content := `{
 		"$vars":["${env:API}", "${OTHER}", "${plugin:foo}", "${OTHER}"], "private": []}`
 
-	af, err := NewAcceptFile([]byte(content), cfg)
+	af, err := NewAcceptFile([]byte(content), cfg, nil)
 	require.NoError(t, err)
 	rendered, err := af.Render(zap.NewNop())
 	require.NoError(t, err)
@@ -148,7 +148,7 @@ func TestExtraRenderSteps(t *testing.T) {
 	cfg := axonConfig.NewAgentEnvConfig()
 	cfg.HttpServerPort = 9999
 	logger := zap.NewNop()
-	acceptFile, err := NewAcceptFile([]byte(acceptFileContents), cfg)
+	acceptFile, err := NewAcceptFile([]byte(acceptFileContents), cfg, nil)
 	require.NoError(t, err)
 
 	rendered, err := acceptFile.Render(logger, func(renderContext RenderContext) error {

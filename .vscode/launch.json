@@ -91,7 +91,7 @@
                 "PORT" : "7399",
                 "GITHUB_API": "api.github.com",
                 "GITHUB_GRAPHQL": "api.github.com/graphql",
-                "ENABLE_RELAY_REFLECTOR": "true"
+                "BUILTIN_PLUGIN_DIR": "${workspaceFolder}/agent/server/snykbroker/plugins",
             }        
         },
 

@@ -75,6 +75,7 @@ Generally the naming works like:
 |----------------|---------------------------------------------------------------------------------------------------------------------|
 | **GitHub**     | `GITHUB_API=api.github.com`, `GITHUB_GRAPHQL=api.github.com/graphql`, `GITHUB_TOKEN`                |
 | **GitHub Hosted** | `GITHUB_API=https://myapp.github.com/api/v3`, `GITHUB_GRAPHQL=https://myapp.github.com/api/graphql`, `GITHUB_TOKEN` |
+| **GitHub App** | Arg `-s app`, `GITHUB_API=https://myapp.github.com/api/v3`, `GITHUB_GRAPHQL=https://myapp.github.com/api/graphql`, `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_PEM` (either path to PEM or PEM contents), `GITHUB_INSTALLATION_ID` (optional, defaults to `GITHUB_APP_CLIENT_ID`) |
 | **Prometheus** | `PROMETHEUS_API=http://mycompany.prometheus.internal`, `PROMETHEUS_USERNAME`, `PROMETHEUS_PASSWORD`                 |
 | **Gitlab**     | `GITLAB_API=https://gitlab.com`, `GITLAB_TOKEN`                                                                     |
 | **Sonarqube**  | `SONARQUBE_API=https://sonarqube.mycompany.com`, `SONARQUBE_TOKEN`                                                 |
@@ -131,59 +132,125 @@ graph TD
 
 ### Running the agent in Kubernetes
 
-To run the agent in Kubernetes, you'll need to create a Deployment that runs the agent with similar configuration above:
+To run the agent in Kubernetes, you'll need to create a Deployment that runs the agent with similar configuration above. There is an experimental Helm chart available [here](examples/relay/helm-chart) that you can use to get started, it's critical variables are:
 
-* A `Deployment` with the `ghcr.io/cortexapps/cortex-axon-agent:latest` image. 1GB of memory and 1CPU should be sufficient.
-* Enviroment variables or a `ConfigMap` for `GITHUB_API` and `GITHUB_GRAPHQL`
-* Secrets for
-    * `CORTEX_API_TOKEN`
-    * `GITHUB_TOKEN`
-    
-Here is an example to get started with:
-
-```yaml
-
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: github-config
-data:
-  GITHUB_API: api.github.com # or your internal Github API
-  GITHUB_GRAPHQL: api.github.com # or your internal Github GraphQL API, minus /graphql
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: cortex-axon-agent
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: cortex-axon-agent
-  template:
-    metadata:
-      labels:
-        app: cortex-axon-agent
-    spec:
-      containers:
-      - name: cortex-axon-agent
-        image: ghcr.io/cortexapps/cortex-axon-agent:latest
-        resources:
-          limits:
-            memory: "2Gi"
-            cpu: "1"
-        args:
-          - relay
-          - -i
-          - github
-          - -a
-          - github-relay
-        envFrom:
-        - configMapKeyRef:
-          name: github-config
-        - secretRef:
-          name: relay-secrets # this will need to be created to store your Cortex and Github keys
+```
+# Example for github
+relay:
+  integration: github # can be blank
+  subtype:   # optional, can be blank, see table above for options
+  alias: alias for configuration from Cortex
+  env:
+    GITHUB_API: "https://api.github.com"
+    GITHUB_GRAPHQL_API: "https://api.github.com/graphql"
+  verbose: false # set to true to enable verbose logging
 ```
 
+If you have a proxy setup you can add values like:
+
+```
+proxy:
+  server:  http://proxy.example.com:8080
+  noProxy: proxy.example.com # note localhost is added automatically
+  certSecretName: my-proxy-ca-pem # name of the secret containing a .pem file with the CA certificate
+```
+
+## Understanding the Agent configuration
+
+Agent configuration is driven with an `accept.json` file which defines which outbound routes the agent can call in your environment.  There are built-in files for all of the supported integrations [here](agent/server/snykbroker/accept_files), but these files are not special, you can always create your own file and pass it with the `-f` flag, for example:
+
+```bash
+docker run ... -v "/path/to/accept.json:/config/accept.json" ... cortex-axon-agent:latest relay -i github -a github-relay -f /config/accept.json
+```
+
+The file supports the following as a Hello World example:
+
+```json
+{
+  // "private" means outgoing routes
+  "private": [
+    {
+      "method": "any",
+      "path": "/*",
+      "origin": "https://some-server.com",
+    }
+  ]
+}
+```
+
+This says that any traffic sent to the agent via the Snyk Broker connection will be forwarded to `https://some-server.com/*`, and the method can be any HTTP method (GET, POST, etc).
+
+This can be differentiated by paths to select multiple outbounds:
+
+```json
+{
+  "private": [
+    {
+      "method": "get",
+      "path": "/foo/*",
+      "origin": "https://foo-server.com"
+    },
+    {
+      "method": "any",
+      "path": "/bar/*",
+      "origin": "https://bar-server.com"
+    }
+  ]
+}
+```
+
+This will route any GET requests to `/foo/*` to `https://foo-server.com/foo/*`, and any other method to `/bar/*` to `https://bar-server.com/bar/*`.
+
+For any of these routes we can add the following additional properties:
+
+```json
+{
+  "private": [
+    {
+      "method": "get",
+      "path": "/foo/*",
+      "origin": "https://foo-server.com",
+      "headers": {
+        "my-custom-header-static": "my-custom-value",
+        "my-custom-header-env": "${ENV_VAR_NAME}"
+      },
+      "auth": {
+        "scheme": "basic", // can be "basic", "bearer"
+        "username": "${USERNAME_ENV_VAR}", //basic auth only
+        "password": "${PASSWORD_ENV_VAR}", //basic auth only
+        "token": "${TOKEN_ENV_VAR}"  //   bearer auth only
+      },
+    }
+  ]
+}
+```
+
+Here you can see that you can add custom headers, or authentication information.  Note custom headers will override `auth` set headers, if you want to manually set `Authentication` headers this way.
+
+### Plugins
+
+An additional feature that Axon adds is plugins to allow dynamic header values.  Given the example above, you can do this:
 
 
+```json
+{
+  "private": [
+    {
+      "method": "get",
+      "path": "/foo/*",
+      "origin": "https://foo-server.com",
+      "headers": {
+        "my-custom-header-plugin": "${plugin:my-plugin}",
+        "my-custom-header-env": "${ENV_VAR_NAME}"
+      },     
+    }
+  ]
+}
+```
+
+Which requires:
+
+1. Setting the `PLUGIN_DIRS` environment variable to a directory that contains your plugin files, such as `/plugins`
+2. Creating an executable file in that directory `my-plugin`.  For each invocation of an outbound request, this plugin will be executed and its `stdout` will be used as the value for the header `my-custom-header-plugin`.
+
+Currently plugins are ONLY supported for `headers`.

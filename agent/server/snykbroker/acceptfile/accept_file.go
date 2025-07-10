@@ -17,11 +17,12 @@ type AcceptFile struct {
 	wrapper acceptFileWrapper
 	content []byte
 	config  config.AgentConfig
+	logger  *zap.Logger
 }
 
 // NewAcceptFile creates a new AcceptFile instance, taking the raw content of the accept file
 // and the agent configuration. It preprocesses the content to handle plugin invocations.
-func NewAcceptFile(content []byte, cfg config.AgentConfig) (*AcceptFile, error) {
+func NewAcceptFile(content []byte, cfg config.AgentConfig, logger *zap.Logger) (*AcceptFile, error) {
 
 	// Fixup ${} references to support plugins without confusing with env vars
 	processedContent, err := preProcessContent(content)
@@ -29,9 +30,13 @@ func NewAcceptFile(content []byte, cfg config.AgentConfig) (*AcceptFile, error) 
 		return nil, fmt.Errorf("failed to preprocess accept file content: %w", err)
 	}
 
+	if logger == nil {
+		logger = zap.NewNop()
+	}
 	af := &AcceptFile{
 		content: processedContent,
 		config:  cfg,
+		logger:  logger.Named("accept-file"),
 	}
 
 	if err := ensureAcceptFileVars(string(af.content)); err != nil {
@@ -230,7 +235,7 @@ func (r acceptFileRuleWrapper) Headers() ResolverMap {
 	result := make(ResolverMap)
 	for k, v := range headers {
 		if str, ok := v.(string); ok {
-			result[k] = CreateResolver(str, zap.NewNop(), r.acceptFile.config.PluginDirs)
+			result[k] = CreateResolver(str, r.acceptFile.logger, r.acceptFile.config.PluginDirs)
 		}
 	}
 	return result

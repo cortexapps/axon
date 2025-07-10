@@ -187,7 +187,7 @@ func TestAcceptFileHeadersAppliedToLiveRequests(t *testing.T) {
 			jsonContent, err := json.MarshalIndent(tt.acceptContent, "", "  ")
 			require.NoError(t, err)
 
-			af, err := acceptfile.NewAcceptFile(jsonContent, cfg)
+			af, err := acceptfile.NewAcceptFile(jsonContent, cfg, nil)
 			require.NoError(t, err)
 			proxyUris := []string{}
 
@@ -312,7 +312,7 @@ func TestMultipleRoutesWithDifferentHeaders(t *testing.T) {
 	jsonContent, err := json.MarshalIndent(acceptContent, "", "  ")
 	require.NoError(t, err)
 
-	af, err := acceptfile.NewAcceptFile(jsonContent, cfg)
+	af, err := acceptfile.NewAcceptFile(jsonContent, cfg, nil)
 	require.NoError(t, err)
 	proxyUris := []string{}
 

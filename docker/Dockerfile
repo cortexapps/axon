@@ -2,7 +2,7 @@ FROM debian:bookworm-slim
 WORKDIR /agent
 
 # Install dependencies
-RUN apt update && apt install -y protobuf-compiler git python3.11 python3.11-venv wget build-essential
+RUN apt update && apt install -y protobuf-compiler git python3.11 python3.11-venv wget build-essential openssl jq
 
 # Install NodeJS and Snyk Broker
 ENV NODE_VERSION=20
@@ -24,8 +24,12 @@ COPY agent/. /build/.
 RUN make -C /build setup proto
 RUN cd /build && go build -o /agent/cortex-axon-agent
 RUN rm -rf /build
+
 COPY agent/server/snykbroker/accept_files /agent/accept_files
 ENV ACCEPTFILE_DIR=/agent/accept_files
+
+COPY agent/server/snykbroker/plugins /agent/plugins
+ENV BUILTIN_PLUGIN_DIR=/agent/plugins
 
 COPY /scaffold/. /app/scaffold/.
 
