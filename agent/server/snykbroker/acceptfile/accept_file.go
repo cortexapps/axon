@@ -3,6 +3,7 @@ package acceptfile
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 
 	"github.com/cortexapps/axon/config"
 	axonHttp "github.com/cortexapps/axon/server/http"
@@ -211,7 +212,7 @@ func (r acceptFileRuleWrapper) Origin() string {
 	if !ok {
 		return ""
 	}
-	return origin
+	return os.ExpandEnv(origin)
 }
 
 func (r acceptFileRuleWrapper) Path() string {

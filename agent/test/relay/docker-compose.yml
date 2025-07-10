@@ -32,6 +32,7 @@ services:
     environment:
       CORTEX_API_TOKEN: fake-token
       CORTEX_API_BASE_URL: http://cortex-fake:8081
+      GITHUB_RAW_API: https://raw.githubusercontent.com
       PORT: 7433
       PLUGIN_DIRS: /agent/plugins
     env_file: ${ENVFILE:-noproxy.env}        

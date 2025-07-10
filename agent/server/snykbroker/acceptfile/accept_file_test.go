@@ -53,7 +53,7 @@ func TestAcceptFileValidate(t *testing.T) {
 				{"method": "GET", "origin": "${API}", "path": "/*"}
 			]}`,
 			valid:   true,
-			envVars: map[string]string{"API": "value"},
+			envVars: map[string]string{"API": "https://api.example.com"},
 		},
 		{
 			content: `{"private": [
@@ -95,9 +95,17 @@ func TestAcceptFileValidate(t *testing.T) {
 					}
 				})
 			}
-			_, err := NewAcceptFile([]byte(file.content), cfg, nil)
+			af, err := NewAcceptFile([]byte(file.content), cfg, nil)
 			if file.valid {
 				require.NoError(t, err)
+				for _, rule := range af.wrapper.PrivateRules() {
+					origin := rule.Origin()
+					if strings.Contains(origin, "plugin:") {
+						continue
+					}
+					require.Equal(t, "https://api.example.com", origin, "Expected origin to be set correctly")
+				}
+
 			} else {
 				require.Error(t, err)
 				return
