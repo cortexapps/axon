@@ -1,0 +1,27 @@
+{
+  "$vars": [
+    "${GITHUB_APP_CLIENT_ID}",
+    "${GITHUB_APP_CLIENT_PEM}",
+    "${GITHUB_INSTALLATION_ID}"
+  ],
+  "private": [
+    {
+      "method": "any",
+      "path": "/*",
+      "origin": "${GITHUB_API}",
+      "headers": {
+        "X-GitHub-Api-Version": "2022-11-28",
+        "Authorization": "Bearer ${plugin:github-app-token}"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/graphql",
+      "origin": "${GITHUB_GRAPHQL}",
+      "headers": {
+        "X-GitHub-Api-Version": "2022-11-28",
+        "Authorization": "Bearer ${plugin:github-app-token}"
+      }
+    }
+  ]
+}

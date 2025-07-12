@@ -225,8 +225,14 @@ func NewAgentEnvConfig() AgentConfig {
 		HandlerHistoryMaxSizeBytes: handlerHistoryMaxSizeBytes,
 	}
 
+	if builtinPluginDir := os.Getenv("BUILTIN_PLUGIN_DIR"); builtinPluginDir != "" {
+		cfg.PluginDirs = append(cfg.PluginDirs, filepath.Clean(builtinPluginDir))
+	}
+
 	if pluginDirsEnv := os.Getenv("PLUGIN_DIRS"); pluginDirsEnv != "" {
+
 		pluginDirs := filepath.SplitList(pluginDirsEnv)
+
 		for _, dir := range pluginDirs {
 			cfg.PluginDirs = append(cfg.PluginDirs, filepath.Clean(dir))
 		}

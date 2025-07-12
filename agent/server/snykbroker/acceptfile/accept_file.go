@@ -3,6 +3,8 @@ package acceptfile
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
+	"os"
 
 	"github.com/cortexapps/axon/config"
 	axonHttp "github.com/cortexapps/axon/server/http"
@@ -17,11 +19,12 @@ type AcceptFile struct {
 	wrapper acceptFileWrapper
 	content []byte
 	config  config.AgentConfig
+	logger  *zap.Logger
 }
 
 // NewAcceptFile creates a new AcceptFile instance, taking the raw content of the accept file
 // and the agent configuration. It preprocesses the content to handle plugin invocations.
-func NewAcceptFile(content []byte, cfg config.AgentConfig) (*AcceptFile, error) {
+func NewAcceptFile(content []byte, cfg config.AgentConfig, logger *zap.Logger) (*AcceptFile, error) {
 
 	// Fixup ${} references to support plugins without confusing with env vars
 	processedContent, err := preProcessContent(content)
@@ -29,9 +32,13 @@ func NewAcceptFile(content []byte, cfg config.AgentConfig) (*AcceptFile, error) 
 		return nil, fmt.Errorf("failed to preprocess accept file content: %w", err)
 	}
 
+	if logger == nil {
+		logger = zap.NewNop()
+	}
 	af := &AcceptFile{
 		content: processedContent,
 		config:  cfg,
+		logger:  logger.Named("accept-file"),
 	}
 
 	if err := ensureAcceptFileVars(string(af.content)); err != nil {
@@ -202,11 +209,22 @@ type acceptFileRuleWrapper struct {
 }
 
 func (r acceptFileRuleWrapper) Origin() string {
-	origin, ok := r.dict["origin"].(string)
+	rawOrigin, ok := r.dict["origin"].(string)
 	if !ok {
 		return ""
 	}
+	origin := os.ExpandEnv(rawOrigin)
+	asUrl, err := url.Parse(origin)
+	if err != nil {
+		r.acceptFile.logger.Panic("failed to parse origin URL", zap.String("origin", rawOrigin), zap.Error(err))
+	}
+	if asUrl.Scheme == "" {
+		r.acceptFile.logger.Warn("origin URL has no scheme, defaulting to https", zap.String("origin", rawOrigin))
+		asUrl.Scheme = "https"
+		return asUrl.String()
+	}
 	return origin
+
 }
 
 func (r acceptFileRuleWrapper) Path() string {
@@ -230,7 +248,7 @@ func (r acceptFileRuleWrapper) Headers() ResolverMap {
 	result := make(ResolverMap)
 	for k, v := range headers {
 		if str, ok := v.(string); ok {
-			result[k] = CreateResolver(str, zap.NewNop(), r.acceptFile.config.PluginDirs)
+			result[k] = CreateResolver(str, r.acceptFile.logger, r.acceptFile.config.PluginDirs)
 		}
 	}
 	return result

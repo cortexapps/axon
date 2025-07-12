@@ -25,7 +25,7 @@ func TestEmptyAcceptFile(t *testing.T) {
 		t.Run(acceptFileContents, func(t *testing.T) {
 			cfg := axonConfig.NewAgentEnvConfig()
 			cfg.HttpServerPort = 9999
-			acceptFile, err := NewAcceptFile([]byte(acceptFileContents), cfg)
+			acceptFile, err := NewAcceptFile([]byte(acceptFileContents), cfg, nil)
 			require.NoError(t, err)
 			contents, err := acceptFile.Render(zap.NewNop())
 			require.NoError(t, err)
@@ -53,20 +53,20 @@ func TestAcceptFileValidate(t *testing.T) {
 				{"method": "GET", "origin": "${API}", "path": "/*"}
 			]}`,
 			valid:   true,
-			envVars: map[string]string{"API": "value"},
+			envVars: map[string]string{"API": "https://api.example.com"},
+		},
+		{
+			content: `{"private": [
+				{"method": "GET", "origin": "${API}", "path": "/*"}
+			]}`,
+			valid:   true,
+			envVars: map[string]string{"API": "api.example.com"},
 		},
 		{
 			content: `{"private": [
 				{"method": "GET", "origin": "${API}", "path": "/*"}
 			]}`,
 			valid:   false,
-			envVars: nil,
-		},
-		{
-			content: `{"private": [
-				{"method": "GET", "origin": "${plugin:API}", "path": "/*"}
-			]}`,
-			valid:   true,
 			envVars: nil,
 		},
 		{
@@ -95,9 +95,17 @@ func TestAcceptFileValidate(t *testing.T) {
 					}
 				})
 			}
-			_, err := NewAcceptFile([]byte(file.content), cfg)
+			af, err := NewAcceptFile([]byte(file.content), cfg, nil)
 			if file.valid {
 				require.NoError(t, err)
+				for _, rule := range af.wrapper.PrivateRules() {
+					origin := rule.Origin()
+					if strings.Contains(origin, "plugin:") {
+						continue
+					}
+					require.Equal(t, "https://api.example.com", origin, "Expected origin to be set correctly")
+				}
+
 			} else {
 				require.Error(t, err)
 				return
@@ -130,7 +138,7 @@ func TestRenderEnvVars(t *testing.T) {
 	content := `{
 		"$vars":["${env:API}", "${OTHER}", "${plugin:foo}", "${OTHER}"], "private": []}`
 
-	af, err := NewAcceptFile([]byte(content), cfg)
+	af, err := NewAcceptFile([]byte(content), cfg, nil)
 	require.NoError(t, err)
 	rendered, err := af.Render(zap.NewNop())
 	require.NoError(t, err)
@@ -148,7 +156,7 @@ func TestExtraRenderSteps(t *testing.T) {
 	cfg := axonConfig.NewAgentEnvConfig()
 	cfg.HttpServerPort = 9999
 	logger := zap.NewNop()
-	acceptFile, err := NewAcceptFile([]byte(acceptFileContents), cfg)
+	acceptFile, err := NewAcceptFile([]byte(acceptFileContents), cfg, nil)
 	require.NoError(t, err)
 
 	rendered, err := acceptFile.Render(logger, func(renderContext RenderContext) error {

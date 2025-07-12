@@ -9,7 +9,7 @@
        {
         "method": "any",
         "path": "/cortexapps/axon/*",
-        "origin": "https://raw.githubusercontent.com",
+        "origin": "${GITHUB_RAW_API}",
         "headers": {
           "x-test-header": "${HEADER_PROXY_VALUE}-github"          
         }

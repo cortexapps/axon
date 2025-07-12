@@ -10,6 +10,7 @@ import (
 
 	"github.com/cortexapps/axon/config"
 	"github.com/cortexapps/axon/server/snykbroker/acceptfile"
+	"go.uber.org/zap"
 )
 
 type Integration string
@@ -31,6 +32,7 @@ const (
 var subtypes = map[Integration][]string{
 	IntegrationJira:      {"bearer"},
 	IntegrationBitbucket: {"basic"},
+	IntegrationGithub:    {"app"},
 }
 
 func (i Integration) String() string {
@@ -77,7 +79,7 @@ func (ii IntegrationInfo) Validate() error {
 	return nil
 }
 
-func (ii IntegrationInfo) ToAcceptFile(cfg config.AgentConfig) (*acceptfile.AcceptFile, error) {
+func (ii IntegrationInfo) ToAcceptFile(cfg config.AgentConfig, logger *zap.Logger) (*acceptfile.AcceptFile, error) {
 
 	if err := ii.Validate(); err != nil {
 		return nil, err
@@ -87,7 +89,7 @@ func (ii IntegrationInfo) ToAcceptFile(cfg config.AgentConfig) (*acceptfile.Acce
 	if err != nil {
 		return nil, err
 	}
-	return acceptfile.NewAcceptFile([]byte(content), cfg)
+	return acceptfile.NewAcceptFile([]byte(content), cfg, logger)
 }
 
 func (ii IntegrationInfo) getAcceptFileContents() (string, error) {

@@ -27,7 +27,7 @@ func TestGithubDefaultAcceptFile(t *testing.T) {
 		Alias:       fmt.Sprintf("%v", time.Now().UnixMilli()),
 	}
 
-	file, err := info.ToAcceptFile(config.NewAgentEnvConfig())
+	file, err := info.ToAcceptFile(config.NewAgentEnvConfig(), nil)
 	require.NoError(t, err)
 	require.NotNil(t, file)
 }
@@ -46,7 +46,7 @@ func TestGithubDefaultAcceptFileSubtypeInvalid(t *testing.T) {
 		Alias:       fmt.Sprintf("%v", time.Now().UnixMilli()),
 	}
 
-	_, err := info.ToAcceptFile(config.NewAgentEnvConfig())
+	_, err := info.ToAcceptFile(config.NewAgentEnvConfig(), nil)
 	require.Error(t, err)
 }
 
@@ -80,7 +80,7 @@ func TestExistingAcceptFile(t *testing.T) {
 		os.Remove(info.AcceptFilePath)
 	})
 
-	af, err := info.ToAcceptFile(config.NewAgentEnvConfig())
+	af, err := info.ToAcceptFile(config.NewAgentEnvConfig(), nil)
 	require.NoError(t, err)
 
 	contents, err := af.Render(zap.NewNop())
@@ -101,7 +101,7 @@ func loadAcceptFile(t *testing.T, integration Integration) (*acceptfile.AcceptFi
 	ii := IntegrationInfo{
 		Integration: integration,
 	}
-	return ii.ToAcceptFile(config.NewAgentEnvConfig())
+	return ii.ToAcceptFile(config.NewAgentEnvConfig(), nil)
 }
 func init() {
 	setAcceptFileDir(&testing.T{})

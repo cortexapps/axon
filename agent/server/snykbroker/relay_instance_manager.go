@@ -288,6 +288,10 @@ func (r *relayInstanceManager) getUrlAndTokenCore() (string, string, error) {
 	return serverUri, reg.Token, nil
 }
 
+func (r *relayInstanceManager) getAcceptFilePath() string {
+	return path.Join(os.TempDir(), fmt.Sprintf("axon-accept-file.%s.%s.%v.json", r.integrationInfo.Integration, r.integrationInfo.Alias, os.Getpid()))
+}
+
 func (r *relayInstanceManager) Start() error {
 
 	if !r.running.CompareAndSwap(false, true) {
@@ -300,7 +304,7 @@ func (r *relayInstanceManager) Start() error {
 		executable = directPath
 	}
 
-	af, err := r.integrationInfo.ToAcceptFile(r.config)
+	af, err := r.integrationInfo.ToAcceptFile(r.config, r.logger)
 	if err != nil {
 		r.logger.Error("Error creating accept file", zap.Error(err))
 		return fmt.Errorf("error creating accept file: %w", err)
@@ -336,12 +340,7 @@ func (r *relayInstanceManager) Start() error {
 		return fmt.Errorf("error rendering accept file: %w", err)
 	}
 
-	tmpDir, err := os.MkdirTemp(os.TempDir(), "axon-accept-files-*")
-	if err != nil {
-		r.logger.Error("Error creating temp directory for accept file", zap.Error(err))
-		return fmt.Errorf("error creating temp directory for accept file: %w", err)
-	}
-	tmpAcceptFile := path.Join(tmpDir, "accept.json")
+	tmpAcceptFile := r.getAcceptFilePath()
 	err = os.WriteFile(tmpAcceptFile, rendered, 0644)
 
 	if err != nil {
@@ -582,6 +581,10 @@ func (r *relayInstanceManager) Close() error {
 		if s != nil {
 			return s.Close()
 		}
+	}
+	acceptfilePath := r.getAcceptFilePath()
+	if _, err := os.Stat(acceptfilePath); !os.IsNotExist(err) {
+		os.Remove(acceptfilePath)
 	}
 	return nil
 }
