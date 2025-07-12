@@ -20,7 +20,7 @@
       "origin": "${GITHUB_GRAPHQL}",
       "headers": {
         "X-GitHub-Api-Version": "2022-11-28",
-        "Authentication": "Bearer ${plugin:github-app-token}"
+        "Authorization": "Bearer ${plugin:github-app-token}"
       }
     }
   ]
