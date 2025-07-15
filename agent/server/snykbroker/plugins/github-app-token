@@ -1,0 +1,153 @@
+#! /bin/bash
+
+set -euo pipefail
+
+now=$(date +%s)
+
+
+b64enc() { openssl base64 | tr -d '=' | tr '/+' '_-' | tr -d '\n'; }
+
+echo_to_stderr() {
+    echo "$1" >&2
+}
+
+if [ -z "$GITHUB_APP_CLIENT_ID" ]; then
+    echo_to_stderr "Error: GITHUB_APP_CLIENT_ID is not set."
+    exit 1
+fi
+
+if [ -z "$GITHUB_APP_CLIENT_PEM" ]; then
+    echo_to_stderr "Error: GITHUB_APP_CLIENT_PEM is not set."
+    exit 1
+fi
+
+if [ -z "$GITHUB_INSTALLATION_ID" ]; then
+    echo_to_stderr "Error: GITHUB_INSTALLATION_ID is not set."
+    exit 1
+fi
+
+generate_github_jwt() {
+    # THIS CONTENT FROMS FROM GITHUB DOCS
+    # https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app#example-using-bash-to-generate-a-jwt
+    echo_to_stderr "Generating GitHub app token..."
+    
+    client_id=$GITHUB_APP_CLIENT_ID # Client ID as first argument
+
+    if [ -f "$GITHUB_APP_CLIENT_PEM" ]
+    then
+        echo_to_stderr "Reading PEM file from: $GITHUB_APP_CLIENT_PEM"
+        pem=$(cat "$GITHUB_APP_CLIENT_PEM")
+    else
+        echo_to_stderr "Using PEM content from environment variable GITHUB_APP_CLIENT_PEM ${GITHUB_APP_CLIENT_PEM:0:10}...${GITHUB_APP_CLIENT_PEM: -10}"
+        pem="$GITHUB_APP_CLIENT_PEM"
+    fi
+
+    iat=$((${now} - 60)) # Issues 60 seconds in the past
+    exp=$((${now} + 600)) # Expires 10 minutes in the future (this is a github limitation)
+
+
+    header_json='{
+        "typ":"JWT",
+        "alg":"RS256"
+    }'
+    # Header encode
+    header=$( echo -n "${header_json}" | b64enc )
+
+    payload_json="{
+        \"iat\":${iat},
+        \"exp\":${exp},
+        \"iss\":\"${client_id}\"
+    }"
+    # Payload encode
+    payload=$( echo -n "${payload_json}" | b64enc )
+
+    # Signature
+    header_payload="${header}"."${payload}"
+    if ! signature=$(
+        openssl dgst -sha256 -sign <(echo -n "${pem}") \
+        <(echo -n "${header_payload}") | b64enc
+    )
+    then
+        echo_to_stderr "Error: Failed to generate signature for GitHub JWT."
+        exit 1
+    fi
+
+    # Create JWT
+    JWT="${header_payload}"."${signature}"
+    echo "${JWT}"
+}
+
+get_mtime() {
+    # Stat --version does not work on macOS, so we use stat -f %m instead
+    if stat --version >/dev/null 2>&1; then
+        stat -c %Y "$1"
+    else
+        stat -f %m "$1"
+    fi
+}
+
+MAX_JWT_AGE=570 # 10 minutes minus 30 seconds for clock skew
+MAX_INSTALLATION_TOKEN_AGE=2700 # 45 minutes
+github_jwt() {
+    
+    # look on disk for /tmp/github_jwt and if it is less than 10 minutes old, use it
+    # otherwise generate a new one with generate_github_jwt
+    if [ -f /tmp/github_jwt ]; then
+        last_modified=$(get_mtime /tmp/github_jwt)
+        current_time=$(date +%s)
+        age=$((current_time - last_modified))
+        if [ $age -lt $MAX_JWT_AGE ]; then
+            cat /tmp/github_jwt
+            return
+        fi
+    fi
+
+    if ! jwt=$(generate_github_jwt)
+    then
+        echo_to_stderr "Error: Failed to generate GitHub JWT token."
+        exit 1
+    fi
+    echo_to_stderr "Generated GitHub JWT token."
+    echo "${jwt}" > /tmp/github_jwt
+    echo "${jwt}"
+}
+
+
+github_installation_token() {
+    # The installation token can be up to an hour old, so we can cache it for a while
+    # look on disk for /tmp/github_installation_token and if it is less than 45 minutes, use it
+    # otherwise generate a new one with github_jwt
+
+    if [ -f /tmp/github_installation_token ]; then
+        last_modified=$(get_mtime /tmp/github_installation_token)
+        current_time=$(date +%s)
+        age=$((current_time - last_modified))
+        if [ $age -lt $MAX_INSTALLATION_TOKEN_AGE ]; then
+            cat /tmp/github_installation_token
+            return
+        fi
+    fi
+
+    jwt=$(github_jwt)
+    
+    echo_to_stderr "Generating GitHub installation token..."
+    if ! response=$(curl -s -X POST \
+        -H "Authorization: Bearer ${jwt}" \
+        -H "Accept: application/vnd.github+json" \
+        "https://api.github.com/app/installations/${GITHUB_INSTALLATION_ID}/access_tokens") 
+    then
+        echo_to_stderr "Error: Failed to fetch GitHub installation token: $response"
+        exit 1
+    fi
+    token=$(echo "$response" | jq -r '.token')
+    if [ "$token" == "null" ]; then
+        echo_to_stderr "Error: Failed to fetch GitHub installation token. Response: $response"
+        exit 1
+    fi
+    echo_to_stderr "Fetched GitHub installation token successfully."
+    echo "${token}" > /tmp/github_installation_token
+    echo "${token}"
+}
+
+echo_to_stderr "Fetching GitHub installation token..."
+github_installation_token
