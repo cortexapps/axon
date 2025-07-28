@@ -17,6 +17,8 @@ func init() {
 	rootCmd.AddCommand(initCmd)
 	rootCmd.AddCommand(handlersRootCmd)
 	rootCmd.AddCommand(RelayCommand)
+
+	rootCmd.Flags().BoolP("verbose", "v", false, "Verbose mode")
 }
 
 func Execute() {

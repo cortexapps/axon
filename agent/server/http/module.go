@@ -25,6 +25,7 @@ func createWebhookHttpServer(lifecycle fx.Lifecycle, config config.AgentConfig, 
 		Handlers: []RegisterableHandler{
 			NewWebhookHandler(config, logger, handlerManager, registry),
 		},
+		Config: config,
 	}
 	httpServer := NewHttpServer(params, WithName("webhook"), WithPort(config.WebhookServerPort))
 
