@@ -36,7 +36,7 @@ For details on Relay, see [here](README.relay.md).
 
 ## Writing Handlers
 
-Axon also makes it very easy to write sophisicated code that can send date to Cortex either on a regular interval, a cron schedule, or after processing a webhook.
+Axon also makes it very easy to write sophisicated code that can send data to Cortex either on a regular interval, a cron schedule, or after processing a webhook.
 
 ### Setting up a Handler Project in Python
 
