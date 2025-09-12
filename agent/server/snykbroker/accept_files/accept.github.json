@@ -7,6 +7,34 @@
       "auth": {
         "scheme": "bearer",
         "token": "${GITHUB_TOKEN}"
+      },
+      "valid": [
+        {
+          "header": "accept",
+          "values": [
+            "application/json",
+            "application/vnd.github+json",
+            "application/vnd.github.v3+json",
+            "application/vnd.github.raw+json",
+            "application/vnd.github.text+json",
+            "application/vnd.github.full+json",
+            "application/vnd.github.html+json",
+            "application/vnd.github.object+json",
+            "application/vnd.github.diff",
+            "application/vnd.github.v3.diff",
+            "application/octet-stream"
+          ]
+        }
+      ]
+    },
+    {
+      "method": "any",
+      "path": "/*",
+      "origin": "${GITHUB}",
+      "auth": {
+        "scheme": "basic",
+        "username": "${GITHUB_USERNAME}",
+        "password": "${GITHUB_TOKEN}"
       }
     },
     {
