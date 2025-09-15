@@ -1,8 +1,8 @@
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 WORKDIR /agent
 
 # Install dependencies
-RUN apt update && apt install -y protobuf-compiler git python3.11 python3.11-venv wget build-essential openssl jq
+RUN apt update && apt install -y protobuf-compiler git python3 python3-venv wget build-essential openssl jq
 
 # Install NodeJS and Snyk Broker
 ENV NODE_VERSION=20
