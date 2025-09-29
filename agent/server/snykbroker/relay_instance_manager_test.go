@@ -316,6 +316,7 @@ func createTestRelayInstanceManager(t *testing.T, controller *gomock.Controller,
 	envVars := map[string]string{
 		"ACCEPTFILE_DIR":   "./accept_files",
 		"GITHUB_TOKEN":     "the-token",
+		"GITHUB":           "https://github.com",
 		"GITHUB_API":       "https://api.github.com",
 		"GITHUB_GRAPHQL":   "https://api.github.com/graphql",
 		"SNYK_BROKER_PATH": "sleep",
