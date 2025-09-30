@@ -137,6 +137,8 @@ func TestLoadIntegrationAcceptFileMissingVars(t *testing.T) {
 
 func TestLoadIntegrationAcceptFilePoolVars(t *testing.T) {
 	os.Setenv("GITHUB_TOKEN_POOL", "its-mah-token,its-mah-other-token")
+	os.Setenv("GITHUB_USERNAME", "the-github-username")
+	os.Setenv("GITHUB", "foo.github.com")
 	os.Setenv("GITHUB_API", "github.com")
 	os.Setenv("GITHUB_GRAPHQL", "github.com/graphql")
 
