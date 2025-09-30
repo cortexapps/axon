@@ -125,6 +125,8 @@ func TestLoadIntegrationAcceptFileSuccess(t *testing.T) {
 
 func TestLoadIntegrationAcceptFileMissingVars(t *testing.T) {
 	os.Setenv("GITHUB_TOKEN", "")
+	os.Setenv("GITHUB_USERNAME", "the-github-username")
+	os.Setenv("GITHUB", "foo.github.com")
 	os.Setenv("GITHUB_API", "")
 
 	acceptFile, err := loadAcceptFile(t, IntegrationGithub)
