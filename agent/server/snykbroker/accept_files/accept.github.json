@@ -1,38 +1,36 @@
 {
   "private": [
     {
-      "method": "POST",
-      "path": "/*.git/git-upload-pack",
+      "method": "any",
+      "path": "/*",
       "origin": "${GITHUB}",
       "auth": {
         "scheme": "basic",
         "username": "${GITHUB_USERNAME}",
         "password": "${GITHUB_TOKEN}"
-      }
+      },
+      "valid": [
+        {
+          "header": "x-cortex-service",
+          "values": [
+            "scaffolder"
+          ]
+        }
+      ]
     },
     {
-      "method": "GET",
-      "path": "/*.git/info/refs",
-      "origin": "${GITHUB}",
-      "auth": {
-        "scheme": "basic",
-        "username": "${GITHUB_USERNAME}",
-        "password": "${GITHUB_TOKEN}"
-      }
-    },
-    {
-      "method": "POST",
-      "path": "/graphql",
-      "origin": "${GITHUB_GRAPHQL}",
+      "method": "any",
+      "path": "/*",
+      "origin": "${GITHUB_API}",
       "auth": {
         "scheme": "bearer",
         "token": "${GITHUB_TOKEN}"
       }
     },
     {
-      "method": "any",
-      "path": "/*",
-      "origin": "${GITHUB_API}",
+      "method": "POST",
+      "path": "/graphql",
+      "origin": "${GITHUB_GRAPHQL}",
       "auth": {
         "scheme": "bearer",
         "token": "${GITHUB_TOKEN}"
