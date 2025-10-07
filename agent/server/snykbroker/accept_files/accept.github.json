@@ -6,7 +6,7 @@
       "origin": "${GITHUB:github.com}",
       "auth": {
         "scheme": "basic",
-        "username": "${GITHUB_USERNAME:please_set_GITHUB_USERNAME}",
+        "username": "github",
         "password": "${GITHUB_TOKEN}"
       },
       "valid": [

@@ -17,8 +17,6 @@ import (
 func TestGithubDefaultAcceptFile(t *testing.T) {
 
 	os.Setenv("GITHUB_TOKEN", "the-github-token")
-	os.Setenv("GITHUB_USERNAME", "the-github-username")
-	os.Setenv("GITHUB", "foo.github.com")
 	os.Setenv("GITHUB_API", "foo.github.com")
 	os.Setenv("GITHUB_GRAPHQL", "foo.github.com/graphql")
 
@@ -37,8 +35,6 @@ func TestGithubDefaultAcceptFile(t *testing.T) {
 func TestGithubDefaultAcceptFileSubtypeInvalid(t *testing.T) {
 
 	os.Setenv("GITHUB_TOKEN", "the-github-token")
-	os.Setenv("GITHUB_USERNAME", "the-github-username")
-	os.Setenv("GITHUB", "foo.github.com")
 	os.Setenv("GITHUB_API", "foo.github.com")
 	os.Setenv("GITHUB_GRAPHQL", "foo.github.com/graphql")
 
@@ -114,8 +110,6 @@ func init() {
 func TestLoadIntegrationAcceptFileSuccess(t *testing.T) {
 
 	os.Setenv("GITHUB_TOKEN", "the-github-token")
-	os.Setenv("GITHUB_USERNAME", "the-github-username")
-	os.Setenv("GITHUB", "foo.github.com")
 	os.Setenv("GITHUB_API", "foo.github.com")
 	os.Setenv("GITHUB_GRAPHQL", "foo.github.com/graphql")
 
@@ -125,8 +119,6 @@ func TestLoadIntegrationAcceptFileSuccess(t *testing.T) {
 
 func TestLoadIntegrationAcceptFileMissingVars(t *testing.T) {
 	os.Setenv("GITHUB_TOKEN", "")
-	os.Setenv("GITHUB_USERNAME", "the-github-username")
-	os.Setenv("GITHUB", "foo.github.com")
 	os.Setenv("GITHUB_API", "")
 
 	acceptFile, err := loadAcceptFile(t, IntegrationGithub)
@@ -137,8 +129,6 @@ func TestLoadIntegrationAcceptFileMissingVars(t *testing.T) {
 
 func TestLoadIntegrationAcceptFilePoolVars(t *testing.T) {
 	os.Setenv("GITHUB_TOKEN_POOL", "its-mah-token,its-mah-other-token")
-	os.Setenv("GITHUB_USERNAME", "the-github-username")
-	os.Setenv("GITHUB", "foo.github.com")
 	os.Setenv("GITHUB_API", "github.com")
 	os.Setenv("GITHUB_GRAPHQL", "github.com/graphql")
 
