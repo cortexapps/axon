@@ -125,7 +125,6 @@ func TestBuildRelayStack(t *testing.T) {
 		"SNYK_BROKER_PATH":  "bash",
 		"ACCEPTFILE_DIR":    "../server/snykbroker/accept_files",
 		"GITHUB_TOKEN":      "the-token",
-		"GITHUB":            "github.com",
 		"GITHUB_API":        "api.github.com",
 		"GITHUB_GRAPHQL":    "api.github.com/graphql",
 	}
