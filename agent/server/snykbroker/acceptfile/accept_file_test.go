@@ -81,6 +81,11 @@ func TestAcceptFileValidate(t *testing.T) {
 			valid:   true,
 			envVars: map[string]string{"API": "value", "OTHER": "othervalue"},
 		},
+		{
+			content: `{"vars": ["${API:foo.api.com}"], "private": []}`,
+			valid:   true,
+			envVars: map[string]string{},
+		},
 	}
 
 	for _, file := range files {
@@ -119,9 +124,10 @@ func TestAcceptFileValidate(t *testing.T) {
 func TestRenderEnvVars(t *testing.T) {
 
 	vars := map[string]string{
-		"API":    "value",
-		"OTHER":  "othervalue",
-		"plugin": "nope",
+		"API":         "value",
+		"OTHER":       "othervalue",
+		"plugin":      "nope",
+		"NOT_MISSING": "set_value",
 	}
 
 	for k, v := range vars {
@@ -136,13 +142,13 @@ func TestRenderEnvVars(t *testing.T) {
 	cfg := axonConfig.NewAgentEnvConfig()
 
 	content := `{
-		"$vars":["${env:API}", "${OTHER}", "${plugin:foo}", "${OTHER}"], "private": []}`
+		"$vars":["${env:API}", "${OTHER}", "${plugin:foo}", "${OTHER}","${MISSING:default_value}","${NOT_MISSING:default_value}"], "private": []}`
 
 	af, err := NewAcceptFile([]byte(content), cfg, nil)
 	require.NoError(t, err)
 	rendered, err := af.Render(zap.NewNop())
 	require.NoError(t, err)
-	expected := `{"$vars":["${API}","${OTHER}","{{plugin:foo}}","${OTHER}"],"private":[{"method":"any","origin":"http://localhost:80","path":"/__axon/*"}],"public":[]}`
+	expected := `{"$vars":["${API}","${OTHER}","{{plugin:foo}}","${OTHER}","default_value","${NOT_MISSING}"],"private":[{"method":"any","origin":"http://localhost:80","path":"/__axon/*"}],"public":[]}`
 	require.Equal(t, expected, string(rendered), "Rendered accept file does not match expected output")
 }
 
