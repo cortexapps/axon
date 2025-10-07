@@ -3,10 +3,10 @@
     {
       "method": "any",
       "path": "/*",
-      "origin": "${GITHUB}",
+      "origin": "${GITHUB:github.com}",
       "auth": {
         "scheme": "basic",
-        "username": "${GITHUB_USERNAME}",
+        "username": "${GITHUB_USERNAME:please_set_GITHUB_USERNAME}",
         "password": "${GITHUB_TOKEN}"
       },
       "valid": [
