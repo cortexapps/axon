@@ -23,6 +23,23 @@ func preProcessContent(content []byte) ([]byte, error) {
 	reEnv := regexp.MustCompile(`\$\{env:([^}]+)\}`)
 	content = reEnv.ReplaceAll(content, []byte("${$1}"))
 
+	// Change all ${FOO:default_value} to default_value
+	reEnvWithDefault := regexp.MustCompile(`\$\{([^:}]+):([^}]+)\}`)
+	content = reEnvWithDefault.ReplaceAllFunc(content, func(match []byte) []byte {
+		parts := reEnvWithDefault.FindSubmatch(match)
+
+		// inspect the value to see if it is set in the environment
+		// if it is set, return ${FOO}, otherwise return the default value as a literal
+		if len(parts) == 3 {
+			varName := string(parts[1])
+			if varIsSet(varName) {
+				return fmt.Appendf(nil, "${%s}", varName)
+			}
+			return parts[2] // return the default value part
+		}
+		return match
+	})
+
 	return content, nil
 }
 
@@ -237,6 +254,8 @@ func findFileVars(content string) []fileVar {
 	return envVars
 }
 
+var regexEnvVarWithDefault = regexp.MustCompile(`([^:}]+):([^}]+)`)
+
 func ensureAcceptFileVars(content string) error {
 
 	fileVars := findFileVars(content)
@@ -247,9 +266,13 @@ func ensureAcceptFileVars(content string) error {
 		}
 
 		envVar := envVar.Name
-		if os.Getenv(envVar) == "" && os.Getenv(envVar+"_POOL") == "" {
+		if !varIsSet(envVar) {
 			return fmt.Errorf("missing required environment variable %q", envVar)
 		}
 	}
 	return nil
+}
+
+func varIsSet(varName string) bool {
+	return os.Getenv(varName) != "" || os.Getenv(varName+"_POOL") != ""
 }
