@@ -8,6 +8,24 @@
     {
       "method": "any",
       "path": "/*",
+      "origin": "${GITHUB:github.com}",
+      "auth": {
+        "scheme": "basic",
+        "username": "github",
+        "password": "${GITHUB_TOKEN:please_set_GITHUB_TOKEN}"
+      },
+      "valid": [
+        {
+          "header": "x-cortex-service",
+          "values": [
+            "scaffolder"
+          ]
+        }
+      ]
+    },
+    {
+      "method": "any",
+      "path": "/*",
       "origin": "${GITHUB_API}",
       "headers": {
         "X-GitHub-Api-Version": "2022-11-28",

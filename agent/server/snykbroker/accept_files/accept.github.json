@@ -3,6 +3,24 @@
     {
       "method": "any",
       "path": "/*",
+      "origin": "${GITHUB:github.com}",
+      "auth": {
+        "scheme": "basic",
+        "username": "github",
+        "password": "${GITHUB_TOKEN}"
+      },
+      "valid": [
+        {
+          "header": "x-cortex-service",
+          "values": [
+            "scaffolder"
+          ]
+        }
+      ]
+    },
+    {
+      "method": "any",
+      "path": "/*",
       "origin": "${GITHUB_API}",
       "auth": {
         "scheme": "bearer",
