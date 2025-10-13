@@ -2,6 +2,7 @@ package http
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -119,6 +120,7 @@ func NewHttpServer(p HttpServerParams, opts ...ServerOption) Server {
 			},
 			[]string{"method", "path", "status"},
 		),
+		config: p.Config,
 	}
 
 	server.mux.Use(server.requestMiddleware)
@@ -162,6 +164,7 @@ type httpServer struct {
 	mux            *mux.Router
 	requestCounter *prometheus.CounterVec
 	requestLatency *prometheus.HistogramVec
+	config         config.AgentConfig
 }
 
 func (h *httpServer) RegisterHandler(handler RegisterableHandler) {
@@ -195,11 +198,34 @@ func (h *httpServer) requestMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		rec := &responseRecorder{ResponseWriter: w, statusCode: http.StatusOK}
+
+		fields := []zap.Field{
+			zap.String("method", r.Method),
+			zap.String("path", r.URL.Path),
+			zap.Int("content-length", int(r.ContentLength)),
+		}
+
+		if h.config.VerboseOutput && r.ContentLength > 0 && r.Body != nil {
+
+			br := bufio.NewReader(r.Body)
+			bodyBytes, err := io.ReadAll(br)
+			if err != nil {
+
+				h.logger.Error("Failed to read request body", zap.Error(err))
+				return
+			}
+			body := string(bodyBytes)
+			r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+			fields = append(fields, zap.String("body", body))
+		}
+		h.logger.Debug("HTTP request ==>",
+			fields...,
+		)
 		next.ServeHTTP(rec, r)
 		duration := time.Since(start)
 		h.requestCounter.WithLabelValues(r.Method, r.URL.Path, fmt.Sprintf("%d", rec.statusCode)).Inc()
 		h.requestLatency.WithLabelValues(r.Method, r.URL.Path, fmt.Sprintf("%d", rec.statusCode)).Observe(duration.Seconds())
-		h.logger.Info("HTTP incoming request",
+		h.logger.Info("<== HTTP request",
 			zap.String("method", r.Method),
 			zap.String("path", r.URL.Path),
 			zap.Int("status", rec.statusCode),
@@ -209,6 +235,9 @@ func (h *httpServer) requestMiddleware(next http.Handler) http.Handler {
 		)
 	})
 }
+
+var defaultReadTimeout = time.Second
+
 func (h *httpServer) Start() (int, error) {
 
 	if h.server != nil {
@@ -222,7 +251,8 @@ func (h *httpServer) Start() (int, error) {
 	go func() {
 
 		h.server = &http.Server{
-			Handler: h.mux,
+			Handler:     h.mux,
+			ReadTimeout: defaultReadTimeout,
 		}
 
 		err := h.server.Serve(ln)

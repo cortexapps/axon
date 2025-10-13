@@ -28,7 +28,7 @@ var serveCmd = &cobra.Command{
 			os.Setenv("DRYRUN", "true")
 		}
 
-		config := config.NewAgentEnvConfig()
+		config := config.NewAgentEnvConfig().ApplyFlags(cmd.Flags())
 
 		if id, _ := cmd.Flags().GetString("alias"); id != "" {
 			config.IntegrationAlias = id
@@ -55,6 +55,5 @@ var serveCmd = &cobra.Command{
 
 func init() {
 	serveCmd.Flags().Bool("dry-run", false, "Dry run mode")
-	serveCmd.Flags().BoolP("verbose", "v", false, "Verbose mode")
 	serveCmd.Flags().StringP("alias", "a", "customer-agent", "Alias (identifier) for this agent type")
 }
