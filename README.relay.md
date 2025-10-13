@@ -146,6 +146,7 @@ relay:
   subtype:   # optional, can be blank, see table above for options
   alias: alias for configuration from Cortex
   env:
+    GITHUB: "https://github.com"
     GITHUB_API: "https://api.github.com"
     GITHUB_GRAPHQL_API: "https://api.github.com/graphql"
   verbose: false # set to true to enable verbose logging
