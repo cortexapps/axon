@@ -36,8 +36,9 @@ services:
     image: ghcr.io/cortexapps/cortex-axon-agent:latest
     env_file: .env
     env:
-      - GITHUB_API=api.github.com
-      - GITHUB_GRAPHQL=api.github.com/graphql
+      - GITHUB=https://github.com
+      - GITHUB_API=https://api.github.com
+      - GITHUB_GRAPHQL=https://api.github.com/graphql
     command: [
       "relay",
       "-i", "github",
@@ -51,6 +52,7 @@ services:
 Note if you are using a private Github App installation (subtype `app`), you'll need to set the `GITHUB_API` and `GITHUB_GRAPHQL` to your internal Github API endpoints, for example:
 
 ```
+GITHUB=https://github.mycompany.com
 GITHUB_API=https://github.mycompany.com/api/v3
 GITHUB_GRAPHQL=https://github.mycompany.com/api/graphql
 ```
@@ -74,7 +76,7 @@ Generally the naming works like:
 | Integration    | Environment Variables                                                                                                                                                                                                                                           |
 |----------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | **GitHub**     | `GITHUB=https://github.com`, `GITHUB_API=https://api.github.com`, `GITHUB_GRAPHQL=https://api.github.com/graphql`, `GITHUB_TOKEN`                                                                                                                               |
-| **GitHub Hosted** | `GITHUB=https://myapp.github.com`, `GITHUB_API=https://myapp.github.com/api/v3`, `GITHUB_GRAPHQL=https://myapp.github.com/api/graphql`, `GITHUB_TOKEN`                                                                                                          |
+| **GitHub Hosted** | `GITHUB=https://github.mycompany.com`, `GITHUB_API=https://github.mycompany.com/api/v3`, `GITHUB_GRAPHQL=https://github.mycompany.com/api/graphql`, `GITHUB_TOKEN`                                                                                                          |
 | **GitHub App** | Arg `-s app`, `GITHUB=https://github.com`, `GITHUB_API=https://api.github.com`, `GITHUB_GRAPHQL=https://api.github.com/graphql`, `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_PEM` (either path to PEM or PEM contents), `GITHUB_INSTALLATION_ID`, `GITHUB_TOKEN` |
 | **Prometheus** | `PROMETHEUS_API=http://mycompany.prometheus.internal`, `PROMETHEUS_USERNAME`, `PROMETHEUS_PASSWORD`                                                                                                                                                             |
 | **Gitlab**     | `GITLAB_API=https://gitlab.com`, `GITLAB_TOKEN`                                                                                                                                                                                                                 |
