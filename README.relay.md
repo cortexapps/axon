@@ -36,8 +36,9 @@ services:
     image: ghcr.io/cortexapps/cortex-axon-agent:latest
     env_file: .env
     env:
-      - GITHUB_API=api.github.com
-      - GITHUB_GRAPHQL=api.github.com/graphql
+      - GITHUB=https://github.com
+      - GITHUB_API=https://api.github.com
+      - GITHUB_GRAPHQL=https://api.github.com/graphql
     command: [
       "relay",
       "-i", "github",
@@ -51,6 +52,7 @@ services:
 Note if you are using a private Github App installation (subtype `app`), you'll need to set the `GITHUB_API` and `GITHUB_GRAPHQL` to your internal Github API endpoints, for example:
 
 ```
+GITHUB=https://github.mycompany.com
 GITHUB_API=https://github.mycompany.com/api/v3
 GITHUB_GRAPHQL=https://github.mycompany.com/api/graphql
 ```
@@ -71,18 +73,21 @@ Generally the naming works like:
 
 ### Environment Variables Summary
 
-| Integration    | Environment Variables                                                                                               |
-|----------------|---------------------------------------------------------------------------------------------------------------------|
-| **GitHub**     | `GITHUB_API=https://api.github.com`, `GITHUB_GRAPHQL=https://api.github.com/graphql`, `GITHUB_TOKEN`                |
-| **GitHub Hosted** | `GITHUB_API=https://myapp.github.com/api/v3`, `GITHUB_GRAPHQL=https://myapp.github.com/api/graphql`, `GITHUB_TOKEN` |
-| **GitHub App** | Arg `-s app`, `GITHUB_API=https://api.github.com`, `GITHUB_GRAPHQL=https://api.github.com/graphql`, `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_PEM` (either path to PEM or PEM contents), `GITHUB_INSTALLATION_ID` |
-| **Prometheus** | `PROMETHEUS_API=http://mycompany.prometheus.internal`, `PROMETHEUS_USERNAME`, `PROMETHEUS_PASSWORD`                 |
-| **Gitlab**     | `GITLAB_API=https://gitlab.com`, `GITLAB_TOKEN`                                                                     |
-| **Sonarqube**  | `SONARQUBE_API=https://sonarqube.mycompany.com`, `SONARQUBE_TOKEN`                                                 |
-| **Bitbucket Cloud**  | `BITBUCKET_API=https://api.bitbucket.org`, `BITBUCKET_TOKEN`                    |
-| **Bitbucket Hosted**  | `BITBUCKET_API=https://bitbucket.mycompany.com`, `BITBUCKET_USERNAME`, `BITBUCKET_PASSWORD`                |
-| **Jira**  | `JIRA_API=https://jira.mycompany.com`, `JIRA_USERNAME`, `JIRA_TOKEN`                |
-| **Jira Bearer/Cloud**  | Arg `-s bearer`, `JIRA_API=https://mycompany.atlassian.com`, `JIRA_TOKEN`                |
+| Integration    | Environment Variables                                                                                                                                                                                                                                           |
+|----------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **GitHub**     | `GITHUB=https://github.com`, `GITHUB_API=https://api.github.com`, `GITHUB_GRAPHQL=https://api.github.com/graphql`, `GITHUB_TOKEN`                                                                                                                               |
+| **GitHub Hosted** | `GITHUB=https://github.mycompany.com`, `GITHUB_API=https://github.mycompany.com/api/v3`, `GITHUB_GRAPHQL=https://github.mycompany.com/api/graphql`, `GITHUB_TOKEN`                                                                                                          |
+| **GitHub App** | Arg `-s app`, `GITHUB=https://github.com`, `GITHUB_API=https://api.github.com`, `GITHUB_GRAPHQL=https://api.github.com/graphql`, `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_PEM` (either path to PEM or PEM contents), `GITHUB_INSTALLATION_ID`, `GITHUB_TOKEN` |
+| **Prometheus** | `PROMETHEUS_API=http://mycompany.prometheus.internal`, `PROMETHEUS_USERNAME`, `PROMETHEUS_PASSWORD`                                                                                                                                                             |
+| **Gitlab**     | `GITLAB_API=https://gitlab.com`, `GITLAB_TOKEN`                                                                                                                                                                                                                 |
+| **Sonarqube**  | `SONARQUBE_API=https://sonarqube.mycompany.com`, `SONARQUBE_TOKEN`                                                                                                                                                                                              |
+| **Bitbucket Cloud**  | `BITBUCKET_API=https://api.bitbucket.org`, `BITBUCKET_TOKEN`                                                                                                                                                                                                    |
+| **Bitbucket Hosted**  | `BITBUCKET_API=https://bitbucket.mycompany.com`, `BITBUCKET_USERNAME`, `BITBUCKET_PASSWORD`                                                                                                                                                                     |
+| **Jira**  | `JIRA_API=https://jira.mycompany.com`, `JIRA_USERNAME`, `JIRA_TOKEN`                                                                                                                                                                                            |
+| **Jira Bearer/Cloud**  | Arg `-s bearer`, `JIRA_API=https://mycompany.atlassian.com`, `JIRA_TOKEN`                                                                                                                                                                                       |
+
+> [!NOTE]
+> `GITHUB_TOKEN` in GitHub App is the [installation access token](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/authenticating-as-a-github-app-installation) and is needed only for [scaffolder](https://docs.cortex.io/streamline/workflows/scaffolder) purposes.
 
 ## How it works
 
@@ -141,6 +146,7 @@ relay:
   subtype:   # optional, can be blank, see table above for options
   alias: alias for configuration from Cortex
   env:
+    GITHUB: "https://github.com"
     GITHUB_API: "https://api.github.com"
     GITHUB_GRAPHQL_API: "https://api.github.com/graphql"
   verbose: false # set to true to enable verbose logging
