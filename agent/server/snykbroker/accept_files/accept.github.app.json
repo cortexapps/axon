@@ -12,7 +12,7 @@
       "auth": {
         "scheme": "basic",
         "username": "github",
-        "password": "${GITHUB_TOKEN:please_set_GITHUB_TOKEN}"
+        "password": "${plugin:github-app-token}"
       },
       "valid": [
         {
