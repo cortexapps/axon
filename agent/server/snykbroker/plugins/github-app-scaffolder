@@ -1,0 +1,22 @@
+#! /bin/bash
+
+set -euo pipefail
+
+echo_to_stderr() {
+    echo "$1" >&2
+}
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+echo_to_stderr "Fetching GitHub installation token..."
+
+# Execute github-app-token and capture output
+if ! token=$("${SCRIPT_DIR}/github-app-token"); then
+    echo "Error: Failed to get GitHub installation token" >&2
+    exit 1
+fi
+
+echo_to_stderr "Converting GitHub installation token for scaffolder"
+
+echo -n "x-cortex-user:${token}" | base64
+
