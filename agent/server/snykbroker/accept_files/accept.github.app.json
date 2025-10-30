@@ -9,10 +9,8 @@
       "method": "any",
       "path": "/*",
       "origin": "${GITHUB:github.com}",
-      "auth": {
-        "scheme": "basic",
-        "username": "github",
-        "password": "${plugin:github-app-token}"
+      "headers": {
+        "Authorization": "Basic ${plugin:github-app-scaffolder}"
       },
       "valid": [
         {
@@ -43,3 +41,4 @@
     }
   ]
 }
+
