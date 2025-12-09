@@ -49,7 +49,7 @@ build:
 
 mockgen:
 	mkdir -p test/mocks
-	@if ! command -v $(GOBIN)/mockgen >/dev/null; then echo "Installing mockgen..."; go install go.uber.org/mock/mockgen@v0.5.0; fi
+	@if ! command -v $(GOBIN)/mockgen >/dev/null; then echo "Installing mockgen..."; go install go.uber.org/mock/mockgen@v0.6.0; fi
 .PHONY: mockgen
 
 server/http/http_server_mock.go: server/http/http_server.go

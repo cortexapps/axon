@@ -10,7 +10,7 @@ ARG SNYK_BROKER_VERSION=4.203.4
 RUN wget -q -O - https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash - && apt install -y nodejs
 RUN npm install -g snyk-broker@${SNYK_BROKER_VERSION}
 
-ENV GOLANG_VERSION=1.24.8
+ENV GOLANG_VERSION=1.25.5
 # Install Go, this script will work for ARM or AMD64
 RUN wget -q -O /tmp/goinstall.sh https://raw.githubusercontent.com/canha/golang-tools-install-script/master/goinstall.sh && chmod +x /tmp/goinstall.sh && /tmp/goinstall.sh --version ${GOLANG_VERSION}
 
