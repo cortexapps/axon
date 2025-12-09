@@ -1,6 +1,6 @@
 module github.com/cortexapps/axon
 
-go 1.24.8
+go 1.25.5
 
 require (
 	github.com/google/uuid v1.6.0
@@ -10,7 +10,7 @@ require (
 	github.com/spf13/cobra v1.8.1
 	github.com/stretchr/testify v1.10.0
 	go.uber.org/fx v1.23.0
-	go.uber.org/mock v0.5.0
+	go.uber.org/mock v0.6.0
 	go.uber.org/zap v1.27.0
 	google.golang.org/grpc v1.68.0
 	google.golang.org/protobuf v1.36.6
