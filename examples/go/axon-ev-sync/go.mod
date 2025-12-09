@@ -1,6 +1,6 @@
 module github.com/cortexapps/axon_apps/axon-ev-sync
 
-go 1.22.9
+go 1.24.8
 
 require (
 	github.com/cortexapps/axon-go v0.0.0

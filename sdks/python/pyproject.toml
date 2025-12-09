@@ -10,8 +10,8 @@ include = ["cortex_axon/**", "generated/**"]
 
 [tool.poetry.dependencies]
 python = "^3.9"
-grpcio = "~1.68.1"
-grpcio-tools = "~1.68.1"
+grpcio = "~1.69.0"
+grpcio-tools = "~1.69.0"
 protoletariat = "~3.3.2"
 
 [tool.poetry.scripts]
