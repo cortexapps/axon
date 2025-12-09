@@ -14,7 +14,8 @@ env:
 jobs:
   test:
     runs-on: ubuntu-latest
-
+    permissions:
+      contents: read
     steps:
       - name: Checkout code
         uses: actions/checkout@v2
@@ -22,7 +23,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v3
         with:
-          go-version: '1.22.9'
+          go-version: '1.24.8'
 
       - name: Install dependencies
         run: |
@@ -40,7 +41,8 @@ jobs:
 
   docker-tests:
     runs-on: ubuntu-latest
-
+    permissions:
+      contents: read
     steps:
       - name: Checkout code
         uses: actions/checkout@v2
@@ -48,7 +50,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v3
         with:
-          go-version: '1.22.9'
+          go-version: '1.24.8'
 
       - name: Install dependencies
         run: |
@@ -76,7 +78,8 @@ jobs:
   helm-test:
     runs-on: ubuntu-latest
     needs: test
-
+    permissions:
+      contents: read
     steps:
       - name: Checkout code
         uses: actions/checkout@v2
