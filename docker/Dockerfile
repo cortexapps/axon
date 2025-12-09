@@ -1,4 +1,4 @@
-FROM debian:trixie-slim
+FROM debian:stable-slim
 WORKDIR /agent
 
 # Install dependencies
