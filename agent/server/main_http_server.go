@@ -29,6 +29,7 @@ func NewMainHttpServer(p MainHttpServerParams) cortexHttp.Server {
 		Logger:    p.Logger,
 		Registry:  p.Registry,
 		Handlers:  []cortexHttp.RegisterableHandler{},
+		Config:    p.Config,
 	}
 
 	config := p.Config

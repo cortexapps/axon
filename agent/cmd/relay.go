@@ -19,7 +19,7 @@ var RelayCommand = &cobra.Command{
 	Short: "Allows relaying calls from Cortex to the local environment",
 	Run: func(cmd *cobra.Command, args []string) {
 
-		config := config.NewAgentEnvConfig()
+		config := config.NewAgentEnvConfig().ApplyFlags(cmd.Flags())
 		if config.CortexApiToken == "" {
 			fmt.Println("Cortex API token (CORTEX_API_TOKEN) must be provided")
 			os.Exit(1)

@@ -42,6 +42,7 @@ func NewRegistrationReflector(p RegistrationReflectorParams) *RegistrationReflec
 
 	httpParams := cortexHttp.HttpServerParams{
 		Logger: p.Logger.Named("relay-reflector"),
+		Config: p.Config,
 	}
 
 	if p.Registry != nil {

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/spf13/pflag"
 )
 
 const DefaultGrpcPort = 50051
@@ -260,4 +261,11 @@ func NewAgentEnvConfig() AgentConfig {
 	}
 
 	return cfg
+}
+
+func (ac AgentConfig) ApplyFlags(flags *pflag.FlagSet) AgentConfig {
+	if enabled, _ := flags.GetBool("verbose"); enabled {
+		ac.VerboseOutput = true
+	}
+	return ac
 }
