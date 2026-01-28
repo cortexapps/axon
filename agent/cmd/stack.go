@@ -11,12 +11,16 @@ import (
 	cortexHttp "github.com/cortexapps/axon/server/http"
 	"github.com/spf13/cobra"
 	"go.uber.org/fx"
+	"go.uber.org/fx/fxevent"
 	"go.uber.org/zap"
 )
 
 func startAgent(opts fx.Option) {
 	app := fx.New(
 		opts,
+		fx.WithLogger(func(logger *zap.Logger) fxevent.Logger {
+			return &fxevent.ZapLogger{Logger: logger}
+		}),
 	)
 
 	noBanner := os.Getenv("NO_BANNER")
@@ -30,6 +34,9 @@ var AgentModule = fx.Module("agent",
 	fx.Provide(func(config config.AgentConfig) *zap.Logger {
 
 		cfg := zap.NewDevelopmentConfig()
+		if os.Getenv("ENV") == "production" {
+			cfg = zap.NewProductionConfig()
+		}
 
 		loggingLevel := zap.InfoLevel
 		if config.VerboseOutput {

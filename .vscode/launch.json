@@ -12,6 +12,9 @@
             "request": "launch",
             "mode": "auto",
             "program": "${workspaceFolder}/agent/main.go",
+            "env": {
+                "ENV": "dev"
+            },
             "args": [
                 "serve",
                 "--dry-run",
@@ -28,7 +31,10 @@
                 "serve",   
                 "-v"             
             ],
-            "envFile": "${workspaceFolder}/.env"
+            "envFile": "${workspaceFolder}/.env",
+            "env": {
+               // "ENV": "production",                
+            }
         },
         {
             "name": "Launch Python SDK Example",
