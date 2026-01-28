@@ -4,6 +4,7 @@ import (
 	_ "embed"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/cortexapps/axon/common"
 	"github.com/cortexapps/axon/config"
@@ -13,6 +14,7 @@ import (
 	"go.uber.org/fx"
 	"go.uber.org/fx/fxevent"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 func startAgent(opts fx.Option) {
@@ -36,6 +38,11 @@ var AgentModule = fx.Module("agent",
 		cfg := zap.NewDevelopmentConfig()
 		if os.Getenv("ENV") == "production" {
 			cfg = zap.NewProductionConfig()
+			cfg.EncoderConfig.TimeKey = "time"
+			cfg.EncoderConfig.EncodeTime = func(t time.Time, enc zapcore.PrimitiveArrayEncoder) {
+				enc.AppendString(t.UTC().Format("2006-01-02T15:04:05.000Z"))
+			}
+			cfg.EncoderConfig.NameKey = "name"
 		}
 
 		loggingLevel := zap.InfoLevel
@@ -48,7 +55,7 @@ var AgentModule = fx.Module("agent",
 		if err != nil {
 			panic(err)
 		}
-		return logger
+		return logger.Named("axon")
 	}),
 	fx.Provide(cortexHttp.NewPrometheusRegistry),
 	fx.Provide(createHttpTransport),
