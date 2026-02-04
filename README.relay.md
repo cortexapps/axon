@@ -166,9 +166,10 @@ proxy:
   |----------|---------|
   | `api.getcortexapp.com` | CortexService - Agent registration and API calls |
   | `relay.cortex.io` | SnykBrokerServer - WebSocket tunnel for relayed requests |
-  | `ghcr.io` | GitHub Container Registry (for pulling the agent image) |
 
   No inbound firewall ports need to be opened - the agent initiates all outbound connections.
+
+  Your docker or kubernetes instance will also need to reach ghcr.io in order to pull the agent docker image.
 
 ## Understanding the Agent configuration
 
