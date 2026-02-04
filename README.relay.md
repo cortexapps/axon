@@ -80,7 +80,7 @@ Generally the naming works like:
 | **GitHub App**        | Arg `-s app`, `GITHUB=https://github.com`, `GITHUB_API=https://api.github.com`, `GITHUB_GRAPHQL=https://api.github.com/graphql`, `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_PEM` (either path to PEM or PEM contents), `GITHUB_INSTALLATION_ID` |
 | **Prometheus**        | `PROMETHEUS_API=http://mycompany.prometheus.internal`, `PROMETHEUS_USERNAME`, `PROMETHEUS_PASSWORD`                                                                                                                                             |
 | **Gitlab**            | `GITLAB_API=https://gitlab.com`, `GITLAB_TOKEN`                                                                                                                                                                                                 |
-| **Sonarqube**         | `SONARQUBE_API=https://sonarqube.mycompany.com`, `SONARQUBE_TOKEN`                                                                                                                                                                              |
+| **Sonarqube**         | `SONARQUBE_API=https://sonarqube.mycompany.com`, `SONAR_TOKEN`                                                                                                                                                                              |
 | **Bitbucket Cloud**   | `BITBUCKET_API=https://api.bitbucket.org`, `BITBUCKET_TOKEN`                                                                                                                                                                                    |
 | **Bitbucket Hosted**  | `BITBUCKET_API=https://bitbucket.mycompany.com`, `BITBUCKET_USERNAME`, `BITBUCKET_PASSWORD`                                                                                                                                                     |
 | **Jira**              | `JIRA_API=https://jira.mycompany.com`, `JIRA_USERNAME`, `JIRA_TOKEN`                                                                                                                                                                            |
@@ -112,12 +112,12 @@ graph TD
     CortexService -->|Github API Calls|SnykBrokerServer
 
     subgraph Cortex-Cloud
-        CortexService        
-        SnykBrokerServer
+        CortexService["CortexService<br/>api.getcortexapp.com"]           
+        SnykBrokerServer["SnykBrokerServer<br/>relay.cortex.io"]
     end
 
     subgraph Customer-Network
-        subgraph CortexAxonAgent
+        subgraph CortexAxonAgent["CortexAxonAgent - ghcr.io"]
             SnykBrokerClient
         end
         InternalGithub
@@ -157,6 +157,19 @@ proxy:
   noProxy: proxy.example.com # note localhost is added automatically
   certSecretName: my-proxy-ca-pem # name of the secret containing a .pem file with the CA certificate
 ```
+
+## Required Outbound Connections
+
+  You must allow outbound HTTPS (port 443) to:
+
+  | Endpoint | Purpose |
+  |----------|---------|
+  | `api.getcortexapp.com` | CortexService - Agent registration and API calls |
+  | `relay.cortex.io` | SnykBrokerServer - WebSocket tunnel for relayed requests |
+
+  No inbound firewall ports need to be opened - the agent initiates all outbound connections.
+
+  Your docker or kubernetes instance will also need to reach ghcr.io in order to pull the agent docker image.
 
 ## Understanding the Agent configuration
 
