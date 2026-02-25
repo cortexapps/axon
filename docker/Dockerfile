@@ -6,9 +6,21 @@ RUN apt update && apt install -y protobuf-compiler git python3 python3-venv wget
 
 # Install NodeJS and Snyk Broker
 ENV NODE_VERSION=20
-ARG SNYK_BROKER_VERSION=4.203.4
+ENV FORCE_WS_RESPONSE=true
+ARG SNYK_BROKER_VERSION=axon
 RUN wget -q -O - https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash - && apt install -y nodejs
-RUN npm install -g snyk-broker@${SNYK_BROKER_VERSION}
+RUN npm install --global npm@latest typescript@4.9.3
+RUN git clone https://github.com/cortexapps/snyk-broker.git /tmp/snyk-broker && \
+    cd /tmp/snyk-broker && \
+    git checkout ${SNYK_BROKER_VERSION} && \
+    npm install && \
+    cp -r . /usr/local/snyk-broker && \
+    cd /usr/local/snyk-broker && \
+    npm install --global . && \
+    rm -rf /tmp/snyk-broker
+
+# Add npm global bin to PATH
+ENV PATH="/usr/local/lib/node_modules/.bin:${PATH}"
 
 ENV GOLANG_VERSION=1.25.5
 # Install Go, this script will work for ARM or AMD64
