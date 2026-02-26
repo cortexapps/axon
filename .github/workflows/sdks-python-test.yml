@@ -31,7 +31,8 @@ jobs:
 
       - name: Install Protobuf
         run: |
-          sudo apt install -y protobuf-compiler
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
 
       - name: Run Linter
         run: |

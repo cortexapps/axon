@@ -27,7 +27,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-            sudo apt install -y protobuf-compiler  
+            sudo apt-get update
+            sudo apt-get install -y protobuf-compiler
             make -C agent setup proto
 
       - name: Run Agent tests
@@ -54,7 +55,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-            sudo apt install -y protobuf-compiler  
+            sudo apt-get update
+            sudo apt-get install -y protobuf-compiler
             make -C agent setup proto
 
       - name: Build Agent Local Image
