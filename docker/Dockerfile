@@ -22,7 +22,7 @@ RUN git clone https://github.com/cortexapps/snyk-broker.git /tmp/snyk-broker && 
 # Add npm global bin to PATH
 ENV PATH="/usr/local/lib/node_modules/.bin:${PATH}"
 
-ENV GOLANG_VERSION=1.25.5
+ENV GOLANG_VERSION=1.25.7
 # Install Go, this script will work for ARM or AMD64
 RUN wget -q -O /tmp/goinstall.sh https://raw.githubusercontent.com/canha/golang-tools-install-script/master/goinstall.sh && chmod +x /tmp/goinstall.sh && /tmp/goinstall.sh --version ${GOLANG_VERSION}
 
