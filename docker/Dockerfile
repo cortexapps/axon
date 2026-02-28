@@ -7,7 +7,7 @@ RUN apt update && apt install -y protobuf-compiler git python3 python3-venv wget
 # Install NodeJS and Snyk Broker
 ENV NODE_VERSION=20
 ENV FORCE_WS_RESPONSE=true
-ARG SNYK_BROKER_VERSION=60504f7b42464b4595b57247bf4acce6dfb34b28
+ARG SNYK_BROKER_VERSION=v1.0.6-axon
 RUN wget -q -O - https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash - && apt install -y nodejs
 RUN npm install --global npm@latest typescript@4.9.3
 RUN git clone https://github.com/cortexapps/snyk-broker.git /tmp/snyk-broker && \
