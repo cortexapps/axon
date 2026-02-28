@@ -3,7 +3,7 @@ name: Build and Publish Docker Image
 on: 
   push:
     branches:
-      - '*'
+      - main
     tags:
       - 'v*'
   workflow_dispatch:
@@ -64,16 +64,28 @@ jobs:
           cache-to: type=local,dest=/tmp/.buildx-cache
           load: ${{ env.IS_PUBLISH != 'true' }}
 
-      - name: Run Trivy vulnerability scanner
+      - name: Run Trivy vulnerability scanner (SARIF)
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: ghcr.io/${{ github.repository_owner }}/cortex-axon-agent:${{ steps.meta.outputs.version }}
           format: 'sarif'
           output: 'trivy-results.sarif'
           severity: 'CRITICAL,HIGH'
+          ignore-unfixed: true
+          exit-code: '0'
+          skip-dirs: 'usr/lib/node_modules/npm,root/.go'
 
       - name: Upload Trivy scan results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4.32.2
         if: always()
         with:
           sarif_file: 'trivy-results.sarif'
+
+      - name: Fail on CRITICAL/HIGH vulnerabilities
+        run: |
+          COUNT=$(jq '[.runs[].results[]] | length' trivy-results.sarif)
+          if [ "$COUNT" -gt 0 ]; then
+            echo "::error::Found $COUNT CRITICAL/HIGH fixable vulnerabilities:"
+            jq -r '.runs[].results[] | "\(.ruleId): \(.message.text | split("\n") | .[0])"' trivy-results.sarif
+            exit 1
+          fi

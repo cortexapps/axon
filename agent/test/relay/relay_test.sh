@@ -33,9 +33,9 @@ fi
 
 # Create an exit trap to stop the broker when the script exits
 function cleanup {
-
   echo "Cleanup: Stopping docker-compose"
   docker compose down
+  rm -f /tmp/token-* /tmp/axon-test-token /tmp/binary-test-*.bin /tmp/binary-test-*.downloaded
 }
 trap cleanup EXIT
 
@@ -127,6 +127,30 @@ result=$(curlw http://localhost:$SERVER_PORT/broker/$TOKEN/$FILENAME)
 if [ "$result" != "$TOKEN" ]; then
     echo "FAIL: Expected $TOKEN, got $result"
     exit 1
+fi
+
+echo "Checking binary file relay passthrough..."
+BINARY_FILENAME="binary-test-$(date +%s).bin"
+dd if=/dev/urandom of="/tmp/$BINARY_FILENAME" bs=1024 count=1024 2>/dev/null
+ORIGINAL_CHECKSUM=$(sha256sum "/tmp/$BINARY_FILENAME" | awk '{print $1}')
+
+# Must use curl -o directly (not curlw) — shell variables corrupt binary data
+BINARY_DOWNLOAD="/tmp/${BINARY_FILENAME}.downloaded"
+curl -s -f -o "$BINARY_DOWNLOAD" "http://localhost:$SERVER_PORT/broker/$TOKEN/$BINARY_FILENAME"
+DOWNLOAD_STATUS=$?
+if [ $DOWNLOAD_STATUS -ne 0 ]; then
+    echo "FAIL: curl failed to download binary file (exit code $DOWNLOAD_STATUS)"
+    exit 1
+fi
+
+DOWNLOADED_CHECKSUM=$(sha256sum "$BINARY_DOWNLOAD" | awk '{print $1}')
+if [ "$ORIGINAL_CHECKSUM" != "$DOWNLOADED_CHECKSUM" ]; then
+    echo "FAIL: Binary checksum mismatch"
+    echo "  Original:   $ORIGINAL_CHECKSUM ($(stat -c%s /tmp/$BINARY_FILENAME) bytes)"
+    echo "  Downloaded: $DOWNLOADED_CHECKSUM ($(stat -c%s $BINARY_DOWNLOAD) bytes)"
+    exit 1
+else
+    echo "Success: Binary file (1MB) checksum verified ($ORIGINAL_CHECKSUM)"
 fi
 
 # To validate this we call out to the AXON readme, which hits an HTTPS server
