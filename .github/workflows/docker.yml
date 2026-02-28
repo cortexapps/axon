@@ -3,7 +3,7 @@ name: Build and Publish Docker Image
 on: 
   push:
     branches:
-      - '*'
+      - main
     tags:
       - 'v*'
   workflow_dispatch:
@@ -73,7 +73,7 @@ jobs:
           severity: 'CRITICAL,HIGH'
           ignore-unfixed: true
           exit-code: '0'
-          skip-dirs: 'usr/lib/node_modules/npm'
+          skip-dirs: 'usr/lib/node_modules/npm,root/.go'
 
       - name: Upload Trivy scan results to GitHub Security tab
         uses: github/codeql-action/upload-sarif@v4.32.2
