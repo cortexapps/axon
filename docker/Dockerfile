@@ -6,7 +6,7 @@ RUN apt update && apt install -y protobuf-compiler git python3 python3-venv wget
 
 # Install NodeJS and Snyk Broker
 ENV NODE_VERSION=20
-ENV FORCE_WS_RESPONSE=true
+
 ARG SNYK_BROKER_VERSION=v1.0.6-axon
 RUN wget -q -O - https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash - && apt install -y nodejs
 RUN npm install --global npm@latest typescript@4.9.3

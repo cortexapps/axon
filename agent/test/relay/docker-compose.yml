@@ -1,14 +1,15 @@
 services:
   snyk-broker:
-    image: snyk/broker:4.203.4-base
-    platform: "linux/amd64"
+    build:
+      context: .
+      dockerfile: Dockerfile.snyk-broker-server
+    image: cortex-snyk-broker-server:local
     ports:
       - "${SERVER_PORT}:7341"
     volumes:
       - .:/src
     environment:
       ACCEPT: /src/accept-server.json
-    command: snyk-broker server
 
   mitmproxy:
     image: mitmproxy/mitmproxy:12
