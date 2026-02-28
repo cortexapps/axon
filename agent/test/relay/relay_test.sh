@@ -85,7 +85,7 @@ real_curl=$(which curl)
 
 function curlw {
     [ -n "$DEBUG" ] && echo "Executing: $real_curl $@" >&2
-    if ! curl_result=$($real_curl -s "$@" 2>&1)
+    if ! curl_result=$($real_curl -s -H "x-broker-ws-response: true" "$@" 2>&1)
     then
         echo "Curl command failed: $@ ==> $curl_result"
         exit 1
@@ -136,7 +136,7 @@ ORIGINAL_CHECKSUM=$(sha256sum "/tmp/$BINARY_FILENAME" | awk '{print $1}')
 
 # Must use curl -o directly (not curlw) — shell variables corrupt binary data
 BINARY_DOWNLOAD="/tmp/${BINARY_FILENAME}.downloaded"
-curl -s -f -o "$BINARY_DOWNLOAD" "http://localhost:$SERVER_PORT/broker/$TOKEN/$BINARY_FILENAME"
+curl -s -f -H "x-broker-ws-response: true" -o "$BINARY_DOWNLOAD" "http://localhost:$SERVER_PORT/broker/$TOKEN/$BINARY_FILENAME"
 DOWNLOAD_STATUS=$?
 if [ $DOWNLOAD_STATUS -ne 0 ]; then
     echo "FAIL: curl failed to download binary file (exit code $DOWNLOAD_STATUS)"
