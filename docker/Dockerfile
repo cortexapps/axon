@@ -14,9 +14,10 @@ RUN git clone https://github.com/cortexapps/snyk-broker.git /tmp/snyk-broker && 
     cd /tmp/snyk-broker && \
     git checkout ${SNYK_BROKER_VERSION} && \
     npm install && \
+    cp -r . /usr/local/snyk-broker && \
+    cd /usr/local/snyk-broker && \
     npm install --global . && \
     npm prune --omit=dev && \
-    cp -r . /usr/local/snyk-broker && \
     rm -rf /tmp/snyk-broker
 
 # Add npm global bin to PATH
