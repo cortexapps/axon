@@ -6,6 +6,9 @@ on:
   schedule:
     - cron: 45 10 * * *
 
+permissions:
+  contents: read
+
 jobs:
   trivy:
     name: Run Trivy against Docker image
