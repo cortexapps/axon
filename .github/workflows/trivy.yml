@@ -1,0 +1,55 @@
+---
+name: Scan for Vulnerabilities
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: 45 10 * * *
+
+jobs:
+  trivy:
+    name: Run Trivy against Docker image
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'temurin'
+          java-version: 21
+
+      - name: Build Docker Image
+        run: |
+          docker build \
+            -t k8s-agent \
+            --build-arg GITHUB_USERNAME="$GITHUB_USERNAME" \
+            --build-arg GITHUB_PASSWORD="$GITHUB_PASSWORD" \
+            .
+        env:
+          GITHUB_PASSWORD: ${{ secrets.GH_PAT }}
+          GITHUB_USERNAME: ${{ secrets.GH_PAT_USERNAME }}
+
+      - name: Run Trivy on Root Image
+        uses: aquasecurity/trivy-action@master
+        env:
+          TRIVY_DB_REPOSITORY: public.ecr.aws/aquasecurity/trivy-db
+          TRIVY_JAVA_DB_REPOSITORY: public.ecr.aws/aquasecurity/trivy-java-db
+        with:
+          image-ref: cortex-axon-agent
+          format: table
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: CRITICAL,HIGH
+
+      - name: Notify slack fail
+        if: failure()
+        uses: voxmedia/github-action-slack-notify-build@v1
+        with:
+          channel: eng-releases
+          status: FAILED
+          color: danger
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_ERROR_REPORTING_BOT_TOKEN }}
