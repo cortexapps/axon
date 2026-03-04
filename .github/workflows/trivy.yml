@@ -13,7 +13,7 @@ permissions:
 jobs:
   trivy:
     name: Run Trivy vulnerability scan
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
