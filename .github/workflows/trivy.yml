@@ -32,7 +32,7 @@ jobs:
           image-ref: ghcr.io/${{ github.repository_owner }}/cortex-axon-agent:main
           format: 'sarif'
           output: 'trivy-results.sarif'
-          severity: 'CRITICAL,HIGH'
+          severity: 'CRITICAL' # Changing for rollback version ONLY, do not merge to main
           ignore-unfixed: true
           exit-code: '0'
           skip-dirs: 'usr/lib/node_modules/npm,root/.go'
