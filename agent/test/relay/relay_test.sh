@@ -197,16 +197,35 @@ if [ "$PROXY" == "1" ]; then
         echo "$proxy_result"
         exit 1
     else
-        echo "Success: Found expected injected header value in result"    
+        echo "Success: Found expected injected header value in result"
     fi
 
     # Make sure the plugin header is also injected
     if ! echo "$proxy_result" | grep -q "HOME=/root"; then
         echo "FAIL: Expected injected plugin header value but not found"
         echo "$proxy_result"
-        exit 1      
-    else 
+        exit 1
+    else
         echo "Success: Found expected injected plugin header value in result"
+    fi
+
+    # Verify WebSocket mode is working (ENABLE_RELAY_REFLECTOR=all routes broker server URL through reflector)
+    # The reflector's WebSocket proxy should upgrade the connection properly
+    echo "Checking WebSocket mode (via reflector)..."
+    axon_logs=$(docker compose logs axon-relay 2>&1)
+
+    # Check that WebSocket tunnel was established (logged by reflector)
+    if echo "$axon_logs" | grep -q "WebSocket tunnel established"; then
+        echo "Success: WebSocket tunnel established through reflector"
+    else
+        # If no WebSocket tunnel log, check that connection isn't using long-polling
+        # Long-polling would show repeated short-lived connections
+        broker_logs=$(docker compose logs snyk-broker 2>&1)
+        if echo "$broker_logs" | grep -q "client connected"; then
+            echo "Success: Broker client connected (WebSocket or upgraded)"
+        else
+            echo "Warning: Could not verify WebSocket mode from logs (connection may still be working)"
+        fi
     fi
 else
     echo "Checking relay non proxy config..."

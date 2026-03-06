@@ -21,6 +21,7 @@ const (
 	RelayReflectorDisabled RelayReflectorMode = iota
 	RelayReflectorRegistrationOnly
 	RelayReflectorAllTraffic
+	RelayReflectorTrafficOnly // Only for accept file origins, NOT for broker server URL
 )
 
 func (m RelayReflectorMode) String() string {
@@ -31,9 +32,29 @@ func (m RelayReflectorMode) String() string {
 		return "RegistrationOnly"
 	case RelayReflectorAllTraffic:
 		return "AllTraffic"
+	case RelayReflectorTrafficOnly:
+		return "TrafficOnly"
 	default:
 		return "Unknown"
 	}
+}
+
+// ReflectsRegistration returns true if this mode routes the broker server URL through the reflector.
+// Modes: registration, all
+func (m RelayReflectorMode) ReflectsRegistration() bool {
+	return m == RelayReflectorRegistrationOnly || m == RelayReflectorAllTraffic
+}
+
+// ReflectsTraffic returns true if this mode routes accept file origins through the reflector.
+// Modes: traffic, all
+func (m RelayReflectorMode) ReflectsTraffic() bool {
+	return m == RelayReflectorTrafficOnly || m == RelayReflectorAllTraffic
+}
+
+// IsEnabled returns true if this mode enables the reflector at all.
+// Modes: registration, traffic, all
+func (m RelayReflectorMode) IsEnabled() bool {
+	return m != RelayReflectorDisabled
 }
 
 type AgentConfig struct {
@@ -58,9 +79,10 @@ type AgentConfig struct {
 	HandlerHistoryMaxAge       time.Duration
 	HandlerHistoryMaxSizeBytes int64
 
-	HttpDisableTLS         bool
-	HttpCaCertFilePath     string
-	HttpRelayReflectorMode RelayReflectorMode
+	HttpDisableTLS                bool
+	HttpCaCertFilePath            string
+	HttpRelayReflectorMode        RelayReflectorMode
+	ReflectorWebSocketUpgrade     bool
 }
 
 func (ac AgentConfig) HttpBaseUrl() string {
@@ -248,7 +270,7 @@ func NewAgentEnvConfig() AgentConfig {
 		cfg.HttpCaCertFilePath = filepath.Clean(cfg.HttpCaCertFilePath)
 	}
 
-	cfg.HttpRelayReflectorMode = RelayReflectorAllTraffic
+	cfg.HttpRelayReflectorMode = RelayReflectorTrafficOnly
 	if relayReflector := os.Getenv("ENABLE_RELAY_REFLECTOR"); relayReflector != "" {
 		switch relayReflector {
 		case "false", "disabled":
@@ -257,7 +279,15 @@ func NewAgentEnvConfig() AgentConfig {
 			cfg.HttpRelayReflectorMode = RelayReflectorRegistrationOnly
 		case "true", "all":
 			cfg.HttpRelayReflectorMode = RelayReflectorAllTraffic
+		case "traffic":
+			cfg.HttpRelayReflectorMode = RelayReflectorTrafficOnly
 		}
+	}
+
+	// Default to true - WebSocket upgrade support in reflector
+	cfg.ReflectorWebSocketUpgrade = true
+	if wsUpgrade := os.Getenv("REFLECTOR_WEBSOCKET_UPGRADE"); wsUpgrade == "false" {
+		cfg.ReflectorWebSocketUpgrade = false
 	}
 
 	return cfg

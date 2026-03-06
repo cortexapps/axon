@@ -107,3 +107,50 @@ func TestLoadCaCertsDir(t *testing.T) {
 	require.Equal(t, true, config.HttpDisableTLS)
 	require.Equal(t, "/tmp/bar/certs/cert.pem", config.HttpCaCertFilePath)
 }
+
+func TestRelayReflectorMode_Helpers(t *testing.T) {
+	tests := []struct {
+		name                 string
+		mode                 RelayReflectorMode
+		isEnabled            bool
+		reflectsRegistration bool
+		reflectsTraffic      bool
+	}{
+		{
+			name:                 "Disabled",
+			mode:                 RelayReflectorDisabled,
+			isEnabled:            false,
+			reflectsRegistration: false,
+			reflectsTraffic:      false,
+		},
+		{
+			name:                 "RegistrationOnly",
+			mode:                 RelayReflectorRegistrationOnly,
+			isEnabled:            true,
+			reflectsRegistration: true,
+			reflectsTraffic:      false,
+		},
+		{
+			name:                 "TrafficOnly",
+			mode:                 RelayReflectorTrafficOnly,
+			isEnabled:            true,
+			reflectsRegistration: false,
+			reflectsTraffic:      true,
+		},
+		{
+			name:                 "AllTraffic",
+			mode:                 RelayReflectorAllTraffic,
+			isEnabled:            true,
+			reflectsRegistration: true,
+			reflectsTraffic:      true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.isEnabled, tt.mode.IsEnabled(), "IsEnabled")
+			require.Equal(t, tt.reflectsRegistration, tt.mode.ReflectsRegistration(), "ReflectsRegistration")
+			require.Equal(t, tt.reflectsTraffic, tt.mode.ReflectsTraffic(), "ReflectsTraffic")
+		})
+	}
+}

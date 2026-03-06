@@ -254,7 +254,8 @@ func (r *relayInstanceManager) getUrlAndToken() (*tokenInfo, error) {
 		r.tokenInfo = tokenInfo
 	}
 
-	if r.reflector != nil {
+	// Route BROKER_SERVER_URL through reflector when mode reflects registration (registration, all).
+	if r.reflector != nil && r.config.HttpRelayReflectorMode.ReflectsRegistration() {
 		tokenInfo.ServerUri = r.reflector.ProxyURI(tokenInfo.ServerUri, WithDefault(true))
 	}
 
@@ -311,7 +312,15 @@ func (r *relayInstanceManager) Start() error {
 	}
 
 	rendered, err := af.Render(r.logger, func(renderContext acceptfile.RenderContext) error {
-		if r.reflector != nil {
+		// Check if any routes have custom headers - these require traffic reflection mode
+		for _, route := range renderContext.AcceptFile.PrivateRules() {
+			if len(route.Headers()) > 0 && !r.config.HttpRelayReflectorMode.ReflectsTraffic() {
+				panic("HttpRelayReflectorMode must be set to 'all' or 'traffic' to add custom headers")
+			}
+		}
+
+		// Rewrite accept file origins through reflector when mode reflects traffic (traffic, all)
+		if r.reflector != nil && r.config.HttpRelayReflectorMode.ReflectsTraffic() {
 
 			// Here we loop all the private (incoming) routes and do two things
 			// 1. We rewrite the origin to point back to the reflector.  This captures the original URI so
@@ -324,10 +333,6 @@ func (r *relayInstanceManager) Start() error {
 
 			for _, route := range renderContext.AcceptFile.PrivateRules() {
 				headers := route.Headers()
-				if len(headers) > 0 && r.config.HttpRelayReflectorMode != config.RelayReflectorAllTraffic {
-					panic("HttpRelayReflectorMode must be set to 'all' to add custom headers")
-				}
-
 				routeUri := r.reflector.ProxyURI(route.Origin(), WithHeadersResolver(headers))
 				route.SetOrigin(routeUri)
 			}

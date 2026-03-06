@@ -2,8 +2,11 @@ package snykbroker
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"hash/fnv"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -259,7 +262,120 @@ func (rr *RegistrationReflector) ServeHTTP(w http.ResponseWriter, r *http.Reques
 		zap.String("key", entry.key()),
 		zap.String("newPath", newPath),
 	)
+
+	// Check if this is a WebSocket upgrade request
+	if rr.isWebSocketUpgrade(r) {
+		rr.logger.Debug("Detected WebSocket upgrade request, using WebSocket proxy")
+		rr.proxyWebSocket(w, r, entry)
+		return
+	}
+
 	entry.handler.ServeHTTP(w, r)
+}
+
+// isWebSocketUpgrade checks if the request is a WebSocket upgrade request
+// and if WebSocket upgrade support is enabled in config
+func (rr *RegistrationReflector) isWebSocketUpgrade(r *http.Request) bool {
+	if !rr.config.ReflectorWebSocketUpgrade {
+		return false
+	}
+	return strings.EqualFold(r.Header.Get("Upgrade"), "websocket") &&
+		strings.Contains(strings.ToLower(r.Header.Get("Connection")), "upgrade")
+}
+
+// proxyWebSocket handles WebSocket upgrade requests by establishing a tunnel
+func (rr *RegistrationReflector) proxyWebSocket(w http.ResponseWriter, r *http.Request, entry *proxyEntry) {
+	// Parse target URL
+	targetURL, err := url.Parse(entry.TargetURI)
+	if err != nil {
+		rr.logger.Error("Failed to parse target URI for WebSocket", zap.Error(err))
+		http.Error(w, "Bad Gateway", http.StatusBadGateway)
+		return
+	}
+
+	// Determine target host and port
+	targetHost := targetURL.Host
+	targetPort := "80"
+	if targetURL.Scheme == "https" || targetURL.Scheme == "wss" {
+		targetPort = "443"
+	}
+	if h, p, err := net.SplitHostPort(targetURL.Host); err == nil {
+		targetHost = h
+		targetPort = p
+	}
+
+	// Connect to the target server
+	var targetConn net.Conn
+	targetAddr := net.JoinHostPort(targetHost, targetPort)
+
+	if targetURL.Scheme == "https" || targetURL.Scheme == "wss" {
+		tlsConfig := &tls.Config{
+			ServerName: targetHost,
+		}
+		if rr.config.HttpDisableTLS {
+			tlsConfig.InsecureSkipVerify = true
+		}
+		targetConn, err = tls.Dial("tcp", targetAddr, tlsConfig)
+	} else {
+		targetConn, err = net.Dial("tcp", targetAddr)
+	}
+
+	if err != nil {
+		rr.logger.Error("Failed to connect to target for WebSocket",
+			zap.String("target", targetAddr),
+			zap.Error(err))
+		http.Error(w, "Bad Gateway", http.StatusBadGateway)
+		return
+	}
+	defer targetConn.Close()
+
+	// Build the upgrade request to send to target
+	r.URL.Scheme = targetURL.Scheme
+	r.URL.Host = targetURL.Host
+	r.Host = targetURL.Host
+
+	// Write the request to the target
+	if err := r.Write(targetConn); err != nil {
+		rr.logger.Error("Failed to write WebSocket upgrade request to target", zap.Error(err))
+		http.Error(w, "Bad Gateway", http.StatusBadGateway)
+		return
+	}
+
+	// Hijack the client connection
+	hijacker, ok := w.(http.Hijacker)
+	if !ok {
+		rr.logger.Error("ResponseWriter does not support hijacking")
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+
+	clientConn, _, err := hijacker.Hijack()
+	if err != nil {
+		rr.logger.Error("Failed to hijack client connection", zap.Error(err))
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+	defer clientConn.Close()
+
+	rr.logger.Debug("WebSocket tunnel established",
+		zap.String("target", targetAddr),
+		zap.String("path", r.URL.Path))
+
+	// Bidirectionally copy data between client and target
+	done := make(chan struct{}, 2)
+
+	go func() {
+		io.Copy(clientConn, targetConn)
+		done <- struct{}{}
+	}()
+
+	go func() {
+		io.Copy(targetConn, clientConn)
+		done <- struct{}{}
+	}()
+
+	// Wait for either direction to complete
+	<-done
 }
 
 func hashString(s string) uint32 {
