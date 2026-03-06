@@ -209,18 +209,20 @@ if [ "$PROXY" == "1" ]; then
         echo "Success: Found expected injected plugin header value in result"
     fi
 
-    # Verify that requests were relayed via WebSocket transport (not long-polling).
-    # The broker server logs "Brokering request through WS" for each request sent via WebSocket.
-    echo "Checking WebSocket transport..."
-    broker_logs=$(docker compose logs snyk-broker 2>&1)
+    # Verify that the reflector's raw WebSocket tunnel was established.
+    # "WebSocket tunnel established" is logged by the reflector when a real Upgrade: websocket
+    # request is received and a TCP tunnel is created (not just primus's application-layer WS).
+    echo "Checking WebSocket tunnel..."
+    axon_logs=$(docker compose logs axon-relay 2>&1)
 
-    if ! echo "$broker_logs" | grep -q "Brokering request through WS"; then
-        echo "FAIL: Expected requests to use WebSocket transport, but no 'Brokering request through WS' found in broker logs"
-        echo "=== Broker Logs ==="
-        echo "$broker_logs" | tail -50
+    if ! echo "$axon_logs" | grep -q "WebSocket tunnel established"; then
+        echo "FAIL: Expected 'WebSocket tunnel established' in reflector logs but not found"
+        echo "  The broker client may not be upgrading to raw WebSocket (staying on XHR polling)"
+        echo "=== Axon Relay Logs (last 50) ==="
+        echo "$axon_logs" | tail -50
         exit 1
     else
-        echo "Success: Requests relayed via WebSocket transport"
+        echo "Success: WebSocket tunnel established through reflector"
     fi
 else
     echo "Checking relay non proxy config..."

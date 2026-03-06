@@ -241,10 +241,15 @@ func (rr *RegistrationReflector) RegisterRoutes(mux *mux.Router) error {
 
 func (rr *RegistrationReflector) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
-	rr.logger.Debug("Received request for proxy",
+	fields := []zap.Field{
 		zap.String("method", r.Method),
-		zap.String("path", r.URL.Path),
-	)
+		zap.String("url", r.URL.String()),
+	}
+	if upgrade := r.Header.Get("Upgrade"); upgrade != "" {
+		fields = append(fields, zap.String("upgrade", upgrade))
+		fields = append(fields, zap.String("connection", r.Header.Get("Connection")))
+	}
+	rr.logger.Debug("Reflector request", fields...)
 	entry, newPath, err := rr.parseTargetUri(r.URL.Path)
 	if err != nil {
 		rr.logger.Error("Failed to find Entry for target URI", zap.Error(err))
@@ -348,7 +353,7 @@ func (rr *RegistrationReflector) proxyWebSocket(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	rr.logger.Debug("WebSocket tunnel established",
+	rr.logger.Info("WebSocket tunnel established",
 		zap.String("target", targetAddr),
 		zap.String("path", r.URL.Path))
 
