@@ -315,7 +315,7 @@ func (r *relayInstanceManager) Start() error {
 		// Check if any routes have custom headers - these require traffic reflection mode
 		for _, route := range renderContext.AcceptFile.PrivateRules() {
 			if len(route.Headers()) > 0 && !r.config.HttpRelayReflectorMode.ReflectsTraffic() {
-				panic("HttpRelayReflectorMode must be set to 'all' or 'traffic' to add custom headers")
+				panic("ENABLE_RELAY_REFLECTOR must be set to 'all' or 'traffic' to use custom headers in accept files")
 			}
 		}
 

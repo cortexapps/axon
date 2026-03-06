@@ -310,3 +310,57 @@ func TestWebSocketProxyWithDefaultTarget(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []byte("echo: test"), message)
 }
+
+func TestWebSocketProxyConnectionRefused(t *testing.T) {
+	env := newTestReflectorEnv(t)
+
+	// Register a proxy to a non-existent server (connection refused)
+	proxyURI := env.Reflector.ProxyURI("http://127.0.0.1:59999") // Port that's not listening
+
+	// Try to connect via WebSocket
+	wsURL := "ws" + proxyURI[4:] + "/ws"
+	dialer := websocket.Dialer{}
+	_, resp, err := dialer.Dial(wsURL, nil)
+
+	// Should get an error with a 502 response
+	require.Error(t, err)
+	require.NotNil(t, resp, "Expected HTTP response with status code")
+	require.Equal(t, http.StatusBadGateway, resp.StatusCode, "Expected 502 Bad Gateway")
+}
+
+func TestWebSocketProxyInvalidTarget(t *testing.T) {
+	env := newTestReflectorEnv(t)
+	env.Reflector.Start()
+
+	// Make a WebSocket request to an invalid hash (no registered target)
+	req, _ := http.NewRequest("GET", fmt.Sprintf("http://localhost:%d/!invalid!/ws", env.Reflector.server.Port()), nil)
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Upgrade", "websocket")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	// Should get 502 Bad Gateway for invalid target
+	require.Equal(t, http.StatusBadGateway, resp.StatusCode)
+}
+
+func TestWebSocketProxyServerRejectsUpgrade(t *testing.T) {
+	env := newTestReflectorEnv(t)
+
+	// Create a server that rejects WebSocket upgrades
+	env.Router.HandleFunc("/reject", func(w http.ResponseWriter, r *http.Request) {
+		// Don't upgrade, just return a normal HTTP response
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte("WebSocket not supported"))
+	})
+
+	proxyURI := env.Reflector.ProxyURI(env.Server.URL)
+	wsURL := "ws" + proxyURI[4:] + "/reject"
+
+	dialer := websocket.Dialer{}
+	_, _, err := dialer.Dial(wsURL, nil)
+
+	// Should get an error because server rejected the upgrade
+	require.Error(t, err, "Expected error when server rejects WebSocket upgrade")
+}

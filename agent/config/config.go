@@ -17,11 +17,13 @@ const WebhookServerPort = 8081
 
 type RelayReflectorMode int
 
+// RelayReflectorMode controls how the reflector proxy routes traffic.
+// The reflector intercepts HTTP requests to handle CA certs and add custom headers.
 const (
-	RelayReflectorDisabled RelayReflectorMode = iota
-	RelayReflectorRegistrationOnly
-	RelayReflectorAllTraffic
-	RelayReflectorTrafficOnly // Only for accept file origins, NOT for broker server URL
+	RelayReflectorDisabled         RelayReflectorMode = iota // No reflector - all traffic goes direct
+	RelayReflectorRegistrationOnly                           // Only broker server URL goes through reflector
+	RelayReflectorAllTraffic                                 // Both broker URL and accept file origins go through reflector
+	RelayReflectorTrafficOnly                                // Only accept file origins go through reflector (DEFAULT)
 )
 
 func (m RelayReflectorMode) String() string {

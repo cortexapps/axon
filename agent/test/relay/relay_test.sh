@@ -209,23 +209,18 @@ if [ "$PROXY" == "1" ]; then
         echo "Success: Found expected injected plugin header value in result"
     fi
 
-    # Verify WebSocket mode is working (ENABLE_RELAY_REFLECTOR=all routes broker server URL through reflector)
-    # The reflector's WebSocket proxy should upgrade the connection properly
-    echo "Checking WebSocket mode (via reflector)..."
-    axon_logs=$(docker compose logs axon-relay 2>&1)
+    # Verify that requests were relayed via WebSocket transport (not long-polling).
+    # The broker server logs "Brokering request through WS" for each request sent via WebSocket.
+    echo "Checking WebSocket transport..."
+    broker_logs=$(docker compose logs snyk-broker 2>&1)
 
-    # Check that WebSocket tunnel was established (logged by reflector)
-    if echo "$axon_logs" | grep -q "WebSocket tunnel established"; then
-        echo "Success: WebSocket tunnel established through reflector"
+    if ! echo "$broker_logs" | grep -q "Brokering request through WS"; then
+        echo "FAIL: Expected requests to use WebSocket transport, but no 'Brokering request through WS' found in broker logs"
+        echo "=== Broker Logs ==="
+        echo "$broker_logs" | tail -50
+        exit 1
     else
-        # If no WebSocket tunnel log, check that connection isn't using long-polling
-        # Long-polling would show repeated short-lived connections
-        broker_logs=$(docker compose logs snyk-broker 2>&1)
-        if echo "$broker_logs" | grep -q "client connected"; then
-            echo "Success: Broker client connected (WebSocket or upgraded)"
-        else
-            echo "Warning: Could not verify WebSocket mode from logs (connection may still be working)"
-        fi
+        echo "Success: Requests relayed via WebSocket transport"
     fi
 else
     echo "Checking relay non proxy config..."

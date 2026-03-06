@@ -20,6 +20,8 @@ func resetEnv() {
 		"DEQUEUE_WAIT_TIME",
 		"CA_CERT_PATH",
 		"DISABLE_TLS",
+		"ENABLE_RELAY_REFLECTOR",
+		"REFLECTOR_WEBSOCKET_UPGRADE",
 	}
 
 	for _, v := range varsToClear {
@@ -41,6 +43,12 @@ func TestNewAgentEnvConfig_DefaultValues(t *testing.T) {
 	require.Equal(t, "", config.CortexApiToken)
 	require.False(t, config.DryRun)
 	require.Equal(t, 1*time.Second, config.DequeueWaitTime)
+	// Default reflector mode should be TrafficOnly (reflects traffic but not registration)
+	require.Equal(t, RelayReflectorTrafficOnly, config.HttpRelayReflectorMode)
+	require.True(t, config.HttpRelayReflectorMode.ReflectsTraffic())
+	require.False(t, config.HttpRelayReflectorMode.ReflectsRegistration())
+	// WebSocket upgrade should be enabled by default
+	require.True(t, config.ReflectorWebSocketUpgrade)
 }
 
 func TestNewAgentEnvConfig_CustomValues(t *testing.T) {
@@ -106,6 +114,58 @@ func TestLoadCaCertsDir(t *testing.T) {
 	config := NewAgentEnvConfig()
 	require.Equal(t, true, config.HttpDisableTLS)
 	require.Equal(t, "/tmp/bar/certs/cert.pem", config.HttpCaCertFilePath)
+}
+
+func TestEnableRelayReflectorEnvVar(t *testing.T) {
+	tests := []struct {
+		envValue     string
+		expectedMode RelayReflectorMode
+	}{
+		{"disabled", RelayReflectorDisabled},
+		{"false", RelayReflectorDisabled},
+		{"registration", RelayReflectorRegistrationOnly},
+		{"traffic", RelayReflectorTrafficOnly},
+		{"all", RelayReflectorAllTraffic},
+		{"true", RelayReflectorAllTraffic},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.envValue, func(t *testing.T) {
+			oldEnv := util.SaveEnv(false)
+			defer util.RestoreEnv(oldEnv)
+			resetEnv()
+			os.Setenv("ENABLE_RELAY_REFLECTOR", tt.envValue)
+
+			config := NewAgentEnvConfig()
+			require.Equal(t, tt.expectedMode, config.HttpRelayReflectorMode)
+		})
+	}
+}
+
+func TestReflectorWebSocketUpgradeEnvVar(t *testing.T) {
+	tests := []struct {
+		name     string
+		envValue string
+		expected bool
+	}{
+		{"default (not set)", "", true},
+		{"explicitly true", "true", true},
+		{"explicitly false", "false", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			oldEnv := util.SaveEnv(false)
+			defer util.RestoreEnv(oldEnv)
+			resetEnv()
+			if tt.envValue != "" {
+				os.Setenv("REFLECTOR_WEBSOCKET_UPGRADE", tt.envValue)
+			}
+
+			config := NewAgentEnvConfig()
+			require.Equal(t, tt.expected, config.ReflectorWebSocketUpgrade)
+		})
+	}
 }
 
 func TestRelayReflectorMode_Helpers(t *testing.T) {
