@@ -384,6 +384,36 @@ func (r *relayInstanceManager) Start() error {
 		}()
 	}
 
+	if r.config.RelayIdleTimeout != 0 && r.reflector != nil {
+		go func() {
+			for {
+				if !r.running.Load() {
+					return
+				}
+				select {
+				case <-time.After(r.config.RelayIdleTimeout):
+					if !r.running.Load() {
+						return
+					}
+					idle := time.Since(r.reflector.LastTrafficTime())
+					if idle >= r.config.RelayIdleTimeout {
+						r.logger.Info("No relay traffic detected, restarting broker",
+							zap.Duration("idle", idle),
+							zap.Duration("timeout", r.config.RelayIdleTimeout),
+						)
+						err := r.Restart()
+						r.emitOperationCounter("idle_restart", err == nil)
+						if err != nil {
+							r.logger.Error("Unable to restart broker on idle timeout", zap.Error(err))
+						}
+					}
+				case <-done:
+					return
+				}
+			}
+		}()
+	}
+
 	go func() {
 
 		defer close(done)

@@ -24,13 +24,14 @@ import (
 )
 
 type RegistrationReflector struct {
-	logger        *zap.Logger
-	transport     *http.Transport
-	server        cortexHttp.Server
-	targets       map[string]proxyEntry
-	serverStarted atomic.Bool
-	mode          config.RelayReflectorMode
-	config        config.AgentConfig
+	logger          *zap.Logger
+	transport       *http.Transport
+	server          cortexHttp.Server
+	targets         map[string]proxyEntry
+	serverStarted   atomic.Bool
+	mode            config.RelayReflectorMode
+	config          config.AgentConfig
+	lastTrafficTime atomic.Int64
 }
 
 type RegistrationReflectorParams struct {
@@ -63,6 +64,7 @@ func NewRegistrationReflector(p RegistrationReflectorParams) *RegistrationReflec
 		mode:      p.Config.HttpRelayReflectorMode,
 		config:    p.Config,
 	}
+	rr.RecordTraffic()
 
 	server.RegisterHandler(rr)
 
@@ -97,6 +99,16 @@ func (rr *RegistrationReflector) Stop() error {
 		return rr.server.Close()
 	}
 	return nil
+}
+
+// RecordTraffic updates the last traffic timestamp to now.
+func (rr *RegistrationReflector) RecordTraffic() {
+	rr.lastTrafficTime.Store(time.Now().UnixMilli())
+}
+
+// LastTrafficTime returns the time of the last recorded traffic.
+func (rr *RegistrationReflector) LastTrafficTime() time.Time {
+	return time.UnixMilli(rr.lastTrafficTime.Load())
 }
 
 func (rr *RegistrationReflector) getProxy(targetURI string, isDefault bool, headers acceptfile.ResolverMap) (*proxyEntry, error) {
@@ -240,6 +252,8 @@ func (rr *RegistrationReflector) RegisterRoutes(mux *mux.Router) error {
 }
 
 func (rr *RegistrationReflector) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+
+	rr.RecordTraffic()
 
 	fields := []zap.Field{
 		zap.String("method", r.Method),

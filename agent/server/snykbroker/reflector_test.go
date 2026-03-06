@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/cortexapps/axon/config"
 	"github.com/gorilla/mux"
@@ -326,6 +327,43 @@ func TestWebSocketProxyConnectionRefused(t *testing.T) {
 	require.Error(t, err)
 	require.NotNil(t, resp, "Expected HTTP response with status code")
 	require.Equal(t, http.StatusBadGateway, resp.StatusCode, "Expected 502 Bad Gateway")
+}
+
+func TestRecordTrafficAndLastTrafficTime(t *testing.T) {
+	env := newTestReflectorEnv(t)
+
+	// LastTrafficTime should be initialized (set in constructor)
+	initial := env.Reflector.LastTrafficTime()
+	require.False(t, initial.IsZero(), "LastTrafficTime should be initialized")
+
+	// Wait briefly and record traffic
+	time.Sleep(10 * time.Millisecond)
+	env.Reflector.RecordTraffic()
+	updated := env.Reflector.LastTrafficTime()
+	require.True(t, updated.After(initial), "LastTrafficTime should advance after RecordTraffic")
+}
+
+func TestServeHTTPUpdatesLastTrafficTime(t *testing.T) {
+	env := newTestReflectorEnv(t)
+
+	// Set up a target server
+	env.Router.HandleFunc("/hello", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	proxyURI := env.Reflector.ProxyURI(env.Server.URL)
+
+	initial := env.Reflector.LastTrafficTime()
+	time.Sleep(10 * time.Millisecond)
+
+	// Make a request through the reflector
+	resp, err := http.Get(proxyURI + "/hello")
+	require.NoError(t, err)
+	resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	// LastTrafficTime should have been updated
+	afterRequest := env.Reflector.LastTrafficTime()
+	require.True(t, afterRequest.After(initial), "LastTrafficTime should update on ServeHTTP")
 }
 
 func TestWebSocketProxyInvalidTarget(t *testing.T) {

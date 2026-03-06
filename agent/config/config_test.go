@@ -22,6 +22,7 @@ func resetEnv() {
 		"DISABLE_TLS",
 		"ENABLE_RELAY_REFLECTOR",
 		"REFLECTOR_WEBSOCKET_UPGRADE",
+		"RELAY_IDLE_TIMEOUT",
 	}
 
 	for _, v := range varsToClear {
@@ -49,6 +50,8 @@ func TestNewAgentEnvConfig_DefaultValues(t *testing.T) {
 	require.False(t, config.HttpRelayReflectorMode.ReflectsRegistration())
 	// WebSocket upgrade should be enabled by default
 	require.True(t, config.ReflectorWebSocketUpgrade)
+	// Relay idle timeout default
+	require.Equal(t, 5*time.Minute, config.RelayIdleTimeout)
 }
 
 func TestNewAgentEnvConfig_CustomValues(t *testing.T) {
@@ -164,6 +167,33 @@ func TestReflectorWebSocketUpgradeEnvVar(t *testing.T) {
 
 			config := NewAgentEnvConfig()
 			require.Equal(t, tt.expected, config.ReflectorWebSocketUpgrade)
+		})
+	}
+}
+
+func TestRelayIdleTimeoutEnvVar(t *testing.T) {
+	tests := []struct {
+		name     string
+		envValue string
+		expected time.Duration
+	}{
+		{"default (not set)", "", 5 * time.Minute},
+		{"custom value", "10m", 10 * time.Minute},
+		{"disabled", "0s", 0},
+		{"short duration", "30s", 30 * time.Second},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			oldEnv := util.SaveEnv(false)
+			defer util.RestoreEnv(oldEnv)
+			resetEnv()
+			if tt.envValue != "" {
+				os.Setenv("RELAY_IDLE_TIMEOUT", tt.envValue)
+			}
+
+			config := NewAgentEnvConfig()
+			require.Equal(t, tt.expected, config.RelayIdleTimeout)
 		})
 	}
 }

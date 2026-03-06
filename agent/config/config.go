@@ -85,6 +85,7 @@ type AgentConfig struct {
 	HttpCaCertFilePath            string
 	HttpRelayReflectorMode        RelayReflectorMode
 	ReflectorWebSocketUpgrade     bool
+	RelayIdleTimeout              time.Duration
 }
 
 func (ac AgentConfig) HttpBaseUrl() string {
@@ -290,6 +291,15 @@ func NewAgentEnvConfig() AgentConfig {
 	cfg.ReflectorWebSocketUpgrade = true
 	if wsUpgrade := os.Getenv("REFLECTOR_WEBSOCKET_UPGRADE"); wsUpgrade == "false" {
 		cfg.ReflectorWebSocketUpgrade = false
+	}
+
+	cfg.RelayIdleTimeout = 5 * time.Minute
+	if relayIdleTimeout := os.Getenv("RELAY_IDLE_TIMEOUT"); relayIdleTimeout != "" {
+		rit, err := time.ParseDuration(relayIdleTimeout)
+		if err != nil {
+			panic(err)
+		}
+		cfg.RelayIdleTimeout = rit
 	}
 
 	return cfg
