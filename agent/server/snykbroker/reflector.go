@@ -41,6 +41,11 @@ type RegistrationReflector struct {
 	// period — engine.io normally starts with polling before upgrading to WebSocket,
 	// so a brief polling window is expected during reconnection.
 	primusPollingFirstSeen atomic.Int64
+
+	// primusTunnelConnected tracks whether a Primus WebSocket tunnel is currently
+	// active. When a tunnel for a /primus/ path is established it is set to true;
+	// when the tunnel closes (for any reason) it is set to false.
+	primusTunnelConnected atomic.Bool
 }
 
 type RegistrationReflectorParams struct {
@@ -147,6 +152,17 @@ func (rr *RegistrationReflector) ResetPrimusPollingDetected() {
 func (rr *RegistrationReflector) isPrimusPollingRequest(r *http.Request) bool {
 	path := strings.TrimLeft(r.URL.Path, "/")
 	return strings.HasPrefix(path, "primus/") && !rr.isWebSocketUpgrade(r)
+}
+
+// isPrimusPath checks if the request path is a Primus path (/primus/...).
+func isPrimusPath(urlPath string) bool {
+	path := strings.TrimLeft(urlPath, "/")
+	return strings.HasPrefix(path, "primus/")
+}
+
+// IsPrimusTunnelConnected returns true if a Primus WebSocket tunnel is currently active.
+func (rr *RegistrationReflector) IsPrimusTunnelConnected() bool {
+	return rr.primusTunnelConnected.Load()
 }
 
 func (rr *RegistrationReflector) getProxy(targetURI string, isDefault bool, headers acceptfile.ResolverMap) (*proxyEntry, error) {
@@ -418,12 +434,29 @@ func (rr *RegistrationReflector) proxyWebSocket(w http.ResponseWriter, r *http.R
 		return
 	}
 
+	isPrimus := isPrimusPath(r.URL.Path)
+
 	rr.logger.Info("WebSocket tunnel established",
 		zap.String("target", targetAddr),
-		zap.String("path", r.URL.Path))
+		zap.String("path", r.URL.Path),
+		zap.Bool("primus", isPrimus))
+
+	if isPrimus {
+		rr.primusTunnelConnected.Store(true)
+		// Clear any polling detection — we have a fresh WebSocket now
+		rr.ResetPrimusPollingDetected()
+	}
 
 	// Run the bidirectional tunnel with proper cleanup
 	rr.runWebSocketTunnel(clientConn, targetConn)
+
+	// Tunnel has closed
+	if isPrimus {
+		rr.primusTunnelConnected.Store(false)
+		rr.logger.Warn("Primus WebSocket tunnel closed",
+			zap.String("target", targetAddr),
+			zap.String("path", r.URL.Path))
+	}
 }
 
 // dialWebSocketTarget establishes a connection to the WebSocket target server

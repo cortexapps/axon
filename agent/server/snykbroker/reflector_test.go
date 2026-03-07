@@ -433,6 +433,62 @@ func TestPrimusPollingDetectionViaServeHTTP(t *testing.T) {
 	require.Equal(t, time.Duration(0), env.Reflector.PrimusPollingDuration())
 }
 
+func TestPrimusTunnelTracking(t *testing.T) {
+	env := newTestReflectorEnv(t)
+
+	// Initially, tunnel should not be connected
+	require.False(t, env.Reflector.IsPrimusTunnelConnected())
+
+	// Create a WebSocket echo server at /primus/test-token/ path
+	env.Router.HandleFunc("/primus/test-token/", func(w http.ResponseWriter, r *http.Request) {
+		conn, err := testUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Logf("WebSocket upgrade failed: %v", err)
+			return
+		}
+		defer conn.Close()
+		for {
+			messageType, message, err := conn.ReadMessage()
+			if err != nil {
+				break
+			}
+			conn.WriteMessage(messageType, message)
+		}
+	})
+
+	// Set up default proxy pointing to the test server
+	proxyURI := env.Reflector.ProxyURI(env.Server.URL, WithDefault(true))
+
+	// Connect via WebSocket through the reflector to a /primus/ path
+	wsURL := "ws" + proxyURI[4:] + "/primus/test-token/"
+	dialer := websocket.Dialer{}
+	conn, resp, err := dialer.Dial(wsURL, nil)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusSwitchingProtocols, resp.StatusCode)
+
+	// Tunnel should now be connected
+	// Give a moment for the goroutine to set the flag
+	time.Sleep(50 * time.Millisecond)
+	require.True(t, env.Reflector.IsPrimusTunnelConnected())
+
+	// Any prior polling detection should have been cleared
+	require.False(t, env.Reflector.PrimusPollingDetected())
+
+	// Close the WebSocket connection
+	conn.Close()
+
+	// Wait for the tunnel to detect the close
+	time.Sleep(100 * time.Millisecond)
+	require.False(t, env.Reflector.IsPrimusTunnelConnected())
+}
+
+func TestIsPrimusPath(t *testing.T) {
+	require.True(t, isPrimusPath("/primus/some-token/"))
+	require.True(t, isPrimusPath("primus/some-token/"))
+	require.False(t, isPrimusPath("/other/path"))
+	require.False(t, isPrimusPath("/primuslike/path"))
+}
+
 func TestWebSocketProxyServerRejectsUpgrade(t *testing.T) {
 	env := newTestReflectorEnv(t)
 

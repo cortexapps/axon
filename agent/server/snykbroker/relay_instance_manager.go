@@ -385,26 +385,52 @@ func (r *relayInstanceManager) Start() error {
 		}()
 	}
 
-	// Monitor for Primus polling fallback. engine.io always starts with polling
-	// before upgrading to WebSocket, so we use a grace period to avoid restarting
-	// during normal reconnection handshakes. If polling persists beyond the grace
-	// period, the WebSocket upgrade has failed and the broker needs a full restart.
+	// Monitor the Primus WebSocket tunnel and polling fallback.
+	//
+	// Two-phase detection:
+	// 1. Tunnel death: When the Primus WebSocket tunnel through the reflector closes
+	//    (infrastructure timeout, network error, etc), the reflector sets
+	//    primusTunnelConnected=false. We detect this and wait briefly for engine.io
+	//    to re-establish the WebSocket via its normal polling→upgrade handshake.
+	// 2. Polling fallback: If engine.io fails to upgrade back to WebSocket and stays
+	//    on HTTP polling beyond a grace period, we force a full broker restart.
+	//
+	// The grace period is necessary because engine.io always starts with polling
+	// before upgrading to WebSocket — brief polling during reconnection is normal.
 	if r.reflector != nil && r.config.HttpRelayReflectorMode.ReflectsRegistration() {
-		const primusPollingCheckInterval = 10 * time.Second
+		const primusCheckInterval = 10 * time.Second
 		const primusPollingGracePeriod = 30 * time.Second
+		tunnelWasConnected := false
 		go func() {
 			for {
 				if !r.running.Load() {
 					return
 				}
 				select {
-				case <-time.After(primusPollingCheckInterval):
+				case <-time.After(primusCheckInterval):
 					if !r.running.Load() {
 						return
 					}
+
+					tunnelConnected := r.reflector.IsPrimusTunnelConnected()
+
+					// Detect tunnel death: was connected, now isn't
+					if tunnelWasConnected && !tunnelConnected {
+						r.logger.Warn("Primus WebSocket tunnel lost, waiting for reconnection before restarting")
+					}
+					tunnelWasConnected = tunnelConnected
+
+					// If tunnel is healthy, clear any polling detection and move on
+					if tunnelConnected {
+						r.reflector.ResetPrimusPollingDetected()
+						continue
+					}
+
+					// Tunnel is down — check if polling fallback has persisted
+					// beyond the grace period
 					pollingDuration := r.reflector.PrimusPollingDuration()
 					if pollingDuration >= primusPollingGracePeriod {
-						r.logger.Warn("Primus polling fallback detected, restarting broker to re-establish WebSocket connection",
+						r.logger.Warn("Primus polling fallback persisted beyond grace period, restarting broker",
 							zap.Duration("pollingDuration", pollingDuration),
 						)
 						r.reflector.ResetPrimusPollingDetected()
