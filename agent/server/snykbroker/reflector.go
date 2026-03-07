@@ -32,6 +32,12 @@ type RegistrationReflector struct {
 	mode            config.RelayReflectorMode
 	config          config.AgentConfig
 	lastTrafficTime atomic.Int64
+
+	// primusPollingDetected is set when the reflector observes HTTP polling
+	// requests to /primus/ paths that are NOT WebSocket upgrades. This indicates
+	// the Primus client has fallen back from WebSocket to polling, meaning the
+	// WebSocket connection to the broker server has broken down.
+	primusPollingDetected atomic.Bool
 }
 
 type RegistrationReflectorParams struct {
@@ -109,6 +115,25 @@ func (rr *RegistrationReflector) RecordTraffic() {
 // LastTrafficTime returns the time of the last recorded traffic.
 func (rr *RegistrationReflector) LastTrafficTime() time.Time {
 	return time.UnixMilli(rr.lastTrafficTime.Load())
+}
+
+// PrimusPollingDetected returns true if the reflector has observed Primus
+// falling back to HTTP polling, indicating the WebSocket connection is broken.
+func (rr *RegistrationReflector) PrimusPollingDetected() bool {
+	return rr.primusPollingDetected.Load()
+}
+
+// ResetPrimusPollingDetected clears the Primus polling detection flag,
+// typically called after a broker restart re-establishes a WebSocket connection.
+func (rr *RegistrationReflector) ResetPrimusPollingDetected() {
+	rr.primusPollingDetected.Store(false)
+}
+
+// isPrimusPollingRequest checks if the request is a Primus HTTP polling request
+// (i.e. not a WebSocket upgrade). This indicates a degraded connection.
+func (rr *RegistrationReflector) isPrimusPollingRequest(r *http.Request) bool {
+	path := strings.TrimLeft(r.URL.Path, "/")
+	return strings.HasPrefix(path, "primus/") && !rr.isWebSocketUpgrade(r)
 }
 
 func (rr *RegistrationReflector) getProxy(targetURI string, isDefault bool, headers acceptfile.ResolverMap) (*proxyEntry, error) {
@@ -254,6 +279,20 @@ func (rr *RegistrationReflector) RegisterRoutes(mux *mux.Router) error {
 func (rr *RegistrationReflector) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	rr.RecordTraffic()
+
+	// Detect Primus polling fallback: HTTP requests to /primus/ that aren't
+	// WebSocket upgrades indicate the Primus client lost its WebSocket connection
+	// and fell back to HTTP polling. This is a degraded state that won't properly
+	// maintain registration with the broker server.
+	if rr.isPrimusPollingRequest(r) {
+		if !rr.primusPollingDetected.Load() {
+			rr.logger.Warn("Detected Primus polling fallback - WebSocket connection to broker server appears broken",
+				zap.String("path", r.URL.Path),
+				zap.String("method", r.Method),
+			)
+		}
+		rr.primusPollingDetected.Store(true)
+	}
 
 	fields := []zap.Field{
 		zap.String("method", r.Method),

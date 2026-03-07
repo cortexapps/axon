@@ -377,6 +377,21 @@ func (r *relayInstanceManager) Start() error {
 							continue
 						}
 					}
+
+					// Check if the Primus WebSocket connection has degraded to polling.
+					// This happens when the broker server WebSocket drops and Primus
+					// falls back to HTTP polling, which doesn't properly maintain
+					// registration. A restart re-establishes a clean WebSocket connection.
+					if r.reflector != nil && r.reflector.PrimusPollingDetected() {
+						r.logger.Warn("Primus polling fallback detected, restarting broker to re-establish WebSocket connection")
+						r.reflector.ResetPrimusPollingDetected()
+						r.emitOperationCounter("primus_polling_restart", true)
+						err = r.Restart()
+						if err != nil {
+							r.logger.Error("Unable to restart broker after Primus polling detection", zap.Error(err))
+							continue
+						}
+					}
 				case <-done:
 					return
 				}

@@ -383,6 +383,52 @@ func TestWebSocketProxyInvalidTarget(t *testing.T) {
 	require.Equal(t, http.StatusBadGateway, resp.StatusCode)
 }
 
+func TestPrimusPollingDetection(t *testing.T) {
+	env := newTestReflectorEnv(t)
+
+	// Initially, Primus polling should not be detected
+	require.False(t, env.Reflector.PrimusPollingDetected())
+
+	// Non-primus request should NOT trigger detection
+	req1, _ := http.NewRequest("POST", "/some/other/path", nil)
+	require.False(t, env.Reflector.isPrimusPollingRequest(req1))
+
+	// Primus polling request (POST to /primus/<id>/) should trigger detection
+	req2, _ := http.NewRequest("POST", "/primus/ea4ab9b1-8e16-4cf1-ac4e-be6e4a37206c/", nil)
+	require.True(t, env.Reflector.isPrimusPollingRequest(req2))
+
+	// Primus WebSocket upgrade should NOT trigger detection
+	req3, _ := http.NewRequest("GET", "/primus/ea4ab9b1-8e16-4cf1-ac4e-be6e4a37206c/", nil)
+	req3.Header.Set("Connection", "Upgrade")
+	req3.Header.Set("Upgrade", "websocket")
+	require.False(t, env.Reflector.isPrimusPollingRequest(req3))
+}
+
+func TestPrimusPollingDetectionViaServeHTTP(t *testing.T) {
+	env := newTestReflectorEnv(t)
+
+	// Register a default target so requests don't fail with "no default proxy entry"
+	env.Router.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	env.Reflector.ProxyURI(env.Server.URL, WithDefault(true))
+
+	require.False(t, env.Reflector.PrimusPollingDetected())
+
+	// Make a Primus polling request through the reflector
+	proxyURI := fmt.Sprintf("http://localhost:%d", env.Reflector.server.Port())
+	resp, err := http.Post(proxyURI+"/primus/test-token-id/", "application/octet-stream", nil)
+	require.NoError(t, err)
+	resp.Body.Close()
+
+	// Should now detect Primus polling
+	require.True(t, env.Reflector.PrimusPollingDetected())
+
+	// Reset should clear the flag
+	env.Reflector.ResetPrimusPollingDetected()
+	require.False(t, env.Reflector.PrimusPollingDetected())
+}
+
 func TestWebSocketProxyServerRejectsUpgrade(t *testing.T) {
 	env := newTestReflectorEnv(t)
 
