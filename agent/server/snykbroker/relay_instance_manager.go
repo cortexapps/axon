@@ -384,7 +384,7 @@ func (r *relayInstanceManager) Start() error {
 		}()
 	}
 
-	if r.config.RelayIdleTimeout != 0 && r.reflector != nil {
+	if r.config.RelayIdleTimeout != 0 && r.reflector != nil && r.config.HttpRelayReflectorMode.ReflectsTraffic() {
 		go func() {
 			for {
 				if !r.running.Load() {
