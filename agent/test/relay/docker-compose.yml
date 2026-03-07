@@ -36,7 +36,7 @@ services:
       GITHUB_RAW_API: https://raw.githubusercontent.com
       PORT: 7433
       PLUGIN_DIRS: /agent/plugins
-    env_file: ${ENVFILE:-noproxy.env}        
+    env_file: ${ENVFILE:-noproxy.env}
     command: relay -f /src/accept-client.json -i github -a axon-test
     depends_on:
       mitmproxy:

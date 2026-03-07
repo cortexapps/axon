@@ -397,3 +397,28 @@ func createTestRelayInstanceManager(t *testing.T, controller *gomock.Controller,
 
 	return mgr
 }
+
+func TestIdleTimeoutDetectsIdleReflector(t *testing.T) {
+	controller := gomock.NewController(t)
+	defer controller.Finish()
+
+	mgr := createTestRelayInstanceManager(t, controller, nil, true, defaultIntegrationInfo)
+
+	// Reflector should have been initialized with a recent traffic time
+	lastTraffic := mgr.reflector.LastTrafficTime()
+	require.False(t, lastTraffic.IsZero())
+
+	// Simulate idle: no traffic recorded
+	// Check that time.Since(lastTraffic) grows
+	time.Sleep(50 * time.Millisecond)
+	idle := time.Since(mgr.reflector.LastTrafficTime())
+	require.True(t, idle >= 50*time.Millisecond, "Should detect idle duration")
+
+	// Record traffic and verify idle resets
+	mgr.reflector.RecordTraffic()
+	idle = time.Since(mgr.reflector.LastTrafficTime())
+	require.True(t, idle < 10*time.Millisecond, "Idle should reset after RecordTraffic")
+
+	err := mgr.Close()
+	require.NoError(t, err)
+}

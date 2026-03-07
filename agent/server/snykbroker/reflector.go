@@ -2,13 +2,17 @@ package snykbroker
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"hash/fnv"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/cortexapps/axon/config"
 	cortexHttp "github.com/cortexapps/axon/server/http"
@@ -20,13 +24,14 @@ import (
 )
 
 type RegistrationReflector struct {
-	logger        *zap.Logger
-	transport     *http.Transport
-	server        cortexHttp.Server
-	targets       map[string]proxyEntry
-	serverStarted atomic.Bool
-	mode          config.RelayReflectorMode
-	config        config.AgentConfig
+	logger          *zap.Logger
+	transport       *http.Transport
+	server          cortexHttp.Server
+	targets         map[string]proxyEntry
+	serverStarted   atomic.Bool
+	mode            config.RelayReflectorMode
+	config          config.AgentConfig
+	lastTrafficTime atomic.Int64
 }
 
 type RegistrationReflectorParams struct {
@@ -59,6 +64,7 @@ func NewRegistrationReflector(p RegistrationReflectorParams) *RegistrationReflec
 		mode:      p.Config.HttpRelayReflectorMode,
 		config:    p.Config,
 	}
+	rr.RecordTraffic()
 
 	server.RegisterHandler(rr)
 
@@ -93,6 +99,16 @@ func (rr *RegistrationReflector) Stop() error {
 		return rr.server.Close()
 	}
 	return nil
+}
+
+// RecordTraffic updates the last traffic timestamp to now.
+func (rr *RegistrationReflector) RecordTraffic() {
+	rr.lastTrafficTime.Store(time.Now().UnixMilli())
+}
+
+// LastTrafficTime returns the time of the last recorded traffic.
+func (rr *RegistrationReflector) LastTrafficTime() time.Time {
+	return time.UnixMilli(rr.lastTrafficTime.Load())
 }
 
 func (rr *RegistrationReflector) getProxy(targetURI string, isDefault bool, headers acceptfile.ResolverMap) (*proxyEntry, error) {
@@ -237,10 +253,17 @@ func (rr *RegistrationReflector) RegisterRoutes(mux *mux.Router) error {
 
 func (rr *RegistrationReflector) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
-	rr.logger.Debug("Received request for proxy",
+	rr.RecordTraffic()
+
+	fields := []zap.Field{
 		zap.String("method", r.Method),
-		zap.String("path", r.URL.Path),
-	)
+		zap.String("url", r.URL.String()),
+	}
+	if upgrade := r.Header.Get("Upgrade"); upgrade != "" {
+		fields = append(fields, zap.String("upgrade", upgrade))
+		fields = append(fields, zap.String("connection", r.Header.Get("Connection")))
+	}
+	rr.logger.Debug("Reflector request", fields...)
 	entry, newPath, err := rr.parseTargetUri(r.URL.Path)
 	if err != nil {
 		rr.logger.Error("Failed to find Entry for target URI", zap.Error(err))
@@ -259,7 +282,210 @@ func (rr *RegistrationReflector) ServeHTTP(w http.ResponseWriter, r *http.Reques
 		zap.String("key", entry.key()),
 		zap.String("newPath", newPath),
 	)
+
+	// Check if this is a WebSocket upgrade request
+	if rr.isWebSocketUpgrade(r) {
+		rr.logger.Debug("Detected WebSocket upgrade request, using WebSocket proxy")
+		rr.proxyWebSocket(w, r, entry)
+		return
+	}
+
 	entry.handler.ServeHTTP(w, r)
+}
+
+// isWebSocketUpgrade checks if the request is a WebSocket upgrade request
+// and if WebSocket upgrade support is enabled in config
+func (rr *RegistrationReflector) isWebSocketUpgrade(r *http.Request) bool {
+	if !rr.config.ReflectorWebSocketUpgrade {
+		return false
+	}
+	return strings.EqualFold(r.Header.Get("Upgrade"), "websocket") &&
+		strings.Contains(strings.ToLower(r.Header.Get("Connection")), "upgrade")
+}
+
+// WebSocket tunnel timeouts
+const (
+	wsDialTimeout      = 30 * time.Second
+	wsHandshakeTimeout = 30 * time.Second
+	wsIdleTimeout      = 5 * time.Minute
+)
+
+// proxyWebSocket handles WebSocket upgrade requests by establishing a tunnel
+func (rr *RegistrationReflector) proxyWebSocket(w http.ResponseWriter, r *http.Request, entry *proxyEntry) {
+	// Parse target URL and establish connection
+	targetConn, targetAddr, err := rr.dialWebSocketTarget(entry.TargetURI)
+	if err != nil {
+		rr.logger.Error("Failed to connect to WebSocket target", zap.Error(err))
+		http.Error(w, "Bad Gateway", http.StatusBadGateway)
+		return
+	}
+
+	// Build the upgrade request to send to target
+	targetURL, _ := url.Parse(entry.TargetURI) // Already validated in dialWebSocketTarget
+	r.URL.Scheme = targetURL.Scheme
+	r.URL.Host = targetURL.Host
+	r.Host = targetURL.Host
+
+	// Set write deadline for the handshake
+	if err := targetConn.SetWriteDeadline(time.Now().Add(wsHandshakeTimeout)); err != nil {
+		rr.logger.Error("Failed to set write deadline", zap.Error(err))
+		targetConn.Close()
+		http.Error(w, "Bad Gateway", http.StatusBadGateway)
+		return
+	}
+
+	// Write the upgrade request to the target
+	if err := r.Write(targetConn); err != nil {
+		rr.logger.Error("Failed to write WebSocket upgrade request to target", zap.Error(err))
+		targetConn.Close()
+		http.Error(w, "Bad Gateway", http.StatusBadGateway)
+		return
+	}
+
+	// Clear write deadline after handshake
+	if err := targetConn.SetWriteDeadline(time.Time{}); err != nil {
+		rr.logger.Error("Failed to clear write deadline", zap.Error(err))
+		targetConn.Close()
+		http.Error(w, "Bad Gateway", http.StatusBadGateway)
+		return
+	}
+
+	// Hijack the client connection
+	hijacker, ok := w.(http.Hijacker)
+	if !ok {
+		rr.logger.Error("ResponseWriter does not support hijacking")
+		targetConn.Close()
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+
+	clientConn, _, err := hijacker.Hijack()
+	if err != nil {
+		rr.logger.Error("Failed to hijack client connection", zap.Error(err))
+		targetConn.Close()
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+
+	rr.logger.Info("WebSocket tunnel established",
+		zap.String("target", targetAddr),
+		zap.String("path", r.URL.Path))
+
+	// Run the bidirectional tunnel with proper cleanup
+	rr.runWebSocketTunnel(clientConn, targetConn)
+}
+
+// dialWebSocketTarget establishes a connection to the WebSocket target server
+func (rr *RegistrationReflector) dialWebSocketTarget(targetURI string) (net.Conn, string, error) {
+	targetURL, err := url.Parse(targetURI)
+	if err != nil {
+		return nil, "", fmt.Errorf("invalid target URI: %w", err)
+	}
+
+	// Determine target host and port
+	targetHost := targetURL.Host
+	targetPort := "80"
+	if targetURL.Scheme == "https" || targetURL.Scheme == "wss" {
+		targetPort = "443"
+	}
+	if h, p, err := net.SplitHostPort(targetURL.Host); err == nil {
+		targetHost = h
+		targetPort = p
+	}
+
+	targetAddr := net.JoinHostPort(targetHost, targetPort)
+
+	// Create dialer with timeout
+	dialer := &net.Dialer{
+		Timeout: wsDialTimeout,
+	}
+
+	var conn net.Conn
+	if targetURL.Scheme == "https" || targetURL.Scheme == "wss" {
+		tlsConfig := &tls.Config{
+			ServerName: targetHost,
+		}
+		if rr.config.HttpDisableTLS {
+			tlsConfig.InsecureSkipVerify = true
+		}
+		conn, err = tls.DialWithDialer(dialer, "tcp", targetAddr, tlsConfig)
+	} else {
+		conn, err = dialer.Dial("tcp", targetAddr)
+	}
+
+	if err != nil {
+		return nil, targetAddr, fmt.Errorf("dial failed: %w", err)
+	}
+
+	return conn, targetAddr, nil
+}
+
+// runWebSocketTunnel bidirectionally copies data between client and target connections.
+// It ensures both connections are closed when either direction completes or errors,
+// preventing goroutine leaks.
+func (rr *RegistrationReflector) runWebSocketTunnel(clientConn, targetConn net.Conn) {
+	// done channel has buffer of 2: one slot per goroutine, ensuring neither blocks on send
+	done := make(chan struct{}, 2)
+
+	// Copy from target to client
+	go func() {
+		defer func() { done <- struct{}{} }()
+		rr.copyWithIdleTimeout(clientConn, targetConn, "target->client")
+	}()
+
+	// Copy from client to target
+	go func() {
+		defer func() { done <- struct{}{} }()
+		rr.copyWithIdleTimeout(targetConn, clientConn, "client->target")
+	}()
+
+	// Wait for either direction to complete
+	<-done
+
+	// Close both connections to terminate the other goroutine.
+	// This is safe to call multiple times and ensures no goroutine leak.
+	clientConn.Close()
+	targetConn.Close()
+
+	// Wait for the second goroutine to finish
+	<-done
+}
+
+// copyWithIdleTimeout copies data from src to dst with an idle timeout.
+// If no data is transferred for wsIdleTimeout, the copy stops.
+func (rr *RegistrationReflector) copyWithIdleTimeout(dst, src net.Conn, direction string) {
+	buf := make([]byte, 32*1024) // 32KB buffer
+	for {
+		// Set read deadline for idle timeout
+		if err := src.SetReadDeadline(time.Now().Add(wsIdleTimeout)); err != nil {
+			rr.logger.Debug("Failed to set read deadline", zap.String("direction", direction), zap.Error(err))
+			return
+		}
+
+		n, readErr := src.Read(buf)
+		if n > 0 {
+			// Clear write deadline and write data
+			dst.SetWriteDeadline(time.Now().Add(wsHandshakeTimeout))
+			if _, writeErr := dst.Write(buf[:n]); writeErr != nil {
+				rr.logger.Debug("Write error in tunnel", zap.String("direction", direction), zap.Error(writeErr))
+				return
+			}
+		}
+		if readErr != nil {
+			if !isTimeoutError(readErr) && readErr != io.EOF {
+				rr.logger.Debug("Read error in tunnel", zap.String("direction", direction), zap.Error(readErr))
+			}
+			return
+		}
+	}
+}
+
+// isTimeoutError checks if an error is a timeout error
+func isTimeoutError(err error) bool {
+	if netErr, ok := err.(net.Error); ok {
+		return netErr.Timeout()
+	}
+	return false
 }
 
 func hashString(s string) uint32 {

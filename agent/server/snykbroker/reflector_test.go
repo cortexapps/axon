@@ -6,9 +6,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/cortexapps/axon/config"
 	"github.com/gorilla/mux"
+	"github.com/gorilla/websocket"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap/zaptest"
@@ -21,10 +23,17 @@ type testReflectorEnv struct {
 }
 
 func newTestReflectorEnv(t *testing.T) *testReflectorEnv {
+	return newTestReflectorEnvWithConfig(t, config.AgentConfig{
+		ReflectorWebSocketUpgrade: true,
+	})
+}
+
+func newTestReflectorEnvWithConfig(t *testing.T, cfg config.AgentConfig) *testReflectorEnv {
 	logger := zaptest.NewLogger(t)
 	rr := NewRegistrationReflector(RegistrationReflectorParams{
 		Logger:   logger,
 		Registry: prometheus.NewRegistry(),
+		Config:   cfg,
 	})
 	router := mux.NewRouter()
 	server := httptest.NewServer(router)
@@ -140,13 +149,18 @@ func TestModuleStartup(t *testing.T) {
 			expected: false,
 		},
 		{
-			name:     "All",
+			name:     "AllTraffic",
 			cfg:      config.AgentConfig{HttpRelayReflectorMode: config.RelayReflectorAllTraffic},
 			expected: true,
 		},
 		{
-			name:     "All",
+			name:     "RegistrationOnly",
 			cfg:      config.AgentConfig{HttpRelayReflectorMode: config.RelayReflectorRegistrationOnly},
+			expected: true,
+		},
+		{
+			name:     "TrafficOnly",
+			cfg:      config.AgentConfig{HttpRelayReflectorMode: config.RelayReflectorTrafficOnly},
 			expected: true,
 		},
 	}
@@ -166,4 +180,225 @@ func TestModuleStartup(t *testing.T) {
 			}
 		})
 	}
+}
+
+// WebSocket upgrader for test server
+var testUpgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool { return true },
+}
+
+func TestWebSocketUpgradeDetection(t *testing.T) {
+	env := newTestReflectorEnv(t)
+
+	// Test that WebSocket upgrade is detected
+	req, _ := http.NewRequest("GET", "/test", nil)
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Upgrade", "websocket")
+	require.True(t, env.Reflector.isWebSocketUpgrade(req))
+
+	// Test that normal request is not detected as WebSocket
+	req2, _ := http.NewRequest("GET", "/test", nil)
+	require.False(t, env.Reflector.isWebSocketUpgrade(req2))
+
+	// Test case insensitivity
+	req3, _ := http.NewRequest("GET", "/test", nil)
+	req3.Header.Set("Connection", "upgrade")
+	req3.Header.Set("Upgrade", "WebSocket")
+	require.True(t, env.Reflector.isWebSocketUpgrade(req3))
+}
+
+func TestWebSocketUpgradeDisabled(t *testing.T) {
+	env := newTestReflectorEnvWithConfig(t, config.AgentConfig{
+		ReflectorWebSocketUpgrade: false,
+	})
+
+	// WebSocket upgrade headers present but feature disabled
+	req, _ := http.NewRequest("GET", "/test", nil)
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Upgrade", "websocket")
+	require.False(t, env.Reflector.isWebSocketUpgrade(req), "WebSocket upgrade should be disabled")
+}
+
+func TestWebSocketProxyFullFlow(t *testing.T) {
+	env := newTestReflectorEnv(t)
+
+	// Create a WebSocket echo server
+	env.Router.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+		conn, err := testUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Logf("WebSocket upgrade failed: %v", err)
+			return
+		}
+		defer conn.Close()
+
+		// Echo messages back
+		for {
+			messageType, message, err := conn.ReadMessage()
+			if err != nil {
+				break
+			}
+			if err := conn.WriteMessage(messageType, message); err != nil {
+				break
+			}
+		}
+	})
+
+	// Get proxy URI for the WebSocket server
+	proxyURI := env.Reflector.ProxyURI(env.Server.URL)
+
+	// Connect to WebSocket through the reflector
+	wsURL := "ws" + proxyURI[4:] + "/ws" // Convert http:// to ws://
+	dialer := websocket.Dialer{}
+	conn, resp, err := dialer.Dial(wsURL, nil)
+	require.NoError(t, err, "WebSocket dial should succeed")
+	require.Equal(t, http.StatusSwitchingProtocols, resp.StatusCode)
+	defer conn.Close()
+
+	// Send a message
+	testMessage := []byte("Hello WebSocket!")
+	err = conn.WriteMessage(websocket.TextMessage, testMessage)
+	require.NoError(t, err, "WebSocket write should succeed")
+
+	// Receive the echo
+	messageType, message, err := conn.ReadMessage()
+	require.NoError(t, err, "WebSocket read should succeed")
+	require.Equal(t, websocket.TextMessage, messageType)
+	require.Equal(t, testMessage, message, "Echo message should match")
+}
+
+func TestWebSocketProxyWithDefaultTarget(t *testing.T) {
+	env := newTestReflectorEnv(t)
+
+	// Create a WebSocket echo server
+	env.Router.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+		conn, err := testUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Logf("WebSocket upgrade failed: %v", err)
+			return
+		}
+		defer conn.Close()
+
+		// Echo with prefix
+		for {
+			messageType, message, err := conn.ReadMessage()
+			if err != nil {
+				break
+			}
+			reply := append([]byte("echo: "), message...)
+			if err := conn.WriteMessage(messageType, reply); err != nil {
+				break
+			}
+		}
+	})
+
+	// Use default proxy (no hash in path)
+	proxyURI := env.Reflector.ProxyURI(env.Server.URL, WithDefault(true))
+
+	// Connect to WebSocket through the reflector
+	wsURL := "ws" + proxyURI[4:] + "/ws"
+	dialer := websocket.Dialer{}
+	conn, resp, err := dialer.Dial(wsURL, nil)
+	require.NoError(t, err, "WebSocket dial should succeed")
+	require.Equal(t, http.StatusSwitchingProtocols, resp.StatusCode)
+	defer conn.Close()
+
+	// Send and receive
+	testMessage := []byte("test")
+	err = conn.WriteMessage(websocket.TextMessage, testMessage)
+	require.NoError(t, err)
+
+	_, message, err := conn.ReadMessage()
+	require.NoError(t, err)
+	require.Equal(t, []byte("echo: test"), message)
+}
+
+func TestWebSocketProxyConnectionRefused(t *testing.T) {
+	env := newTestReflectorEnv(t)
+
+	// Register a proxy to a non-existent server (connection refused)
+	proxyURI := env.Reflector.ProxyURI("http://127.0.0.1:59999") // Port that's not listening
+
+	// Try to connect via WebSocket
+	wsURL := "ws" + proxyURI[4:] + "/ws"
+	dialer := websocket.Dialer{}
+	_, resp, err := dialer.Dial(wsURL, nil)
+
+	// Should get an error with a 502 response
+	require.Error(t, err)
+	require.NotNil(t, resp, "Expected HTTP response with status code")
+	require.Equal(t, http.StatusBadGateway, resp.StatusCode, "Expected 502 Bad Gateway")
+}
+
+func TestRecordTrafficAndLastTrafficTime(t *testing.T) {
+	env := newTestReflectorEnv(t)
+
+	// LastTrafficTime should be initialized (set in constructor)
+	initial := env.Reflector.LastTrafficTime()
+	require.False(t, initial.IsZero(), "LastTrafficTime should be initialized")
+
+	// Wait briefly and record traffic
+	time.Sleep(10 * time.Millisecond)
+	env.Reflector.RecordTraffic()
+	updated := env.Reflector.LastTrafficTime()
+	require.True(t, updated.After(initial), "LastTrafficTime should advance after RecordTraffic")
+}
+
+func TestServeHTTPUpdatesLastTrafficTime(t *testing.T) {
+	env := newTestReflectorEnv(t)
+
+	// Set up a target server
+	env.Router.HandleFunc("/hello", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	proxyURI := env.Reflector.ProxyURI(env.Server.URL)
+
+	initial := env.Reflector.LastTrafficTime()
+	time.Sleep(10 * time.Millisecond)
+
+	// Make a request through the reflector
+	resp, err := http.Get(proxyURI + "/hello")
+	require.NoError(t, err)
+	resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	// LastTrafficTime should have been updated
+	afterRequest := env.Reflector.LastTrafficTime()
+	require.True(t, afterRequest.After(initial), "LastTrafficTime should update on ServeHTTP")
+}
+
+func TestWebSocketProxyInvalidTarget(t *testing.T) {
+	env := newTestReflectorEnv(t)
+	env.Reflector.Start()
+
+	// Make a WebSocket request to an invalid hash (no registered target)
+	req, _ := http.NewRequest("GET", fmt.Sprintf("http://localhost:%d/!invalid!/ws", env.Reflector.server.Port()), nil)
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Upgrade", "websocket")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	// Should get 502 Bad Gateway for invalid target
+	require.Equal(t, http.StatusBadGateway, resp.StatusCode)
+}
+
+func TestWebSocketProxyServerRejectsUpgrade(t *testing.T) {
+	env := newTestReflectorEnv(t)
+
+	// Create a server that rejects WebSocket upgrades
+	env.Router.HandleFunc("/reject", func(w http.ResponseWriter, r *http.Request) {
+		// Don't upgrade, just return a normal HTTP response
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte("WebSocket not supported"))
+	})
+
+	proxyURI := env.Reflector.ProxyURI(env.Server.URL)
+	wsURL := "ws" + proxyURI[4:] + "/reject"
+
+	dialer := websocket.Dialer{}
+	_, _, err := dialer.Dial(wsURL, nil)
+
+	// Should get an error because server rejected the upgrade
+	require.Error(t, err, "Expected error when server rejects WebSocket upgrade")
 }

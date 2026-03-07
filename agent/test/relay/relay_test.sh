@@ -197,16 +197,32 @@ if [ "$PROXY" == "1" ]; then
         echo "$proxy_result"
         exit 1
     else
-        echo "Success: Found expected injected header value in result"    
+        echo "Success: Found expected injected header value in result"
     fi
 
     # Make sure the plugin header is also injected
     if ! echo "$proxy_result" | grep -q "HOME=/root"; then
         echo "FAIL: Expected injected plugin header value but not found"
         echo "$proxy_result"
-        exit 1      
-    else 
+        exit 1
+    else
         echo "Success: Found expected injected plugin header value in result"
+    fi
+
+    # Verify that the reflector's raw WebSocket tunnel was established.
+    # "WebSocket tunnel established" is logged by the reflector when a real Upgrade: websocket
+    # request is received and a TCP tunnel is created (not just primus's application-layer WS).
+    echo "Checking WebSocket tunnel..."
+    axon_logs=$(docker compose logs axon-relay 2>&1)
+
+    if ! echo "$axon_logs" | grep -q "WebSocket tunnel established"; then
+        echo "FAIL: Expected 'WebSocket tunnel established' in reflector logs but not found"
+        echo "  The broker client may not be upgrading to raw WebSocket (staying on XHR polling)"
+        echo "=== Axon Relay Logs (last 50) ==="
+        echo "$axon_logs" | tail -50
+        exit 1
+    else
+        echo "Success: WebSocket tunnel established through reflector"
     fi
 else
     echo "Checking relay non proxy config..."
