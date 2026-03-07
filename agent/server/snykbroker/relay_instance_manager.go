@@ -378,18 +378,40 @@ func (r *relayInstanceManager) Start() error {
 						}
 					}
 
-					// Check if the Primus WebSocket connection has degraded to polling.
-					// This happens when the broker server WebSocket drops and Primus
-					// falls back to HTTP polling, which doesn't properly maintain
-					// registration. A restart re-establishes a clean WebSocket connection.
-					if r.reflector != nil && r.reflector.PrimusPollingDetected() {
-						r.logger.Warn("Primus polling fallback detected, restarting broker to re-establish WebSocket connection")
+				case <-done:
+					return
+				}
+			}
+		}()
+	}
+
+	// Monitor for Primus polling fallback. engine.io always starts with polling
+	// before upgrading to WebSocket, so we use a grace period to avoid restarting
+	// during normal reconnection handshakes. If polling persists beyond the grace
+	// period, the WebSocket upgrade has failed and the broker needs a full restart.
+	if r.reflector != nil && r.config.HttpRelayReflectorMode.ReflectsRegistration() {
+		const primusPollingCheckInterval = 10 * time.Second
+		const primusPollingGracePeriod = 30 * time.Second
+		go func() {
+			for {
+				if !r.running.Load() {
+					return
+				}
+				select {
+				case <-time.After(primusPollingCheckInterval):
+					if !r.running.Load() {
+						return
+					}
+					pollingDuration := r.reflector.PrimusPollingDuration()
+					if pollingDuration >= primusPollingGracePeriod {
+						r.logger.Warn("Primus polling fallback detected, restarting broker to re-establish WebSocket connection",
+							zap.Duration("pollingDuration", pollingDuration),
+						)
 						r.reflector.ResetPrimusPollingDetected()
 						r.emitOperationCounter("primus_polling_restart", true)
-						err = r.Restart()
+						err := r.Restart()
 						if err != nil {
 							r.logger.Error("Unable to restart broker after Primus polling detection", zap.Error(err))
-							continue
 						}
 					}
 				case <-done:

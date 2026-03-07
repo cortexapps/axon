@@ -33,11 +33,14 @@ type RegistrationReflector struct {
 	config          config.AgentConfig
 	lastTrafficTime atomic.Int64
 
-	// primusPollingDetected is set when the reflector observes HTTP polling
-	// requests to /primus/ paths that are NOT WebSocket upgrades. This indicates
-	// the Primus client has fallen back from WebSocket to polling, meaning the
-	// WebSocket connection to the broker server has broken down.
-	primusPollingDetected atomic.Bool
+	// primusPollingFirstSeen stores the timestamp (UnixMilli) when the reflector
+	// first observed Primus HTTP polling requests (not WebSocket upgrades). This
+	// indicates the Primus client has fallen back from WebSocket to polling.
+	// A value of 0 means no polling has been detected.
+	// We track the timestamp rather than a boolean so callers can apply a grace
+	// period — engine.io normally starts with polling before upgrading to WebSocket,
+	// so a brief polling window is expected during reconnection.
+	primusPollingFirstSeen atomic.Int64
 }
 
 type RegistrationReflectorParams struct {
@@ -120,13 +123,23 @@ func (rr *RegistrationReflector) LastTrafficTime() time.Time {
 // PrimusPollingDetected returns true if the reflector has observed Primus
 // falling back to HTTP polling, indicating the WebSocket connection is broken.
 func (rr *RegistrationReflector) PrimusPollingDetected() bool {
-	return rr.primusPollingDetected.Load()
+	return rr.primusPollingFirstSeen.Load() != 0
+}
+
+// PrimusPollingDuration returns how long Primus has been in polling mode,
+// or 0 if polling has not been detected.
+func (rr *RegistrationReflector) PrimusPollingDuration() time.Duration {
+	firstSeen := rr.primusPollingFirstSeen.Load()
+	if firstSeen == 0 {
+		return 0
+	}
+	return time.Since(time.UnixMilli(firstSeen))
 }
 
 // ResetPrimusPollingDetected clears the Primus polling detection flag,
 // typically called after a broker restart re-establishes a WebSocket connection.
 func (rr *RegistrationReflector) ResetPrimusPollingDetected() {
-	rr.primusPollingDetected.Store(false)
+	rr.primusPollingFirstSeen.Store(0)
 }
 
 // isPrimusPollingRequest checks if the request is a Primus HTTP polling request
@@ -285,13 +298,12 @@ func (rr *RegistrationReflector) ServeHTTP(w http.ResponseWriter, r *http.Reques
 	// and fell back to HTTP polling. This is a degraded state that won't properly
 	// maintain registration with the broker server.
 	if rr.isPrimusPollingRequest(r) {
-		if !rr.primusPollingDetected.Load() {
+		if rr.primusPollingFirstSeen.CompareAndSwap(0, time.Now().UnixMilli()) {
 			rr.logger.Warn("Detected Primus polling fallback - WebSocket connection to broker server appears broken",
 				zap.String("path", r.URL.Path),
 				zap.String("method", r.Method),
 			)
 		}
-		rr.primusPollingDetected.Store(true)
 	}
 
 	fields := []zap.Field{

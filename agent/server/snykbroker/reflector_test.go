@@ -424,9 +424,13 @@ func TestPrimusPollingDetectionViaServeHTTP(t *testing.T) {
 	// Should now detect Primus polling
 	require.True(t, env.Reflector.PrimusPollingDetected())
 
-	// Reset should clear the flag
+	// Duration should be non-zero since polling was detected
+	require.True(t, env.Reflector.PrimusPollingDuration() > 0)
+
+	// Reset should clear the flag and duration
 	env.Reflector.ResetPrimusPollingDetected()
 	require.False(t, env.Reflector.PrimusPollingDetected())
+	require.Equal(t, time.Duration(0), env.Reflector.PrimusPollingDuration())
 }
 
 func TestWebSocketProxyServerRejectsUpgrade(t *testing.T) {
