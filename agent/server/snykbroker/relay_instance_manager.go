@@ -40,6 +40,7 @@ type relayInstanceManager struct {
 	supervisor        *Supervisor
 	running           atomic.Bool
 	startCount        atomic.Int32
+	lastStartTime     atomic.Int64
 	tokenInfo         *tokenInfo
 	operationsCounter *prometheus.CounterVec
 	transport         *http.Transport
@@ -377,11 +378,38 @@ func (r *relayInstanceManager) Start() error {
 							continue
 						}
 					}
+
 				case <-done:
 					return
 				}
 			}
 		}()
+	}
+
+	// When the WebSocket tunnel through the reflector dies (infrastructure
+	// timeout, network error, etc), restart the broker immediately so it can
+	// re-establish a fresh connection. A cooldown prevents restart loops during
+	// startup or rapid successive failures.
+	if r.reflector != nil && r.config.HttpRelayReflectorMode.ReflectsRegistration() {
+		const tunnelDeathCooldown = 30 * time.Second
+		r.reflector.SetOnWSTunnelClose(func() {
+			if !r.running.Load() {
+				return
+			}
+			sinceLastStart := time.Since(time.UnixMilli(r.lastStartTime.Load()))
+			if sinceLastStart < tunnelDeathCooldown {
+				r.logger.Info("WebSocket tunnel closed but within cooldown, skipping restart",
+					zap.Duration("sinceLastStart", sinceLastStart),
+					zap.Duration("cooldown", tunnelDeathCooldown),
+				)
+				return
+			}
+			r.logger.Warn("WebSocket tunnel died, restarting broker")
+			r.emitOperationCounter("ws_tunnel_restart", true)
+			if err := r.Restart(); err != nil {
+				r.logger.Error("Unable to restart broker after WebSocket tunnel death", zap.Error(err))
+			}
+		})
 	}
 
 	if r.config.RelayIdleTimeout != 0 && r.reflector != nil && r.config.HttpRelayReflectorMode.ReflectsTraffic() {
@@ -507,6 +535,7 @@ func (r *relayInstanceManager) Start() error {
 			r.config.FailWaitTime,
 		)
 		r.startCount.Add(1)
+		r.lastStartTime.Store(time.Now().UnixMilli())
 		supervisor := r.supervisor
 		err = supervisor.Start(5, 10*time.Second)
 		r.emitOperationCounter("broker_start", err == nil)

@@ -383,6 +383,93 @@ func TestWebSocketProxyInvalidTarget(t *testing.T) {
 	require.Equal(t, http.StatusBadGateway, resp.StatusCode)
 }
 
+func TestWSTunnelTracking(t *testing.T) {
+	env := newTestReflectorEnv(t)
+
+	// Initially, tunnel should not be connected
+	require.False(t, env.Reflector.IsWSTunnelConnected())
+
+	// Create a WebSocket echo server
+	env.Router.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+		conn, err := testUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Logf("WebSocket upgrade failed: %v", err)
+			return
+		}
+		defer conn.Close()
+		for {
+			messageType, message, err := conn.ReadMessage()
+			if err != nil {
+				break
+			}
+			conn.WriteMessage(messageType, message)
+		}
+	})
+
+	proxyURI := env.Reflector.ProxyURI(env.Server.URL, WithDefault(true))
+
+	wsURL := "ws" + proxyURI[4:] + "/ws"
+	dialer := websocket.Dialer{}
+	conn, resp, err := dialer.Dial(wsURL, nil)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusSwitchingProtocols, resp.StatusCode)
+
+	// Tunnel should now be connected
+	time.Sleep(50 * time.Millisecond)
+	require.True(t, env.Reflector.IsWSTunnelConnected())
+
+	// Close the WebSocket connection
+	conn.Close()
+
+	// Wait for the tunnel to detect the close
+	time.Sleep(100 * time.Millisecond)
+	require.False(t, env.Reflector.IsWSTunnelConnected())
+}
+
+func TestWSTunnelCloseCallback(t *testing.T) {
+	env := newTestReflectorEnv(t)
+
+	callbackCalled := make(chan struct{}, 1)
+	env.Reflector.SetOnWSTunnelClose(func() {
+		callbackCalled <- struct{}{}
+	})
+
+	env.Router.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+		conn, err := testUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Logf("WebSocket upgrade failed: %v", err)
+			return
+		}
+		defer conn.Close()
+		for {
+			_, _, err := conn.ReadMessage()
+			if err != nil {
+				break
+			}
+		}
+	})
+
+	proxyURI := env.Reflector.ProxyURI(env.Server.URL, WithDefault(true))
+	wsURL := "ws" + proxyURI[4:] + "/ws"
+	dialer := websocket.Dialer{}
+	conn, _, err := dialer.Dial(wsURL, nil)
+	require.NoError(t, err)
+
+	time.Sleep(50 * time.Millisecond)
+	require.True(t, env.Reflector.IsWSTunnelConnected())
+
+	conn.Close()
+
+	select {
+	case <-callbackCalled:
+		// Success
+	case <-time.After(2 * time.Second):
+		t.Fatal("Expected tunnel close callback to be called")
+	}
+
+	require.False(t, env.Reflector.IsWSTunnelConnected())
+}
+
 func TestWebSocketProxyServerRejectsUpgrade(t *testing.T) {
 	env := newTestReflectorEnv(t)
 

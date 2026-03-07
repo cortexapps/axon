@@ -32,6 +32,12 @@ type RegistrationReflector struct {
 	mode            config.RelayReflectorMode
 	config          config.AgentConfig
 	lastTrafficTime atomic.Int64
+
+	// wsTunnelConnected tracks whether a WebSocket tunnel is currently active.
+	wsTunnelConnected atomic.Bool
+
+	// onWSTunnelClose is called when a WebSocket tunnel closes.
+	onWSTunnelClose func()
 }
 
 type RegistrationReflectorParams struct {
@@ -109,6 +115,17 @@ func (rr *RegistrationReflector) RecordTraffic() {
 // LastTrafficTime returns the time of the last recorded traffic.
 func (rr *RegistrationReflector) LastTrafficTime() time.Time {
 	return time.UnixMilli(rr.lastTrafficTime.Load())
+}
+
+// SetOnWSTunnelClose sets a callback invoked when a WebSocket tunnel closes.
+// Used by the relay instance manager to trigger a broker restart.
+func (rr *RegistrationReflector) SetOnWSTunnelClose(fn func()) {
+	rr.onWSTunnelClose = fn
+}
+
+// IsWSTunnelConnected returns true if a WebSocket tunnel is currently active.
+func (rr *RegistrationReflector) IsWSTunnelConnected() bool {
+	return rr.wsTunnelConnected.Load()
 }
 
 func (rr *RegistrationReflector) getProxy(targetURI string, isDefault bool, headers acceptfile.ResolverMap) (*proxyEntry, error) {
@@ -253,8 +270,6 @@ func (rr *RegistrationReflector) RegisterRoutes(mux *mux.Router) error {
 
 func (rr *RegistrationReflector) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
-	rr.RecordTraffic()
-
 	fields := []zap.Field{
 		zap.String("method", r.Method),
 		zap.String("url", r.URL.String()),
@@ -289,6 +304,11 @@ func (rr *RegistrationReflector) ServeHTTP(w http.ResponseWriter, r *http.Reques
 		rr.proxyWebSocket(w, r, entry)
 		return
 	}
+
+	// Only record traffic for forwarded requests, not WebSocket tunnel
+	// infrastructure (primus). The traffic watermark is used to detect idle
+	// brokers, so it should only reflect real caller traffic.
+	rr.RecordTraffic()
 
 	entry.handler.ServeHTTP(w, r)
 }
@@ -367,9 +387,22 @@ func (rr *RegistrationReflector) proxyWebSocket(w http.ResponseWriter, r *http.R
 		return
 	}
 
+	tunnelStart := time.Now()
+	rr.wsTunnelConnected.Store(true)
 	rr.logger.Info("WebSocket tunnel established",
 		zap.String("target", targetAddr),
 		zap.String("path", r.URL.Path))
+
+	defer func() {
+		rr.wsTunnelConnected.Store(false)
+		rr.logger.Warn("WebSocket tunnel closed",
+			zap.String("target", targetAddr),
+			zap.String("path", r.URL.Path),
+			zap.Duration("duration", time.Since(tunnelStart)))
+		if rr.onWSTunnelClose != nil {
+			rr.onWSTunnelClose()
+		}
+	}()
 
 	// Run the bidirectional tunnel with proper cleanup
 	rr.runWebSocketTunnel(clientConn, targetConn)
