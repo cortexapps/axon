@@ -36,9 +36,13 @@ type RegistrationReflector struct {
 	// wsTunnelConnected tracks whether a WebSocket tunnel is currently active.
 	wsTunnelConnected atomic.Bool
 
-	// onWSTunnelClose is called when a WebSocket tunnel closes.
-	// The relay instance manager sets this to trigger a broker restart.
+	// onWSTunnelClose is called when a WebSocket tunnel closes, provided
+	// the tunnel was open for at least wsTunnelMinDuration.
 	onWSTunnelClose func()
+
+	// wsTunnelMinDurationOverride overrides wsTunnelMinDuration for testing.
+	// Zero means use the default constant.
+	wsTunnelMinDurationOverride time.Duration
 }
 
 type RegistrationReflectorParams struct {
@@ -326,6 +330,11 @@ const (
 	wsDialTimeout      = 30 * time.Second
 	wsHandshakeTimeout = 30 * time.Second
 	wsIdleTimeout      = 5 * time.Minute
+	// wsTunnelMinDuration is the minimum time a tunnel must be open before its
+	// closure triggers the onWSTunnelClose callback. A tunnel that dies within
+	// this window likely indicates a fundamental issue (auth failure, server down)
+	// where restarting won't help.
+	wsTunnelMinDuration = 30 * time.Second
 )
 
 // proxyWebSocket handles WebSocket upgrade requests by establishing a tunnel
@@ -385,23 +394,30 @@ func (rr *RegistrationReflector) proxyWebSocket(w http.ResponseWriter, r *http.R
 		return
 	}
 
+	tunnelStart := time.Now()
+	rr.wsTunnelConnected.Store(true)
 	rr.logger.Info("WebSocket tunnel established",
 		zap.String("target", targetAddr),
 		zap.String("path", r.URL.Path))
 
-	rr.wsTunnelConnected.Store(true)
+	defer func() {
+		rr.wsTunnelConnected.Store(false)
+		tunnelDuration := time.Since(tunnelStart)
+		rr.logger.Warn("WebSocket tunnel closed",
+			zap.String("target", targetAddr),
+			zap.String("path", r.URL.Path),
+			zap.Duration("duration", tunnelDuration))
+		minDuration := wsTunnelMinDuration
+		if rr.wsTunnelMinDurationOverride > 0 {
+			minDuration = rr.wsTunnelMinDurationOverride
+		}
+		if rr.onWSTunnelClose != nil && tunnelDuration >= minDuration {
+			rr.onWSTunnelClose()
+		}
+	}()
 
 	// Run the bidirectional tunnel with proper cleanup
 	rr.runWebSocketTunnel(clientConn, targetConn)
-
-	// Tunnel has closed
-	rr.wsTunnelConnected.Store(false)
-	rr.logger.Warn("WebSocket tunnel closed",
-		zap.String("target", targetAddr),
-		zap.String("path", r.URL.Path))
-	if rr.onWSTunnelClose != nil {
-		rr.onWSTunnelClose()
-	}
 }
 
 // dialWebSocketTarget establishes a connection to the WebSocket target server

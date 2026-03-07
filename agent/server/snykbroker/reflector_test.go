@@ -428,6 +428,56 @@ func TestWSTunnelTracking(t *testing.T) {
 
 func TestWSTunnelCloseCallback(t *testing.T) {
 	env := newTestReflectorEnv(t)
+	// Use a short min duration so the test doesn't need to wait 30s
+	env.Reflector.wsTunnelMinDurationOverride = 50 * time.Millisecond
+
+	callbackCalled := make(chan struct{}, 1)
+	env.Reflector.SetOnWSTunnelClose(func() {
+		callbackCalled <- struct{}{}
+	})
+
+	env.Router.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+		conn, err := testUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Logf("WebSocket upgrade failed: %v", err)
+			return
+		}
+		defer conn.Close()
+		for {
+			_, _, err := conn.ReadMessage()
+			if err != nil {
+				break
+			}
+		}
+	})
+
+	proxyURI := env.Reflector.ProxyURI(env.Server.URL, WithDefault(true))
+	wsURL := "ws" + proxyURI[4:] + "/ws"
+	dialer := websocket.Dialer{}
+	conn, _, err := dialer.Dial(wsURL, nil)
+	require.NoError(t, err)
+
+	// Keep tunnel open past the min duration override
+	time.Sleep(100 * time.Millisecond)
+	require.True(t, env.Reflector.IsWSTunnelConnected())
+
+	// Close the connection — should trigger callback
+	conn.Close()
+
+	select {
+	case <-callbackCalled:
+		// Success
+	case <-time.After(2 * time.Second):
+		t.Fatal("Expected tunnel close callback to be called")
+	}
+
+	require.False(t, env.Reflector.IsWSTunnelConnected())
+}
+
+func TestWSTunnelCloseCallbackSkippedForShortLivedTunnel(t *testing.T) {
+	env := newTestReflectorEnv(t)
+	// Set a long min duration so the tunnel is considered short-lived
+	env.Reflector.wsTunnelMinDurationOverride = 10 * time.Second
 
 	callbackCalled := make(chan struct{}, 1)
 	env.Reflector.SetOnWSTunnelClose(func() {
@@ -458,14 +508,14 @@ func TestWSTunnelCloseCallback(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	require.True(t, env.Reflector.IsWSTunnelConnected())
 
-	// Close the connection — should trigger callback
+	// Close immediately — should NOT trigger callback (tunnel too short-lived)
 	conn.Close()
 
 	select {
 	case <-callbackCalled:
-		// Success
-	case <-time.After(2 * time.Second):
-		t.Fatal("Expected tunnel close callback to be called")
+		t.Fatal("Callback should not be called for short-lived tunnel")
+	case <-time.After(500 * time.Millisecond):
+		// Expected: callback was not called
 	}
 
 	require.False(t, env.Reflector.IsWSTunnelConnected())
