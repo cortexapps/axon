@@ -40,6 +40,7 @@ type relayInstanceManager struct {
 	supervisor        *Supervisor
 	running           atomic.Bool
 	startCount        atomic.Int32
+	lastStartTime     atomic.Int64
 	tokenInfo         *tokenInfo
 	operationsCounter *prometheus.CounterVec
 	transport         *http.Transport
@@ -385,66 +386,30 @@ func (r *relayInstanceManager) Start() error {
 		}()
 	}
 
-	// Monitor the Primus WebSocket tunnel and polling fallback.
-	//
-	// Two-phase detection:
-	// 1. Tunnel death: When the Primus WebSocket tunnel through the reflector closes
-	//    (infrastructure timeout, network error, etc), the reflector sets
-	//    primusTunnelConnected=false. We detect this and wait briefly for engine.io
-	//    to re-establish the WebSocket via its normal polling→upgrade handshake.
-	// 2. Polling fallback: If engine.io fails to upgrade back to WebSocket and stays
-	//    on HTTP polling beyond a grace period, we force a full broker restart.
-	//
-	// The grace period is necessary because engine.io always starts with polling
-	// before upgrading to WebSocket — brief polling during reconnection is normal.
+	// When the Primus WebSocket tunnel through the reflector dies (infrastructure
+	// timeout, network error, etc), restart the broker immediately so it can
+	// re-establish a fresh connection. A cooldown prevents restart loops during
+	// startup or rapid successive failures.
 	if r.reflector != nil && r.config.HttpRelayReflectorMode.ReflectsRegistration() {
-		const primusCheckInterval = 10 * time.Second
-		const primusPollingGracePeriod = 30 * time.Second
-		tunnelWasConnected := false
-		go func() {
-			for {
-				if !r.running.Load() {
-					return
-				}
-				select {
-				case <-time.After(primusCheckInterval):
-					if !r.running.Load() {
-						return
-					}
-
-					tunnelConnected := r.reflector.IsPrimusTunnelConnected()
-
-					// Detect tunnel death: was connected, now isn't
-					if tunnelWasConnected && !tunnelConnected {
-						r.logger.Warn("Primus WebSocket tunnel lost, waiting for reconnection before restarting")
-					}
-					tunnelWasConnected = tunnelConnected
-
-					// If tunnel is healthy, clear any polling detection and move on
-					if tunnelConnected {
-						r.reflector.ResetPrimusPollingDetected()
-						continue
-					}
-
-					// Tunnel is down — check if polling fallback has persisted
-					// beyond the grace period
-					pollingDuration := r.reflector.PrimusPollingDuration()
-					if pollingDuration >= primusPollingGracePeriod {
-						r.logger.Warn("Primus polling fallback persisted beyond grace period, restarting broker",
-							zap.Duration("pollingDuration", pollingDuration),
-						)
-						r.reflector.ResetPrimusPollingDetected()
-						r.emitOperationCounter("primus_polling_restart", true)
-						err := r.Restart()
-						if err != nil {
-							r.logger.Error("Unable to restart broker after Primus polling detection", zap.Error(err))
-						}
-					}
-				case <-done:
-					return
-				}
+		const tunnelDeathCooldown = 30 * time.Second
+		r.reflector.SetOnPrimusTunnelClose(func() {
+			if !r.running.Load() {
+				return
 			}
-		}()
+			sinceLastStart := time.Since(time.UnixMilli(r.lastStartTime.Load()))
+			if sinceLastStart < tunnelDeathCooldown {
+				r.logger.Info("Primus tunnel closed but within cooldown, skipping restart",
+					zap.Duration("sinceLastStart", sinceLastStart),
+					zap.Duration("cooldown", tunnelDeathCooldown),
+				)
+				return
+			}
+			r.logger.Warn("Primus WebSocket tunnel died, restarting broker")
+			r.emitOperationCounter("primus_tunnel_restart", true)
+			if err := r.Restart(); err != nil {
+				r.logger.Error("Unable to restart broker after Primus tunnel death", zap.Error(err))
+			}
+		})
 	}
 
 	if r.config.RelayIdleTimeout != 0 && r.reflector != nil && r.config.HttpRelayReflectorMode.ReflectsTraffic() {
@@ -570,6 +535,7 @@ func (r *relayInstanceManager) Start() error {
 			r.config.FailWaitTime,
 		)
 		r.startCount.Add(1)
+		r.lastStartTime.Store(time.Now().UnixMilli())
 		supervisor := r.supervisor
 		err = supervisor.Start(5, 10*time.Second)
 		r.emitOperationCounter("broker_start", err == nil)

@@ -33,19 +33,14 @@ type RegistrationReflector struct {
 	config          config.AgentConfig
 	lastTrafficTime atomic.Int64
 
-	// primusPollingFirstSeen stores the timestamp (UnixMilli) when the reflector
-	// first observed Primus HTTP polling requests (not WebSocket upgrades). This
-	// indicates the Primus client has fallen back from WebSocket to polling.
-	// A value of 0 means no polling has been detected.
-	// We track the timestamp rather than a boolean so callers can apply a grace
-	// period — engine.io normally starts with polling before upgrading to WebSocket,
-	// so a brief polling window is expected during reconnection.
-	primusPollingFirstSeen atomic.Int64
-
 	// primusTunnelConnected tracks whether a Primus WebSocket tunnel is currently
 	// active. When a tunnel for a /primus/ path is established it is set to true;
 	// when the tunnel closes (for any reason) it is set to false.
 	primusTunnelConnected atomic.Bool
+
+	// onPrimusTunnelClose is called when a Primus WebSocket tunnel closes.
+	// The relay instance manager sets this to trigger a broker restart.
+	onPrimusTunnelClose func()
 }
 
 type RegistrationReflectorParams struct {
@@ -125,33 +120,10 @@ func (rr *RegistrationReflector) LastTrafficTime() time.Time {
 	return time.UnixMilli(rr.lastTrafficTime.Load())
 }
 
-// PrimusPollingDetected returns true if the reflector has observed Primus
-// falling back to HTTP polling, indicating the WebSocket connection is broken.
-func (rr *RegistrationReflector) PrimusPollingDetected() bool {
-	return rr.primusPollingFirstSeen.Load() != 0
-}
-
-// PrimusPollingDuration returns how long Primus has been in polling mode,
-// or 0 if polling has not been detected.
-func (rr *RegistrationReflector) PrimusPollingDuration() time.Duration {
-	firstSeen := rr.primusPollingFirstSeen.Load()
-	if firstSeen == 0 {
-		return 0
-	}
-	return time.Since(time.UnixMilli(firstSeen))
-}
-
-// ResetPrimusPollingDetected clears the Primus polling detection flag,
-// typically called after a broker restart re-establishes a WebSocket connection.
-func (rr *RegistrationReflector) ResetPrimusPollingDetected() {
-	rr.primusPollingFirstSeen.Store(0)
-}
-
-// isPrimusPollingRequest checks if the request is a Primus HTTP polling request
-// (i.e. not a WebSocket upgrade). This indicates a degraded connection.
-func (rr *RegistrationReflector) isPrimusPollingRequest(r *http.Request) bool {
-	path := strings.TrimLeft(r.URL.Path, "/")
-	return strings.HasPrefix(path, "primus/") && !rr.isWebSocketUpgrade(r)
+// SetOnPrimusTunnelClose sets a callback invoked when the Primus WebSocket
+// tunnel closes. Used by the relay instance manager to trigger a broker restart.
+func (rr *RegistrationReflector) SetOnPrimusTunnelClose(fn func()) {
+	rr.onPrimusTunnelClose = fn
 }
 
 // isPrimusPath checks if the request path is a Primus path (/primus/...).
@@ -309,19 +281,6 @@ func (rr *RegistrationReflector) ServeHTTP(w http.ResponseWriter, r *http.Reques
 
 	rr.RecordTraffic()
 
-	// Detect Primus polling fallback: HTTP requests to /primus/ that aren't
-	// WebSocket upgrades indicate the Primus client lost its WebSocket connection
-	// and fell back to HTTP polling. This is a degraded state that won't properly
-	// maintain registration with the broker server.
-	if rr.isPrimusPollingRequest(r) {
-		if rr.primusPollingFirstSeen.CompareAndSwap(0, time.Now().UnixMilli()) {
-			rr.logger.Warn("Detected Primus polling fallback - WebSocket connection to broker server appears broken",
-				zap.String("path", r.URL.Path),
-				zap.String("method", r.Method),
-			)
-		}
-	}
-
 	fields := []zap.Field{
 		zap.String("method", r.Method),
 		zap.String("url", r.URL.String()),
@@ -443,8 +402,6 @@ func (rr *RegistrationReflector) proxyWebSocket(w http.ResponseWriter, r *http.R
 
 	if isPrimus {
 		rr.primusTunnelConnected.Store(true)
-		// Clear any polling detection — we have a fresh WebSocket now
-		rr.ResetPrimusPollingDetected()
 	}
 
 	// Run the bidirectional tunnel with proper cleanup
@@ -456,6 +413,9 @@ func (rr *RegistrationReflector) proxyWebSocket(w http.ResponseWriter, r *http.R
 		rr.logger.Warn("Primus WebSocket tunnel closed",
 			zap.String("target", targetAddr),
 			zap.String("path", r.URL.Path))
+		if rr.onPrimusTunnelClose != nil {
+			rr.onPrimusTunnelClose()
+		}
 	}
 }
 

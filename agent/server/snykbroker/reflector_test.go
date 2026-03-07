@@ -383,56 +383,6 @@ func TestWebSocketProxyInvalidTarget(t *testing.T) {
 	require.Equal(t, http.StatusBadGateway, resp.StatusCode)
 }
 
-func TestPrimusPollingDetection(t *testing.T) {
-	env := newTestReflectorEnv(t)
-
-	// Initially, Primus polling should not be detected
-	require.False(t, env.Reflector.PrimusPollingDetected())
-
-	// Non-primus request should NOT trigger detection
-	req1, _ := http.NewRequest("POST", "/some/other/path", nil)
-	require.False(t, env.Reflector.isPrimusPollingRequest(req1))
-
-	// Primus polling request (POST to /primus/<id>/) should trigger detection
-	req2, _ := http.NewRequest("POST", "/primus/ea4ab9b1-8e16-4cf1-ac4e-be6e4a37206c/", nil)
-	require.True(t, env.Reflector.isPrimusPollingRequest(req2))
-
-	// Primus WebSocket upgrade should NOT trigger detection
-	req3, _ := http.NewRequest("GET", "/primus/ea4ab9b1-8e16-4cf1-ac4e-be6e4a37206c/", nil)
-	req3.Header.Set("Connection", "Upgrade")
-	req3.Header.Set("Upgrade", "websocket")
-	require.False(t, env.Reflector.isPrimusPollingRequest(req3))
-}
-
-func TestPrimusPollingDetectionViaServeHTTP(t *testing.T) {
-	env := newTestReflectorEnv(t)
-
-	// Register a default target so requests don't fail with "no default proxy entry"
-	env.Router.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
-	env.Reflector.ProxyURI(env.Server.URL, WithDefault(true))
-
-	require.False(t, env.Reflector.PrimusPollingDetected())
-
-	// Make a Primus polling request through the reflector
-	proxyURI := fmt.Sprintf("http://localhost:%d", env.Reflector.server.Port())
-	resp, err := http.Post(proxyURI+"/primus/test-token-id/", "application/octet-stream", nil)
-	require.NoError(t, err)
-	resp.Body.Close()
-
-	// Should now detect Primus polling
-	require.True(t, env.Reflector.PrimusPollingDetected())
-
-	// Duration should be non-zero since polling was detected
-	require.True(t, env.Reflector.PrimusPollingDuration() > 0)
-
-	// Reset should clear the flag and duration
-	env.Reflector.ResetPrimusPollingDetected()
-	require.False(t, env.Reflector.PrimusPollingDetected())
-	require.Equal(t, time.Duration(0), env.Reflector.PrimusPollingDuration())
-}
-
 func TestPrimusTunnelTracking(t *testing.T) {
 	env := newTestReflectorEnv(t)
 
@@ -471,9 +421,6 @@ func TestPrimusTunnelTracking(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	require.True(t, env.Reflector.IsPrimusTunnelConnected())
 
-	// Any prior polling detection should have been cleared
-	require.False(t, env.Reflector.PrimusPollingDetected())
-
 	// Close the WebSocket connection
 	conn.Close()
 
@@ -487,6 +434,52 @@ func TestIsPrimusPath(t *testing.T) {
 	require.True(t, isPrimusPath("primus/some-token/"))
 	require.False(t, isPrimusPath("/other/path"))
 	require.False(t, isPrimusPath("/primuslike/path"))
+}
+
+func TestPrimusTunnelCloseCallback(t *testing.T) {
+	env := newTestReflectorEnv(t)
+
+	callbackCalled := make(chan struct{}, 1)
+	env.Reflector.SetOnPrimusTunnelClose(func() {
+		callbackCalled <- struct{}{}
+	})
+
+	// Create a WebSocket echo server at /primus/test-token/ path
+	env.Router.HandleFunc("/primus/test-token/", func(w http.ResponseWriter, r *http.Request) {
+		conn, err := testUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Logf("WebSocket upgrade failed: %v", err)
+			return
+		}
+		defer conn.Close()
+		for {
+			_, _, err := conn.ReadMessage()
+			if err != nil {
+				break
+			}
+		}
+	})
+
+	proxyURI := env.Reflector.ProxyURI(env.Server.URL, WithDefault(true))
+	wsURL := "ws" + proxyURI[4:] + "/primus/test-token/"
+	dialer := websocket.Dialer{}
+	conn, _, err := dialer.Dial(wsURL, nil)
+	require.NoError(t, err)
+
+	time.Sleep(50 * time.Millisecond)
+	require.True(t, env.Reflector.IsPrimusTunnelConnected())
+
+	// Close the connection — should trigger callback
+	conn.Close()
+
+	select {
+	case <-callbackCalled:
+		// Success
+	case <-time.After(2 * time.Second):
+		t.Fatal("Expected tunnel close callback to be called")
+	}
+
+	require.False(t, env.Reflector.IsPrimusTunnelConnected())
 }
 
 func TestWebSocketProxyServerRejectsUpgrade(t *testing.T) {
