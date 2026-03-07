@@ -270,8 +270,6 @@ func (rr *RegistrationReflector) RegisterRoutes(mux *mux.Router) error {
 
 func (rr *RegistrationReflector) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
-	rr.RecordTraffic()
-
 	fields := []zap.Field{
 		zap.String("method", r.Method),
 		zap.String("url", r.URL.String()),
@@ -306,6 +304,11 @@ func (rr *RegistrationReflector) ServeHTTP(w http.ResponseWriter, r *http.Reques
 		rr.proxyWebSocket(w, r, entry)
 		return
 	}
+
+	// Only record traffic for forwarded requests, not WebSocket tunnel
+	// infrastructure (primus). The traffic watermark is used to detect idle
+	// brokers, so it should only reflect real caller traffic.
+	rr.RecordTraffic()
 
 	entry.handler.ServeHTTP(w, r)
 }
