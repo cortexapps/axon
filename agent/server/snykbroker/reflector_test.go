@@ -383,14 +383,14 @@ func TestWebSocketProxyInvalidTarget(t *testing.T) {
 	require.Equal(t, http.StatusBadGateway, resp.StatusCode)
 }
 
-func TestPrimusTunnelTracking(t *testing.T) {
+func TestWSTunnelTracking(t *testing.T) {
 	env := newTestReflectorEnv(t)
 
 	// Initially, tunnel should not be connected
-	require.False(t, env.Reflector.IsPrimusTunnelConnected())
+	require.False(t, env.Reflector.IsWSTunnelConnected())
 
-	// Create a WebSocket echo server at /primus/test-token/ path
-	env.Router.HandleFunc("/primus/test-token/", func(w http.ResponseWriter, r *http.Request) {
+	// Create a WebSocket echo server
+	env.Router.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		conn, err := testUpgrader.Upgrade(w, r, nil)
 		if err != nil {
 			t.Logf("WebSocket upgrade failed: %v", err)
@@ -406,46 +406,35 @@ func TestPrimusTunnelTracking(t *testing.T) {
 		}
 	})
 
-	// Set up default proxy pointing to the test server
 	proxyURI := env.Reflector.ProxyURI(env.Server.URL, WithDefault(true))
 
-	// Connect via WebSocket through the reflector to a /primus/ path
-	wsURL := "ws" + proxyURI[4:] + "/primus/test-token/"
+	wsURL := "ws" + proxyURI[4:] + "/ws"
 	dialer := websocket.Dialer{}
 	conn, resp, err := dialer.Dial(wsURL, nil)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusSwitchingProtocols, resp.StatusCode)
 
 	// Tunnel should now be connected
-	// Give a moment for the goroutine to set the flag
 	time.Sleep(50 * time.Millisecond)
-	require.True(t, env.Reflector.IsPrimusTunnelConnected())
+	require.True(t, env.Reflector.IsWSTunnelConnected())
 
 	// Close the WebSocket connection
 	conn.Close()
 
 	// Wait for the tunnel to detect the close
 	time.Sleep(100 * time.Millisecond)
-	require.False(t, env.Reflector.IsPrimusTunnelConnected())
+	require.False(t, env.Reflector.IsWSTunnelConnected())
 }
 
-func TestIsPrimusPath(t *testing.T) {
-	require.True(t, isPrimusPath("/primus/some-token/"))
-	require.True(t, isPrimusPath("primus/some-token/"))
-	require.False(t, isPrimusPath("/other/path"))
-	require.False(t, isPrimusPath("/primuslike/path"))
-}
-
-func TestPrimusTunnelCloseCallback(t *testing.T) {
+func TestWSTunnelCloseCallback(t *testing.T) {
 	env := newTestReflectorEnv(t)
 
 	callbackCalled := make(chan struct{}, 1)
-	env.Reflector.SetOnPrimusTunnelClose(func() {
+	env.Reflector.SetOnWSTunnelClose(func() {
 		callbackCalled <- struct{}{}
 	})
 
-	// Create a WebSocket echo server at /primus/test-token/ path
-	env.Router.HandleFunc("/primus/test-token/", func(w http.ResponseWriter, r *http.Request) {
+	env.Router.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		conn, err := testUpgrader.Upgrade(w, r, nil)
 		if err != nil {
 			t.Logf("WebSocket upgrade failed: %v", err)
@@ -461,13 +450,13 @@ func TestPrimusTunnelCloseCallback(t *testing.T) {
 	})
 
 	proxyURI := env.Reflector.ProxyURI(env.Server.URL, WithDefault(true))
-	wsURL := "ws" + proxyURI[4:] + "/primus/test-token/"
+	wsURL := "ws" + proxyURI[4:] + "/ws"
 	dialer := websocket.Dialer{}
 	conn, _, err := dialer.Dial(wsURL, nil)
 	require.NoError(t, err)
 
 	time.Sleep(50 * time.Millisecond)
-	require.True(t, env.Reflector.IsPrimusTunnelConnected())
+	require.True(t, env.Reflector.IsWSTunnelConnected())
 
 	// Close the connection — should trigger callback
 	conn.Close()
@@ -479,7 +468,7 @@ func TestPrimusTunnelCloseCallback(t *testing.T) {
 		t.Fatal("Expected tunnel close callback to be called")
 	}
 
-	require.False(t, env.Reflector.IsPrimusTunnelConnected())
+	require.False(t, env.Reflector.IsWSTunnelConnected())
 }
 
 func TestWebSocketProxyServerRejectsUpgrade(t *testing.T) {

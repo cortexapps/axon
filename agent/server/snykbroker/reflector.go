@@ -33,14 +33,12 @@ type RegistrationReflector struct {
 	config          config.AgentConfig
 	lastTrafficTime atomic.Int64
 
-	// primusTunnelConnected tracks whether a Primus WebSocket tunnel is currently
-	// active. When a tunnel for a /primus/ path is established it is set to true;
-	// when the tunnel closes (for any reason) it is set to false.
-	primusTunnelConnected atomic.Bool
+	// wsTunnelConnected tracks whether a WebSocket tunnel is currently active.
+	wsTunnelConnected atomic.Bool
 
-	// onPrimusTunnelClose is called when a Primus WebSocket tunnel closes.
+	// onWSTunnelClose is called when a WebSocket tunnel closes.
 	// The relay instance manager sets this to trigger a broker restart.
-	onPrimusTunnelClose func()
+	onWSTunnelClose func()
 }
 
 type RegistrationReflectorParams struct {
@@ -120,21 +118,15 @@ func (rr *RegistrationReflector) LastTrafficTime() time.Time {
 	return time.UnixMilli(rr.lastTrafficTime.Load())
 }
 
-// SetOnPrimusTunnelClose sets a callback invoked when the Primus WebSocket
-// tunnel closes. Used by the relay instance manager to trigger a broker restart.
-func (rr *RegistrationReflector) SetOnPrimusTunnelClose(fn func()) {
-	rr.onPrimusTunnelClose = fn
+// SetOnWSTunnelClose sets a callback invoked when a WebSocket tunnel closes.
+// Used by the relay instance manager to trigger a broker restart.
+func (rr *RegistrationReflector) SetOnWSTunnelClose(fn func()) {
+	rr.onWSTunnelClose = fn
 }
 
-// isPrimusPath checks if the request path is a Primus path (/primus/...).
-func isPrimusPath(urlPath string) bool {
-	path := strings.TrimLeft(urlPath, "/")
-	return strings.HasPrefix(path, "primus/")
-}
-
-// IsPrimusTunnelConnected returns true if a Primus WebSocket tunnel is currently active.
-func (rr *RegistrationReflector) IsPrimusTunnelConnected() bool {
-	return rr.primusTunnelConnected.Load()
+// IsWSTunnelConnected returns true if a WebSocket tunnel is currently active.
+func (rr *RegistrationReflector) IsWSTunnelConnected() bool {
+	return rr.wsTunnelConnected.Load()
 }
 
 func (rr *RegistrationReflector) getProxy(targetURI string, isDefault bool, headers acceptfile.ResolverMap) (*proxyEntry, error) {
@@ -393,29 +385,22 @@ func (rr *RegistrationReflector) proxyWebSocket(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	isPrimus := isPrimusPath(r.URL.Path)
-
 	rr.logger.Info("WebSocket tunnel established",
 		zap.String("target", targetAddr),
-		zap.String("path", r.URL.Path),
-		zap.Bool("primus", isPrimus))
+		zap.String("path", r.URL.Path))
 
-	if isPrimus {
-		rr.primusTunnelConnected.Store(true)
-	}
+	rr.wsTunnelConnected.Store(true)
 
 	// Run the bidirectional tunnel with proper cleanup
 	rr.runWebSocketTunnel(clientConn, targetConn)
 
 	// Tunnel has closed
-	if isPrimus {
-		rr.primusTunnelConnected.Store(false)
-		rr.logger.Warn("Primus WebSocket tunnel closed",
-			zap.String("target", targetAddr),
-			zap.String("path", r.URL.Path))
-		if rr.onPrimusTunnelClose != nil {
-			rr.onPrimusTunnelClose()
-		}
+	rr.wsTunnelConnected.Store(false)
+	rr.logger.Warn("WebSocket tunnel closed",
+		zap.String("target", targetAddr),
+		zap.String("path", r.URL.Path))
+	if rr.onWSTunnelClose != nil {
+		rr.onWSTunnelClose()
 	}
 }
 

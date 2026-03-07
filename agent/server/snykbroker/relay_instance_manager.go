@@ -386,28 +386,28 @@ func (r *relayInstanceManager) Start() error {
 		}()
 	}
 
-	// When the Primus WebSocket tunnel through the reflector dies (infrastructure
+	// When the WebSocket tunnel through the reflector dies (infrastructure
 	// timeout, network error, etc), restart the broker immediately so it can
 	// re-establish a fresh connection. A cooldown prevents restart loops during
 	// startup or rapid successive failures.
 	if r.reflector != nil && r.config.HttpRelayReflectorMode.ReflectsRegistration() {
 		const tunnelDeathCooldown = 30 * time.Second
-		r.reflector.SetOnPrimusTunnelClose(func() {
+		r.reflector.SetOnWSTunnelClose(func() {
 			if !r.running.Load() {
 				return
 			}
 			sinceLastStart := time.Since(time.UnixMilli(r.lastStartTime.Load()))
 			if sinceLastStart < tunnelDeathCooldown {
-				r.logger.Info("Primus tunnel closed but within cooldown, skipping restart",
+				r.logger.Info("WebSocket tunnel closed but within cooldown, skipping restart",
 					zap.Duration("sinceLastStart", sinceLastStart),
 					zap.Duration("cooldown", tunnelDeathCooldown),
 				)
 				return
 			}
-			r.logger.Warn("Primus WebSocket tunnel died, restarting broker")
-			r.emitOperationCounter("primus_tunnel_restart", true)
+			r.logger.Warn("WebSocket tunnel died, restarting broker")
+			r.emitOperationCounter("ws_tunnel_restart", true)
 			if err := r.Restart(); err != nil {
-				r.logger.Error("Unable to restart broker after Primus tunnel death", zap.Error(err))
+				r.logger.Error("Unable to restart broker after WebSocket tunnel death", zap.Error(err))
 			}
 		})
 	}
