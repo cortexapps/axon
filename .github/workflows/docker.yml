@@ -69,11 +69,40 @@ jobs:
         id: local-tag
         run: echo "tag=$(echo '${{ steps.meta.outputs.tags }}' | head -n1)" >> "$GITHUB_OUTPUT"
 
-      - name: Run Trivy vulnerability scanner (SARIF)
+      - name: Save Docker image for scanning
         if: env.IS_PUBLISH != 'true'
+        run: docker save '${{ steps.local-tag.outputs.tag }}' -o /tmp/docker-image.tar
+
+      - name: Upload Docker image artifact
+        if: env.IS_PUBLISH != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-image
+          path: /tmp/docker-image.tar
+          retention-days: 1
+
+    outputs:
+      image-tag: ${{ steps.local-tag.outputs.tag }}
+
+  trivy-pr:
+    name: Run Trivy PR scan (local image)
+    needs: build
+    if: ${{ !(github.event_name == 'workflow_dispatch' || github.ref == format('refs/heads/{0}', 'main') || startsWith(github.ref, 'refs/tags/')) }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Docker image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+          path: /tmp
+
+      - name: Load Docker image
+        run: docker load -i /tmp/docker-image.tar
+
+      - name: Run Trivy vulnerability scanner (SARIF)
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: ${{ steps.local-tag.outputs.tag }}
+          image-ref: ${{ needs.build.outputs.image-tag }}
           format: 'sarif'
           output: 'trivy-results.sarif'
           severity: 'CRITICAL,HIGH'
@@ -82,13 +111,11 @@ jobs:
           skip-dirs: 'usr/lib/node_modules/npm,usr/local/go'
 
       - name: Upload Trivy scan results to GitHub Security tab
-        if: env.IS_PUBLISH != 'true'
         uses: github/codeql-action/upload-sarif@v4.32.2
         with:
           sarif_file: 'trivy-results.sarif'
 
       - name: Fail on CRITICAL/HIGH vulnerabilities
-        if: env.IS_PUBLISH != 'true'
         run: |
           COUNT=$(jq '[.runs[].results[]] | length' trivy-results.sarif)
           if [ "$COUNT" -gt 0 ]; then
@@ -98,6 +125,7 @@ jobs:
           fi
 
   trivy:
+    name: Run Trivy Container scan
     needs: build
     if: ${{ github.event_name == 'workflow_dispatch' || github.ref == format('refs/heads/{0}', 'main') || startsWith(github.ref, 'refs/tags/') }}
     uses: ./.github/workflows/trivy.yml
