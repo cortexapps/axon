@@ -23,15 +23,17 @@ RUN git clone https://github.com/cortexapps/snyk-broker.git /tmp/snyk-broker && 
 # Add npm global bin to PATH
 ENV PATH="/usr/local/lib/node_modules/.bin:${PATH}"
 
-ENV GOLANG_VERSION=1.25.7
-# Install Go, this script will work for ARM or AMD64
-RUN wget -q -O /tmp/goinstall.sh https://raw.githubusercontent.com/canha/golang-tools-install-script/master/goinstall.sh && chmod +x /tmp/goinstall.sh && /tmp/goinstall.sh --version ${GOLANG_VERSION}
+ENV GOLANG_VERSION=1.26.1
+# Install Go from official tarball (supports AMD64 and ARM64 via dpkg --print-architecture)
+RUN wget -q "https://dl.google.com/go/go${GOLANG_VERSION}.linux-$(dpkg --print-architecture).tar.gz" -O /tmp/go.tar.gz \
+    && tar -C /usr/local -xzf /tmp/go.tar.gz \
+    && rm /tmp/go.tar.gz
 
-# Build the agentco
-# ENV GOROOT="/root/.go"
-ENV GOPATH="/root/.go"
+# Build the agent
+ENV GOROOT="/usr/local/go"
+ENV GOPATH="/root/go"
 ENV GOPROXY="https://proxy.golang.org,direct"
-ENV PATH="${GOPATH}/bin:${PATH}:/agent"
+ENV PATH="${GOROOT}/bin:${GOPATH}/bin:${PATH}:/agent"
 
 COPY agent/. /build/.
 RUN make -C /build setup proto

@@ -99,6 +99,19 @@ func (a *apiProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Buffer the request body so it can be replayed on retries
+	var bodyBytes []byte
+	if r.Body != nil {
+		var err error
+		bodyBytes, err = io.ReadAll(r.Body)
+		if err != nil {
+			a.logger.Error("Failed to read request body", zap.Error(err))
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		r.Body.Close()
+	}
+
 	for {
 
 		if r.Context().Err() != nil {
@@ -109,6 +122,10 @@ func (a *apiProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		// add an ability to capture and retry this request
 		request := r.Clone(r.Context())
+		if bodyBytes != nil {
+			request.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+			request.ContentLength = int64(len(bodyBytes))
+		}
 		recorder := &captureResponseWriter{
 			headers: make(http.Header),
 		}
