@@ -65,7 +65,7 @@ services:
     stop_grace_period: 1s  # SIGKILL after 1s
 
   cortex-fake:
-    image: golang:1.25.7-alpine
+    image: golang:1.25.8-alpine
     volumes:
       - .:/src
     environment:
