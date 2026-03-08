@@ -1,3 +1,7 @@
+# Unset VIRTUAL_ENV to prevent Poetry from using a stale/broken venv
+# (e.g. /lsiopy set by container init systems like s6-overlay)
+unexport VIRTUAL_ENV
+
 all: clean install proto
 
 install: .venv
@@ -5,6 +9,10 @@ install: .venv
 
 .venv: pyproject.toml
 	@echo "Installing python dependencies"
+	@if ! which python >/dev/null && which python3 >/dev/null; then \
+		echo "python not found, creating python -> python3 symlink..."; \
+		sudo ln -sf $$(which python3) /usr/local/bin/python; \
+	fi
 	@if ! which poetry >/dev/null; then \
 		curl -sSL https://install.python-poetry.org | python3 -; \
 	fi
