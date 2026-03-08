@@ -3,7 +3,7 @@ PYTHON_SDK_DIR = ../sdks/python/
 GENERATED_DIR = .generated/proto
 GENERATED_PATH=$(GENERATED_DIR)/github.com/cortexapps/axon
 
-all: setup proto build test
+all: install proto build test
 
 PROTO_FILES := $(wildcard proto/*.proto)
 GO_FILES := $(patsubst proto/%.proto,$(GENERATED_PATH)/%.pb.go,$(PROTO_FILES))
@@ -11,7 +11,7 @@ GO_FILES := $(patsubst proto/%.proto,$(GENERATED_PATH)/%.pb.go,$(PROTO_FILES))
 GOPATH ?= $(HOME)/go
 GOBIN ?= $(GOPATH)/bin
 
-proto: setup $(GO_FILES) version
+proto: install $(GO_FILES) version
 
 version: $(GO_SDK_DIR)/version/agentversion.txt $(PYTHON_SDK_DIR)/cortex_axon/agentversion.py
 
@@ -33,15 +33,18 @@ $(GENERATED_PATH)/%.pb.go: proto/%.proto
 	@mkdir -p $(GO_SDK_DIR)/.generated
 	@cp -R $(GENERATED_DIR) $(GO_SDK_DIR)/.generated
 
-setup:
+install:
 	@if ! command -v $(GOBIN)/protoc-gen-go >/dev/null; then echo "Installing protoc-gen-go..."; go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.6; fi
 	@if ! command -v $(GOBIN)/protoc-gen-go-grpc >/dev/null; then echo "Installing protoc-gen-go-grpc..."; go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1; fi
-	@if ! which protoc >/dev/null; then \
-		if which brew >/dev/null; then \
-			brew install protobuf; \
-		else \
-			apt update && apt install -y protobuf-compiler; \
-		fi; \
+	@if which brew >/dev/null; then \
+		if ! which protoc >/dev/null; then brew install protobuf; fi; \
+	elif [ "$$(uname)" = "Linux" ]; then \
+		PKGS=""; \
+		if ! which protoc >/dev/null; then PKGS="protobuf-compiler"; fi; \
+		if ! test -f /usr/include/google/protobuf/timestamp.proto; then PKGS="$$PKGS libprotobuf-dev"; fi; \
+		if [ -n "$$PKGS" ]; then sudo apt-get update && sudo apt-get install -y $$PKGS; fi; \
+	else \
+		echo "WARNING: Unrecognized platform $$(uname) -- not installing protobuf dependencies"; \
 	fi
 
 build:
@@ -89,4 +92,4 @@ run: proto
 	go run main.go serve
 
 
-.PHONY: setup test build 
+.PHONY: install test build 

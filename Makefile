@@ -1,4 +1,4 @@
-all: setup
+all: install
 	make -C agent
 	make -C sdks/python
 
@@ -18,10 +18,11 @@ docker-build: docker/Dockerfile
 	docker build -t $(DOCKER_TAG) --progress=plain -f $< .
 .PHONY: docker-build
 
-setup:
-	$(MAKE) -C agent setup
+install:
+	$(MAKE) -C agent install
+	$(MAKE) -C sdks/python install
 
-.PHONY: setup
+.PHONY: install
 
 test:
 	$(MAKE) -C agent test
