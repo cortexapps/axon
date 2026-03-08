@@ -242,8 +242,27 @@ func (r *relayInstanceManager) requestRestart(reason string, gen int32) {
 // requests.  It deduplicates by generation: if the broker has already
 // moved to a newer generation by the time we read the request, the
 // request is stale and we skip it.
+//
+// It also doubles as the idle watchdog: every minute it checks
+// shouldRestart() and produces a restart request if the broker has
+// been idle too long.
 func (r *relayInstanceManager) restartConsumer() {
-	for req := range r.restartCh {
+	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		var req restartRequest
+		select {
+		case req = <-r.restartCh:
+			// explicit restart request
+		case <-ticker.C:
+			if ok, reason := r.shouldRestart(); ok {
+				req = restartRequest{reason: reason, generation: r.generation.Load()}
+			} else {
+				continue
+			}
+		}
+
 		current := r.generation.Load()
 		if req.generation != current {
 			r.logger.Info("Ignoring stale restart request",
@@ -281,7 +300,22 @@ func (r *relayInstanceManager) restartConsumer() {
 	}
 }
 
-// restartBackoff returns an exponential backoff duration capped at 5 minutes.
+// shouldRestart checks whether the broker should be restarted due to
+// idle timeout.  Returns true and the reason string if a restart is needed.
+func (r *relayInstanceManager) shouldRestart() (bool, string) {
+	if r.config.RelayIdleTimeout == 0 || r.reflector == nil {
+		return false, ""
+	}
+	if !r.config.HttpRelayReflectorMode.ReflectsTraffic() {
+		return false, ""
+	}
+	if time.Since(r.reflector.LastTrafficTime()) >= r.config.RelayIdleTimeout {
+		return true, "idle_timeout"
+	}
+	return false, ""
+}
+
+// restartBackoff returns an exponential backoff duration capped at 60 seconds.
 func (r *relayInstanceManager) restartBackoff(attempt int) time.Duration {
 	base := 5 * time.Second
 	d := base << uint(attempt) // 5s, 10s, 20s, 40s, 60s ...
@@ -464,23 +498,6 @@ func (r *relayInstanceManager) Start() error {
 		r.reflector.SetOnWSTunnelClose(func() {
 			r.requestRestart("ws_tunnel_death", gen)
 		})
-	}
-
-	// Idle timeout: request restart when no forwarded traffic for too long.
-	if r.config.RelayIdleTimeout != 0 && r.reflector != nil && r.config.HttpRelayReflectorMode.ReflectsTraffic() {
-		go func() {
-			for {
-				select {
-				case <-time.After(r.config.RelayIdleTimeout):
-					idle := time.Since(r.reflector.LastTrafficTime())
-					if idle >= r.config.RelayIdleTimeout {
-						r.requestRestart("idle_timeout", gen)
-					}
-				case <-done:
-					return
-				}
-			}
-		}()
 	}
 
 	go func() {
