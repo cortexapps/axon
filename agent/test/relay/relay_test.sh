@@ -235,4 +235,66 @@ else
     fi
 fi
 
+echo "=== Broker reconnection after SIGKILL ==="
+
+# Force-kill the snyk-broker container to simulate a non-graceful disconnect.
+# This tears down the TCP connection without sending a WS close frame, which
+# is what happens when the broker server crashes or the network drops.
+echo "Force-killing snyk-broker container..."
+docker kill --signal=KILL relay-snyk-broker-1
+
+# Wait for the container to be fully dead
+sleep 2
+BROKER_STATUS=$(get_container_status relay-snyk-broker-1)
+if [ "$BROKER_STATUS" == "running" ]; then
+    echo "FAIL: snyk-broker should be dead after SIGKILL"
+    exit 1
+fi
+echo "snyk-broker is stopped (status=$BROKER_STATUS)"
+
+# Restart the broker server
+echo "Restarting snyk-broker container..."
+docker compose up -d snyk-broker
+
+# Wait for the broker to be healthy again
+COUNTER=30
+while [ $COUNTER -gt 0 ]; do
+    BROKER_STATUS=$(get_container_status relay-snyk-broker-1)
+    if [ "$BROKER_STATUS" == "running" ]; then
+        # Also check the healthcheck endpoint
+        if curl -s -f http://localhost:$SERVER_PORT/healthcheck > /dev/null 2>&1; then
+            break
+        fi
+    fi
+    echo "Waiting for snyk-broker to be healthy ($COUNTER)..."
+    sleep 1
+    COUNTER=$((COUNTER-1))
+done
+
+if [ $COUNTER -eq 0 ]; then
+    echo "FAIL: snyk-broker did not become healthy in time"
+    docker compose logs snyk-broker
+    exit 1
+fi
+echo "snyk-broker is back up"
+
+# Give the axon relay time to detect the disconnect and reconnect.
+# The relay uses exponential backoff (5s, 10s, ...) so 15s should be enough
+# for the first reconnect attempt.
+echo "Waiting 15s for axon relay to reconnect..."
+sleep 15
+
+# Now verify the relay is working again by sending a request through the broker
+FILENAME="token-reconnect-$(date +%s)"
+echo "$TOKEN" > /tmp/$FILENAME
+result=$(curlw http://localhost:$SERVER_PORT/broker/$TOKEN/$FILENAME)
+
+if [ "$result" != "$TOKEN" ]; then
+    echo "FAIL: Expected $TOKEN after reconnect, got '$result'"
+    echo "=== Axon Relay Logs (last 80) ==="
+    docker compose logs --tail=80 axon-relay
+    exit 1
+fi
+echo "Success: Broker passthrough works after SIGKILL + restart"
+
 echo "Success! Done!"
