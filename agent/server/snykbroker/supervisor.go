@@ -21,15 +21,14 @@ type Supervisor struct {
 	output            io.Writer
 	fastFailTime      time.Duration
 	panicOnMaxRetries bool
-
-	executable string
-	args       []string
-	env        map[string]string
-	done       chan struct{}
-	stopFunc   func()
-	pid        int
-	runCount   int
-	lastError  error
+	executable        string
+	args              []string
+	env               map[string]string
+	done              chan struct{}
+	stopFunc          func()
+	pid               int
+	runCount          int
+	lastError         error
 }
 
 func NewSupervisor(
@@ -39,14 +38,13 @@ func NewSupervisor(
 	fastFailTime time.Duration,
 ) *Supervisor {
 	return &Supervisor{
-		panicOnMaxRetries: true,
-		output:            os.Stdout,
-		executable:        executable,
-		args:              args,
-		env:               env,
-		fastFailTime:      fastFailTime * 2,
-		done:              make(chan struct{}),
-		stopFunc:          func() {},
+		output:       os.Stdout,
+		executable:   executable,
+		args:         args,
+		env:          env,
+		fastFailTime: fastFailTime * 2,
+		done:         make(chan struct{}),
+		stopFunc:     func() {},
 	}
 }
 
