@@ -247,7 +247,7 @@ func (r *relayInstanceManager) requestRestart(reason string, gen int32) {
 // shouldRestart() and produces a restart request if the broker has
 // been idle too long.
 func (r *relayInstanceManager) restartConsumer() {
-	ticker := time.NewTicker(1 * time.Minute)
+	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 
 	for {
