@@ -86,10 +86,22 @@ type AgentConfig struct {
 	HttpRelayReflectorMode        RelayReflectorMode
 	ReflectorWebSocketUpgrade     bool
 	RelayIdleTimeout              time.Duration
+
+	// RelayMode selects the tunnel implementation: "snyk-broker" or "grpc-tunnel".
+	RelayMode   string
+	// TunnelCount is the number of parallel gRPC tunnel streams to open (grpc-tunnel mode only).
+	TunnelCount int
+	// GrpcInsecure disables TLS on the gRPC tunnel connection (separate from HttpDisableTLS).
+	GrpcInsecure bool
 }
 
 func (ac AgentConfig) HttpBaseUrl() string {
 	return fmt.Sprintf("http://localhost:%d", ac.HttpServerPort)
+}
+
+// IsGRPCTunnel returns true if the relay mode is grpc-tunnel.
+func (ac AgentConfig) IsGRPCTunnel() bool {
+	return ac.RelayMode == "grpc-tunnel"
 }
 
 func (ac AgentConfig) Print() {
@@ -300,6 +312,24 @@ func NewAgentEnvConfig() AgentConfig {
 			panic(err)
 		}
 		cfg.RelayIdleTimeout = rit
+	}
+
+	cfg.RelayMode = "snyk-broker"
+	if relayMode := os.Getenv("RELAY_MODE"); relayMode != "" {
+		cfg.RelayMode = relayMode
+	}
+
+	cfg.TunnelCount = 2
+	if tunnelCount := os.Getenv("TUNNEL_COUNT"); tunnelCount != "" {
+		tc, err := strconv.Atoi(tunnelCount)
+		if err != nil {
+			panic(err)
+		}
+		cfg.TunnelCount = tc
+	}
+
+	if grpcInsecure := os.Getenv("GRPC_INSECURE"); grpcInsecure == "true" {
+		cfg.GrpcInsecure = true
 	}
 
 	return cfg
