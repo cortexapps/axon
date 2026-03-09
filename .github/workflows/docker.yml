@@ -16,6 +16,8 @@ jobs:
       IS_DEFAULT_BRANCH: ${{ github.ref == format('refs/heads/{0}', 'main') }}
       IS_TAG: ${{ startsWith(github.ref, 'refs/tags/') }}
       IS_PUBLISH: ${{ github.event_name == 'workflow_dispatch' || github.ref == format('refs/heads/{0}', 'main') || startsWith(github.ref, 'refs/tags/') }}
+      # ARM64 builds via QEMU are slow - only build on main/tags, not workflow_dispatch
+      IS_ARM64_BUILD: ${{ github.ref == format('refs/heads/{0}', 'main') || startsWith(github.ref, 'refs/tags/') }}
 
     steps:
       - name: Checkout code
@@ -58,8 +60,8 @@ jobs:
           push: ${{ env.IS_PUBLISH == 'true' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          # arm64 is more expensive to build, so only build it on the default branch or for tags
-          platforms: ${{ env.IS_PUBLISH == 'true' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
+          # arm64 via QEMU is slow, so only build it on main branch or tags (not workflow_dispatch)
+          platforms: ${{ env.IS_ARM64_BUILD == 'true' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
           cache-from: type=local,src=/tmp/.buildx-cache
           cache-to: type=local,dest=/tmp/.buildx-cache
           load: ${{ env.IS_PUBLISH != 'true' }}

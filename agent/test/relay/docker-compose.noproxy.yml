@@ -1,0 +1,12 @@
+# Override for PROXY=0 testing - adds external network for direct access
+#
+# Usage: docker compose -f docker-compose.yml -f docker-compose.noproxy.yml up
+#
+# Without this override, axon-relay can only reach snyk-broker through mitmproxy.
+# This adds the external network so axon-relay can connect directly.
+
+services:
+  axon-relay:
+    networks:
+      - internal
+      - external
