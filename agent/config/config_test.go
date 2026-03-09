@@ -44,10 +44,10 @@ func TestNewAgentEnvConfig_DefaultValues(t *testing.T) {
 	require.Equal(t, "", config.CortexApiToken)
 	require.False(t, config.DryRun)
 	require.Equal(t, 1*time.Second, config.DequeueWaitTime)
-	// Default reflector mode should be TrafficOnly (reflects traffic but not registration)
-	require.Equal(t, RelayReflectorTrafficOnly, config.HttpRelayReflectorMode)
+	// Default reflector mode should be AllTraffic (reflects both traffic and registration)
+	require.Equal(t, RelayReflectorAllTraffic, config.HttpRelayReflectorMode)
 	require.True(t, config.HttpRelayReflectorMode.ReflectsTraffic())
-	require.False(t, config.HttpRelayReflectorMode.ReflectsRegistration())
+	require.True(t, config.HttpRelayReflectorMode.ReflectsRegistration())
 	// WebSocket upgrade should be enabled by default
 	require.True(t, config.ReflectorWebSocketUpgrade)
 	// Relay idle timeout default

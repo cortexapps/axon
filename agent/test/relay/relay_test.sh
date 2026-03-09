@@ -22,9 +22,14 @@ if [ "$PROXY" == "1" ]
 then
     echo "TESTING WITH PROXY"
     export ENVFILE=proxy.env
-else 
+    # Base docker-compose.yml has axon-relay on internal network only
+    # This enforces that WebSocket connections MUST go through mitmproxy
+    export COMPOSE_FILES="-f docker-compose.yml"
+else
     echo "TESTING WITHOUT PROXY"
     export ENVFILE=noproxy.env
+    # Add external network so axon-relay can connect directly to snyk-broker
+    export COMPOSE_FILES="-f docker-compose.yml -f docker-compose.noproxy.yml"
 
     # just for fun also set the HTTP_PORT to a different value to ensure
     # we respect that port as well
@@ -34,13 +39,13 @@ fi
 # Create an exit trap to stop the broker when the script exits
 function cleanup {
   echo "Cleanup: Stopping docker-compose"
-  docker compose down
+  docker compose $COMPOSE_FILES down
   rm -f /tmp/token-* /tmp/axon-test-token /tmp/binary-test-*.bin /tmp/binary-test-*.downloaded
 }
 trap cleanup EXIT
 
 echo "Starting docker compose ..."
-docker compose up -d
+docker compose $COMPOSE_FILES up -d
 sleep 5
 
 # Loop until healthcheck for server broker passes
@@ -70,7 +75,7 @@ while [ "$SNYK_STATUS" != "running" ] || [ "$AXON_STATUS" != "running" ]; do
     
     if [ $COUNTER -eq 0 ]; then
         echo "Containers did not start in time"
-        docker compose logs
+        docker compose $COMPOSE_FILES logs
         exit 1
     fi
     
@@ -212,8 +217,13 @@ if [ "$PROXY" == "1" ]; then
     # Verify that the reflector's raw WebSocket tunnel was established.
     # "WebSocket tunnel established" is logged by the reflector when a real Upgrade: websocket
     # request is received and a TCP tunnel is created (not just primus's application-layer WS).
+    #
+    # NOTE: WebSocket proxy usage is ENFORCED by network isolation (docker-compose.proxy.yml).
+    # axon-relay is on the "internal" network only, snyk-broker is on "external" network only.
+    # The only path is: axon-relay -> mitmproxy (bridges both) -> snyk-broker.
+    # If WebSocket code bypasses the proxy, the connection FAILS at the network level.
     echo "Checking WebSocket tunnel..."
-    axon_logs=$(docker compose logs axon-relay 2>&1)
+    axon_logs=$(docker compose $COMPOSE_FILES logs axon-relay 2>&1)
 
     if ! echo "$axon_logs" | grep -q "WebSocket tunnel established"; then
         echo "FAIL: Expected 'WebSocket tunnel established' in reflector logs but not found"
