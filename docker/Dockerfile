@@ -41,7 +41,18 @@ RUN git clone https://github.com/cortexapps/snyk-broker.git /tmp/snyk-broker && 
     rm -rf /tmp/snyk-broker
 
 # Add npm global bin to PATH
-ENV PATH="/usr/local/lib/node_modules/.bin:${PATH}:/agent"
+ENV PATH="/usr/local/lib/node_modules/.bin:${PATH}"
+
+# Install Go (needed by scaffold apps that build on top of this image)
+ENV GOLANG_VERSION=1.26.1
+RUN wget -q "https://dl.google.com/go/go${GOLANG_VERSION}.linux-$(dpkg --print-architecture).tar.gz" -O /tmp/go.tar.gz \
+    && tar -C /usr/local -xzf /tmp/go.tar.gz \
+    && rm /tmp/go.tar.gz
+
+ENV GOROOT="/usr/local/go"
+ENV GOPATH="/root/go"
+ENV GOPROXY="https://proxy.golang.org,direct"
+ENV PATH="${GOROOT}/bin:${GOPATH}/bin:${PATH}:/agent"
 
 # Copy the built binary from the builder stage
 COPY --from=builder /agent/cortex-axon-agent /agent/cortex-axon-agent
