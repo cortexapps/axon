@@ -73,6 +73,17 @@ func (t Token) Raw() string { return t.raw }
 // Hashed returns the SHA-256 hex hash of the token.
 func (t Token) Hashed() string { return t.hashed }
 
+// String returns a safe representation of the token for logging,
+// showing only the first 12 characters of the hash to prevent accidental
+// raw token exposure via %v or %s.
+func (t Token) String() string {
+	h := t.hashed
+	if len(h) > 12 {
+		h = h[:12]
+	}
+	return fmt.Sprintf("Token{hash=%s...}", h)
+}
+
 // jsonAPIBody wraps request bodies in the JSONAPI envelope expected by the dispatcher.
 type jsonAPIBody struct {
 	Data jsonAPIData `json:"data"`

@@ -2,6 +2,7 @@ package tunnel
 
 import (
 	"fmt"
+	"sort"
 	"sync"
 	"sync/atomic"
 
@@ -148,11 +149,17 @@ func (r *ClientRegistry) PickStream(token broker.Token) *StreamHandle {
 		return nil
 	}
 
-	// Collect stream handles into a slice for round-robin
+	// Collect stream handles into a slice for round-robin.
 	streams := make([]*StreamHandle, 0, len(entry.Streams))
 	for _, s := range entry.Streams {
 		streams = append(streams, s)
 	}
+
+	// Sort by StreamID to ensure deterministic ordering across calls,
+	// since Go map iteration order is randomized.
+	sort.Slice(streams, func(i, j int) bool {
+		return streams[i].StreamID < streams[j].StreamID
+	})
 
 	idx := entry.roundRobin.Add(1) - 1
 	return streams[idx%uint64(len(streams))]

@@ -76,6 +76,7 @@ func main() {
 	// Initialize dispatch handler and wire response delivery.
 	dispatchHandler := dispatch.NewHandler(cfg, registry, m, logger)
 	tunnelService.SetResponseHandler(dispatchHandler.HandleResponse)
+	tunnelService.SetStreamCloseHandler(dispatchHandler.HandleStreamClose)
 
 	// Start HTTP server for metrics, health, and dispatch.
 	httpMux := http.NewServeMux()
@@ -114,24 +115,26 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	go func() {
-		ticker := time.NewTicker(cfg.ReRegistrationInterval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				registry.ForEach(func(token broker.Token, identity tunnel.ClientIdentity) {
-					if err := brokerClient.ClientConnected(token, identity.InstanceID, nil); err != nil {
-						logger.Warn("Periodic re-registration failed",
-							zap.String("tenantId", identity.TenantID),
-							zap.Error(err))
-					}
-				})
+	if brokerClient.IsConfigured() {
+		go func() {
+			ticker := time.NewTicker(cfg.ReRegistrationInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					registry.ForEach(func(token broker.Token, identity tunnel.ClientIdentity) {
+						if err := brokerClient.ClientConnected(token, identity.InstanceID, nil); err != nil {
+							logger.Warn("Periodic re-registration failed",
+								zap.String("tenantId", identity.TenantID),
+								zap.Error(err))
+						}
+					})
+				}
 			}
-		}
-	}()
+		}()
+	}
 
 	// Start servers.
 	go func() {
@@ -156,11 +159,7 @@ func main() {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer shutdownCancel()
 
-	// Stop accepting new connections.
-	grpcServer.GracefulStop()
-	httpServer.Shutdown(shutdownCtx)
-
-	// Notify BROKER_SERVER of shutdown.
+	// Notify BROKER_SERVER of shutdown before draining (best-effort).
 	if brokerClient.IsConfigured() {
 		if err := brokerClient.ServerStopping(); err != nil {
 			logger.Warn("BROKER_SERVER server-stopping failed", zap.Error(err))
@@ -168,6 +167,10 @@ func main() {
 			logger.Info("BROKER_SERVER server-stopping succeeded")
 		}
 	}
+
+	// Stop accepting new connections and drain.
+	grpcServer.GracefulStop()
+	httpServer.Shutdown(shutdownCtx)
 
 	logger.Info("Server stopped")
 }

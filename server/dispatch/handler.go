@@ -17,6 +17,7 @@ import (
 )
 
 const maxChunkSize = 1024 * 1024 // 1MB
+const maxRequestBodySize = 100 * 1024 * 1024 // 100MB
 
 // Handler is the HTTP handler that dispatches requests through tunnel streams.
 // It mounts at /broker/:token/* and routes HTTP requests to connected agents.
@@ -50,6 +51,11 @@ func (h *Handler) HandleResponse(response *pb.HttpResponse) {
 	if err := h.pending.Deliver(response); err != nil {
 		h.logger.Debug("Response delivery failed", zap.String("requestId", response.RequestId), zap.Error(err))
 	}
+}
+
+// HandleStreamClose fails all pending dispatch requests for a closed stream.
+func (h *Handler) HandleStreamClose(streamID string) {
+	h.pending.FailStream(streamID)
 }
 
 // PendingCount returns the number of inflight dispatch requests.
@@ -89,14 +95,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Read request body.
+	// Read request body with size limit to prevent OOM.
 	var body []byte
 	if r.Body != nil {
+		limitedReader := io.LimitReader(r.Body, maxRequestBodySize+1)
 		var err error
-		body, err = io.ReadAll(r.Body)
+		body, err = io.ReadAll(limitedReader)
 		if err != nil {
 			h.logger.Error("Failed to read request body", zap.Error(err))
 			http.Error(w, "failed to read request body", http.StatusInternalServerError)
+			return
+		}
+		if len(body) > maxRequestBodySize {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
 			return
 		}
 	}

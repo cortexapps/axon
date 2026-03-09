@@ -135,7 +135,7 @@ echo "Success: Text file relay through gRPC tunnel"
 
 echo "Checking binary file relay passthrough..."
 BINARY_FILENAME="binary-test-$(date +%s).bin"
-dd if=/dev/urandom of="/tmp/$BINARY_FILENAME" bs=1024 count=1024 2>/dev/null
+dd if=/dev/urandom of="/tmp/$BINARY_FILENAME" bs=1024 count=1536 2>/dev/null
 ORIGINAL_CHECKSUM=$(sha256sum "/tmp/$BINARY_FILENAME" | awk '{print $1}')
 
 BINARY_DOWNLOAD="/tmp/${BINARY_FILENAME}.downloaded"
@@ -154,7 +154,7 @@ if [ "$ORIGINAL_CHECKSUM" != "$DOWNLOADED_CHECKSUM" ]; then
     echo "  Downloaded: $DOWNLOADED_CHECKSUM ($(wc -c < $BINARY_DOWNLOAD) bytes)"
     exit 1
 else
-    echo "Success: Binary file (1MB) checksum verified ($ORIGINAL_CHECKSUM)"
+    echo "Success: Binary file (1.5MB) checksum verified ($ORIGINAL_CHECKSUM)"
 fi
 
 # Validate HTTPS relay by fetching the Axon README from GitHub.

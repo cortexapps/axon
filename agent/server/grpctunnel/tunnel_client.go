@@ -63,6 +63,90 @@ type tunnelStream struct {
 	done     chan struct{}
 }
 
+// sendFunc is a mutex-protected function for sending messages on a gRPC stream.
+// Multiple goroutines (heartbeat responses, HTTP response handlers) call Send()
+// concurrently; wrapping it in a mutex prevents data races on the underlying stream.
+type sendFunc func(msg *pb.TunnelClientMessage) error
+
+// requestAssembler reassembles chunked HTTP requests from the server.
+// The server chunks requests larger than 1MB, sending method/path/headers/timeoutMs
+// only on the first chunk (chunk_index=0) and body data on all chunks.
+type requestAssembler struct {
+	mu      sync.Mutex
+	pending map[string]*pendingRequest
+}
+
+type pendingRequest struct {
+	method    string
+	path      string
+	headers   map[string]string
+	body      []byte
+	timeoutMs int32
+}
+
+func newRequestAssembler() *requestAssembler {
+	return &requestAssembler{
+		pending: make(map[string]*pendingRequest),
+	}
+}
+
+// handleChunk processes an incoming HttpRequest chunk. It returns a fully
+// assembled *pb.HttpRequest when the final chunk arrives, or nil if more
+// chunks are still expected.
+func (ra *requestAssembler) handleChunk(chunk *pb.HttpRequest) *pb.HttpRequest {
+	// Fast path: single-chunk request (most common case).
+	if chunk.ChunkIndex == 0 && chunk.IsFinal {
+		return chunk
+	}
+
+	ra.mu.Lock()
+	defer ra.mu.Unlock()
+
+	if chunk.ChunkIndex == 0 {
+		// First chunk of a multi-chunk request: store metadata + body.
+		ra.pending[chunk.RequestId] = &pendingRequest{
+			method:    chunk.Method,
+			path:      chunk.Path,
+			headers:   chunk.Headers,
+			body:      append([]byte(nil), chunk.Body...),
+			timeoutMs: chunk.TimeoutMs,
+		}
+		return nil
+	}
+
+	// Continuation chunk.
+	pr, ok := ra.pending[chunk.RequestId]
+	if !ok {
+		// Orphan chunk — no first chunk was received; discard.
+		return nil
+	}
+
+	pr.body = append(pr.body, chunk.Body...)
+
+	if !chunk.IsFinal {
+		return nil
+	}
+
+	// Final chunk: assemble and remove from pending.
+	delete(ra.pending, chunk.RequestId)
+	return &pb.HttpRequest{
+		RequestId: chunk.RequestId,
+		Method:    pr.method,
+		Path:      pr.path,
+		Headers:   pr.headers,
+		Body:      pr.body,
+		TimeoutMs: pr.timeoutMs,
+		IsFinal:   true,
+	}
+}
+
+// discardAll removes all incomplete pending requests (called on stream close).
+func (ra *requestAssembler) discardAll() {
+	ra.mu.Lock()
+	defer ra.mu.Unlock()
+	ra.pending = make(map[string]*pendingRequest)
+}
+
 type TunnelClientParams struct {
 	fx.In
 	Lifecycle       fx.Lifecycle `optional:"true"`
@@ -176,8 +260,11 @@ func (tc *tunnelClient) handleSystemCheck(w http.ResponseWriter, req *http.Reque
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
+	tc.mu.Lock()
+	streamCount := len(tc.streams)
+	tc.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprintf(w, `{"status":"ok","relay_mode":"grpc-tunnel","streams":%d}`, len(tc.streams))
+	fmt.Fprintf(w, `{"status":"ok","relay_mode":"grpc-tunnel","streams":%d}`, streamCount)
 }
 
 func (tc *tunnelClient) Start() error {
@@ -371,14 +458,26 @@ func (tc *tunnelClient) openStream(
 		done:     make(chan struct{}),
 	}
 
+	// Create a mutex-protected send function to prevent concurrent Send() calls.
+	// Multiple goroutines (heartbeat responses, HTTP response handlers) may send
+	// on this stream concurrently.
+	sendMu := &sync.Mutex{}
+	sendFn := sendFunc(func(msg *pb.TunnelClientMessage) error {
+		sendMu.Lock()
+		defer sendMu.Unlock()
+		return stream.Send(msg)
+	})
+
 	// Start request handler goroutine.
-	go tc.streamLoop(streamCtx, stream, ts, token)
+	go tc.streamLoop(streamCtx, stream, sendFn, ts, token)
 
 	return ts
 }
 
-func (tc *tunnelClient) streamLoop(ctx context.Context, stream pb.TunnelService_TunnelClient, ts *tunnelStream, token string) {
+func (tc *tunnelClient) streamLoop(ctx context.Context, stream pb.TunnelService_TunnelClient, sendFn sendFunc, ts *tunnelStream, token string) {
+	assembler := newRequestAssembler()
 	defer func() {
+		assembler.discardAll()
 		tc.connectionsActive.WithLabelValues(ts.serverID).Dec()
 		close(ts.done)
 	}()
@@ -406,16 +505,21 @@ func (tc *tunnelClient) streamLoop(ctx context.Context, stream pb.TunnelService_
 		switch m := msg.Message.(type) {
 		case *pb.TunnelServerMessage_Heartbeat:
 			// Respond with heartbeat.
-			stream.Send(&pb.TunnelClientMessage{
+			if err := sendFn(&pb.TunnelClientMessage{
 				Message: &pb.TunnelClientMessage_Heartbeat{
 					Heartbeat: &pb.Heartbeat{
 						TimestampMs: time.Now().UnixMilli(),
 					},
 				},
-			})
+			}); err != nil {
+				tc.logger.Warn("Failed to send heartbeat response", zap.Error(err))
+			}
 
 		case *pb.TunnelServerMessage_HttpRequest:
-			go tc.handleRequest(stream, m.HttpRequest)
+			assembled := assembler.handleChunk(m.HttpRequest)
+			if assembled != nil {
+				go tc.handleRequest(sendFn, assembled)
+			}
 
 		case *pb.TunnelServerMessage_Hello:
 			tc.logger.Warn("Received unexpected ServerHello after handshake")
@@ -423,13 +527,9 @@ func (tc *tunnelClient) streamLoop(ctx context.Context, stream pb.TunnelService_
 	}
 }
 
-func (tc *tunnelClient) handleRequest(stream pb.TunnelService_TunnelClient, req *pb.HttpRequest) {
-	// Reassemble chunked request if needed.
-	// For now, we only handle single-chunk requests (is_final=true on first message).
-	// TODO: Support chunked request reassembly for large request bodies.
-
+func (tc *tunnelClient) handleRequest(sendFn sendFunc, req *pb.HttpRequest) {
 	if tc.executor == nil {
-		tc.sendErrorResponse(stream, req.RequestId, 503, "executor not ready")
+		tc.sendErrorResponse(sendFn, req.RequestId, 503, "executor not ready")
 		return
 	}
 
@@ -462,7 +562,7 @@ func (tc *tunnelClient) handleRequest(stream pb.TunnelService_TunnelClient, req 
 			statusCode = 404
 		}
 		tc.requestsTotal.WithLabelValues(req.Method, fmt.Sprintf("%d", statusCode)).Inc()
-		tc.sendErrorResponse(stream, req.RequestId, int32(statusCode), err.Error())
+		tc.sendErrorResponse(sendFn, req.RequestId, int32(statusCode), err.Error())
 		return
 	}
 
@@ -471,12 +571,12 @@ func (tc *tunnelClient) handleRequest(stream pb.TunnelService_TunnelClient, req 
 	tc.requestDuration.WithLabelValues(req.Method).Observe(float64(duration.Milliseconds()))
 
 	// Send response back through tunnel (chunked if needed).
-	tc.sendResponse(stream, req.RequestId, resp)
+	tc.sendResponse(sendFn, req.RequestId, resp)
 }
 
-func (tc *tunnelClient) sendResponse(stream pb.TunnelService_TunnelClient, requestID string, resp *requestexecutor.ExecutorResponse) {
+func (tc *tunnelClient) sendResponse(sendFn sendFunc, requestID string, resp *requestexecutor.ExecutorResponse) {
 	if len(resp.Body) <= maxChunkSize {
-		stream.Send(&pb.TunnelClientMessage{
+		if err := sendFn(&pb.TunnelClientMessage{
 			Message: &pb.TunnelClientMessage_HttpResponse{
 				HttpResponse: &pb.HttpResponse{
 					RequestId:  requestID,
@@ -487,7 +587,12 @@ func (tc *tunnelClient) sendResponse(stream pb.TunnelService_TunnelClient, reque
 					IsFinal:    true,
 				},
 			},
-		})
+		}); err != nil {
+			tc.logger.Warn("Failed to send response",
+				zap.String("requestId", requestID),
+				zap.Error(err),
+			)
+		}
 		return
 	}
 
@@ -513,16 +618,23 @@ func (tc *tunnelClient) sendResponse(stream pb.TunnelService_TunnelClient, reque
 			httpResp.Headers = resp.Headers
 		}
 
-		stream.Send(&pb.TunnelClientMessage{
+		if err := sendFn(&pb.TunnelClientMessage{
 			Message: &pb.TunnelClientMessage_HttpResponse{
 				HttpResponse: httpResp,
 			},
-		})
+		}); err != nil {
+			tc.logger.Warn("Failed to send response chunk, aborting remaining chunks",
+				zap.String("requestId", requestID),
+				zap.Int32("chunkIndex", chunkIndex),
+				zap.Error(err),
+			)
+			return
+		}
 	}
 }
 
-func (tc *tunnelClient) sendErrorResponse(stream pb.TunnelService_TunnelClient, requestID string, statusCode int32, message string) {
-	stream.Send(&pb.TunnelClientMessage{
+func (tc *tunnelClient) sendErrorResponse(sendFn sendFunc, requestID string, statusCode int32, message string) {
+	if err := sendFn(&pb.TunnelClientMessage{
 		Message: &pb.TunnelClientMessage_HttpResponse{
 			HttpResponse: &pb.HttpResponse{
 				RequestId:  requestID,
@@ -533,7 +645,13 @@ func (tc *tunnelClient) sendErrorResponse(stream pb.TunnelService_TunnelClient, 
 				IsFinal:    true,
 			},
 		},
-	})
+	}); err != nil {
+		tc.logger.Warn("Failed to send error response",
+			zap.String("requestId", requestID),
+			zap.Int32("statusCode", statusCode),
+			zap.Error(err),
+		)
+	}
 }
 
 func (tc *tunnelClient) reconnectStream(parentCtx context.Context, ts *tunnelStream, token string) {

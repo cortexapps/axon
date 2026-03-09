@@ -91,7 +91,7 @@ func (m *Metrics) DispatchDuration(tenantID, integration, alias string, d float6
 		LabelTenantID:    tenantID,
 		LabelIntegration: integration,
 		LabelAlias:       alias,
-	}).Histogram("dispatch.duration_ms", tally.DefaultBuckets).RecordDuration(0) // placeholder
+	}).Histogram("dispatch.duration_ms", tally.DefaultBuckets).RecordValue(d)
 }
 
 // DispatchError records a dispatch error.
