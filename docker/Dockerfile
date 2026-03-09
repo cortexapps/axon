@@ -1,3 +1,23 @@
+# Stage 1: Build the Go agent binary
+FROM debian:stable-slim AS builder
+
+RUN apt update && apt install -y protobuf-compiler git wget build-essential
+
+ENV GOLANG_VERSION=1.26.1
+RUN wget -q "https://dl.google.com/go/go${GOLANG_VERSION}.linux-$(dpkg --print-architecture).tar.gz" -O /tmp/go.tar.gz \
+    && tar -C /usr/local -xzf /tmp/go.tar.gz \
+    && rm /tmp/go.tar.gz
+
+ENV GOROOT="/usr/local/go"
+ENV GOPATH="/root/go"
+ENV GOPROXY="https://proxy.golang.org,direct"
+ENV PATH="${GOROOT}/bin:${GOPATH}/bin:${PATH}"
+
+COPY agent/. /build/.
+RUN make -C /build setup proto
+RUN cd /build && go build -o /agent/cortex-axon-agent
+
+# Stage 2: Runtime image
 FROM debian:stable-slim
 WORKDIR /agent
 
@@ -21,24 +41,10 @@ RUN git clone https://github.com/cortexapps/snyk-broker.git /tmp/snyk-broker && 
     rm -rf /tmp/snyk-broker
 
 # Add npm global bin to PATH
-ENV PATH="/usr/local/lib/node_modules/.bin:${PATH}"
+ENV PATH="/usr/local/lib/node_modules/.bin:${PATH}:/agent"
 
-ENV GOLANG_VERSION=1.26.1
-# Install Go from official tarball (supports AMD64 and ARM64 via dpkg --print-architecture)
-RUN wget -q "https://dl.google.com/go/go${GOLANG_VERSION}.linux-$(dpkg --print-architecture).tar.gz" -O /tmp/go.tar.gz \
-    && tar -C /usr/local -xzf /tmp/go.tar.gz \
-    && rm /tmp/go.tar.gz
-
-# Build the agent
-ENV GOROOT="/usr/local/go"
-ENV GOPATH="/root/go"
-ENV GOPROXY="https://proxy.golang.org,direct"
-ENV PATH="${GOROOT}/bin:${GOPATH}/bin:${PATH}:/agent"
-
-COPY agent/. /build/.
-RUN make -C /build setup proto
-RUN cd /build && go build -o /agent/cortex-axon-agent
-RUN rm -rf /build
+# Copy the built binary from the builder stage
+COPY --from=builder /agent/cortex-axon-agent /agent/cortex-axon-agent
 
 COPY agent/server/snykbroker/accept_files /agent/accept_files
 ENV ACCEPTFILE_DIR=/agent/accept_files
