@@ -398,6 +398,44 @@ func createTestRelayInstanceManager(t *testing.T, controller *gomock.Controller,
 	return mgr
 }
 
+func TestBrokerSelfHealingRestart(t *testing.T) {
+	controller := gomock.NewController(t)
+	defer controller.Finish()
+
+	mgr := createTestRelayInstanceManager(t, controller, nil, false, defaultIntegrationInfo)
+	instance := mgr.Instance()
+
+	// Wait for the broker to be running
+	require.Eventually(t, func() bool {
+		return instance.supervisor != nil && instance.supervisor.Pid() > 0
+	}, 5*time.Second, 10*time.Millisecond, "Broker should be running")
+
+	initialStartCount := instance.startCount.Load()
+	initialGeneration := instance.generation.Load()
+
+	// Kill the broker process to simulate unexpected death.
+	// The supervisor will exhaust retries and the restart consumer
+	// will process the broker_exit restart request.
+	pid := instance.supervisor.Pid()
+	if pid > 0 {
+		process, err := os.FindProcess(pid)
+		require.NoError(t, err)
+		process.Kill()
+	}
+
+	// Verify the restart count and generation both increase,
+	// indicating the restart consumer processed the request.
+	require.Eventually(t, func() bool {
+		return instance.startCount.Load() > initialStartCount
+	}, 30*time.Second, 100*time.Millisecond, "Broker should have been restarted after unexpected exit")
+
+	require.Greater(t, instance.generation.Load(), initialGeneration,
+		"Generation should have incremented after restart")
+
+	err := mgr.Close()
+	require.NoError(t, err)
+}
+
 func TestIdleTimeoutDetectsIdleReflector(t *testing.T) {
 	controller := gomock.NewController(t)
 	defer controller.Finish()

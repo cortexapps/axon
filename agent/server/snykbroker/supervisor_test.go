@@ -90,7 +90,7 @@ func TestStart_MaxRetries(t *testing.T) {
 	)
 	output := bytes.Buffer{}
 	supervisor.output = &output
-	supervisor.panicOnMaxRetries = false // this disables the panic and just returns the error
+	supervisor.panicOnMaxRetries = false
 	supervisor.fastFailTime = 1 * time.Millisecond
 
 	err := supervisor.Start(2, time.Second)

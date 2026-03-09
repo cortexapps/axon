@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"math/rand/v2"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -319,5 +319,11 @@ func TestGRPCServer_ClientAutoClose(t *testing.T) {
 }
 
 func getRandomPort() int {
-	return 51000 + rand.IntN(1000)
+	ln, err := net.Listen("tcp", ":0")
+	if err != nil {
+		panic(fmt.Sprintf("failed to find free port: %v", err))
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	ln.Close()
+	return port
 }
