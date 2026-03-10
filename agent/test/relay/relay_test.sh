@@ -105,13 +105,22 @@ function curlw {
 }
 
 echo "Checking axon endpoints..."
-# First make sure we can call the status endpoint which is implemented by 
+# First make sure we can call the status endpoint which is implemented by
 # the agent, so this is localhost right at the agent
 
 info_result=$(curlw http://localhost:$SERVER_PORT/broker/$TOKEN/__axon/info)
 result=$(echo "$info_result" | jq -r '.alias')
 if [ "$result" != "axon-test" ]; then
-    echo "FAIL: Expected alias 'axon-relay', got '$result'"
+    echo "FAIL: Expected alias 'axon-test', got '$result'"
+    echo "=== Info response: $info_result ==="
+    echo "=== axon-relay logs (last 50) ==="
+    docker compose $COMPOSE_FILES logs --tail=50 axon-relay
+    if [ "$PROXY" == "1" ]; then
+        echo "=== mitmproxy logs (last 30) ==="
+        docker compose $COMPOSE_FILES logs --tail=30 mitmproxy
+        echo "=== Certificate files ==="
+        ls -la .mitmproxy/*.pem .mitmproxy/*.crt 2>/dev/null || echo "No certs found"
+    fi
     exit 1
 fi
 result=$(echo "$info_result" | jq -r '.integration')
