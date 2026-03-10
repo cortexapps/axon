@@ -281,28 +281,8 @@ func (tc *tunnelClient) Start() error {
 }
 
 func (tc *tunnelClient) startAsync() {
-	// Register with Cortex API to get server URI + token.
-	var regInfo *snykbroker.RegistrationInfoResponse
-	backoff := tc.config.FailWaitTime
-	for tc.running.Load() {
-		var err error
-		regInfo, err = tc.registration.Register(tc.integrationInfo.Integration, tc.integrationInfo.Alias)
-		if err != nil {
-			tc.logger.Error("Registration failed, retrying", zap.Error(err), zap.Duration("backoff", backoff))
-			time.Sleep(backoff)
-			backoff = min(backoff*2, 30*time.Second)
-			continue
-		}
-		break
-	}
-
-	if regInfo == nil || !tc.running.Load() {
-		return
-	}
-
-	tc.logger.Info("Registered with Cortex API",
-		zap.String("serverUri", regInfo.ServerUri),
-	)
+	// Check for direct connection config (skip registration if both are set).
+	serverAddr, token := tc.getConnectionConfig()
 
 	// Render accept file and create RequestExecutor.
 	if err := tc.setupExecutor(); err != nil {
@@ -310,11 +290,6 @@ func (tc *tunnelClient) startAsync() {
 		return
 	}
 
-	// Determine gRPC target. BROKER_SERVER_URL is reused as the gRPC address.
-	serverAddr := os.Getenv("BROKER_SERVER_URL")
-	if serverAddr == "" {
-		serverAddr = regInfo.ServerUri
-	}
 	// Strip http(s):// if present — gRPC expects host:port.
 	serverAddr = stripScheme(serverAddr)
 
@@ -338,7 +313,7 @@ func (tc *tunnelClient) startAsync() {
 	seenServers := make(map[string]bool)
 
 	for i := 0; i < tc.config.TunnelCount; i++ {
-		ts := tc.openStream(ctx, client, regInfo.Token, i, seenServers)
+		ts := tc.openStream(ctx, client, token, i, seenServers)
 		if ts != nil {
 			tc.mu.Lock()
 			tc.streams = append(tc.streams, ts)
@@ -350,6 +325,53 @@ func (tc *tunnelClient) startAsync() {
 		zap.Int("streams", len(tc.streams)),
 		zap.String("serverAddr", serverAddr),
 	)
+}
+
+// getConnectionConfig returns the server address and token for the gRPC tunnel.
+// If both BROKER_SERVER_URL and BROKER_TOKEN are set, uses those directly (skips registration).
+// Otherwise, registers with the Cortex API to get the server URI and token.
+func (tc *tunnelClient) getConnectionConfig() (serverAddr, token string) {
+	envServerURL := os.Getenv("BROKER_SERVER_URL")
+	envToken := os.Getenv("BROKER_TOKEN")
+
+	// If both are provided, skip registration and use direct connection.
+	if envServerURL != "" && envToken != "" {
+		tc.logger.Info("Using direct connection config (skipping registration)",
+			zap.String("serverUrl", envServerURL),
+		)
+		return envServerURL, envToken
+	}
+
+	// Register with Cortex API to get server URI + token.
+	var regInfo *snykbroker.RegistrationInfoResponse
+	backoff := tc.config.FailWaitTime
+	for tc.running.Load() {
+		var err error
+		regInfo, err = tc.registration.Register(tc.integrationInfo.Integration, tc.integrationInfo.Alias)
+		if err != nil {
+			tc.logger.Error("Registration failed, retrying", zap.Error(err), zap.Duration("backoff", backoff))
+			time.Sleep(backoff)
+			backoff = min(backoff*2, 30*time.Second)
+			continue
+		}
+		break
+	}
+
+	if regInfo == nil || !tc.running.Load() {
+		return "", ""
+	}
+
+	tc.logger.Info("Registered with Cortex API",
+		zap.String("serverUri", regInfo.ServerUri),
+	)
+
+	// Use BROKER_SERVER_URL override if set, otherwise use registered server URI.
+	serverAddr = envServerURL
+	if serverAddr == "" {
+		serverAddr = regInfo.ServerUri
+	}
+
+	return serverAddr, regInfo.Token
 }
 
 func (tc *tunnelClient) setupExecutor() error {
