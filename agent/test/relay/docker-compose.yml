@@ -38,7 +38,7 @@ services:
     # Use combined CA bundle (system CAs + our mitmproxy CA for broker cert verification)
     command: mitmdump -s /home/mitmproxy/addon.py --set ssl_verify_upstream_trusted_ca=/home/mitmproxy/.mitmproxy/combined-ca-bundle.crt
     healthcheck:
-      test: ["CMD", "nc", "-z", "localhost", "8080"]
+      test: ["CMD", "python3", "-c", "import socket; s=socket.socket(); s.connect(('localhost', 8080)); s.close()"]
       interval: 2s
       timeout: 5s
       retries: 10
