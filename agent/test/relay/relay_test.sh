@@ -26,6 +26,9 @@ then
     # This enforces that WebSocket connections MUST go through mitmproxy
     # docker-compose.proxy.yml enables HTTPS broker connection through proxy (TLS-through-proxy)
     export COMPOSE_FILES="-f docker-compose.yml -f docker-compose.proxy.yml"
+
+    # Generate TLS certificates if needed (for CI environments)
+    ./generate-certs.sh
 else
     echo "TESTING WITHOUT PROXY"
     export ENVFILE=noproxy.env
