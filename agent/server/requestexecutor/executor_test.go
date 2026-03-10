@@ -286,3 +286,185 @@ func TestBuildTargetURL(t *testing.T) {
 		})
 	}
 }
+
+func TestMatchRule_ValidHeaderRequirement(t *testing.T) {
+	tests := []struct {
+		name        string
+		requirements []acceptfile.ValidHeaderRequirement
+		headers     map[string]string
+		shouldMatch bool
+	}{
+		{
+			name:         "no requirements - always matches",
+			requirements: nil,
+			headers:      nil,
+			shouldMatch:  true,
+		},
+		{
+			name: "header present with matching value",
+			requirements: []acceptfile.ValidHeaderRequirement{
+				{Header: "x-cortex-service", Values: []string{"scaffolder"}},
+			},
+			headers:     map[string]string{"x-cortex-service": "scaffolder"},
+			shouldMatch: true,
+		},
+		{
+			name: "header present but wrong value",
+			requirements: []acceptfile.ValidHeaderRequirement{
+				{Header: "x-cortex-service", Values: []string{"scaffolder"}},
+			},
+			headers:     map[string]string{"x-cortex-service": "other"},
+			shouldMatch: false,
+		},
+		{
+			name: "header missing",
+			requirements: []acceptfile.ValidHeaderRequirement{
+				{Header: "x-cortex-service", Values: []string{"scaffolder"}},
+			},
+			headers:     map[string]string{"x-other": "value"},
+			shouldMatch: false,
+		},
+		{
+			name: "header missing - nil headers",
+			requirements: []acceptfile.ValidHeaderRequirement{
+				{Header: "x-cortex-service", Values: []string{"scaffolder"}},
+			},
+			headers:     nil,
+			shouldMatch: false,
+		},
+		{
+			name: "case insensitive header name",
+			requirements: []acceptfile.ValidHeaderRequirement{
+				{Header: "X-Cortex-Service", Values: []string{"scaffolder"}},
+			},
+			headers:     map[string]string{"x-cortex-service": "scaffolder"},
+			shouldMatch: true,
+		},
+		{
+			name: "case insensitive header value",
+			requirements: []acceptfile.ValidHeaderRequirement{
+				{Header: "x-cortex-service", Values: []string{"Scaffolder"}},
+			},
+			headers:     map[string]string{"x-cortex-service": "scaffolder"},
+			shouldMatch: true,
+		},
+		{
+			name: "multiple allowed values - first matches",
+			requirements: []acceptfile.ValidHeaderRequirement{
+				{Header: "x-cortex-service", Values: []string{"scaffolder", "catalog", "other"}},
+			},
+			headers:     map[string]string{"x-cortex-service": "scaffolder"},
+			shouldMatch: true,
+		},
+		{
+			name: "multiple allowed values - second matches",
+			requirements: []acceptfile.ValidHeaderRequirement{
+				{Header: "x-cortex-service", Values: []string{"scaffolder", "catalog", "other"}},
+			},
+			headers:     map[string]string{"x-cortex-service": "catalog"},
+			shouldMatch: true,
+		},
+		{
+			name: "multiple allowed values - none match",
+			requirements: []acceptfile.ValidHeaderRequirement{
+				{Header: "x-cortex-service", Values: []string{"scaffolder", "catalog"}},
+			},
+			headers:     map[string]string{"x-cortex-service": "unknown"},
+			shouldMatch: false,
+		},
+		{
+			name: "multiple requirements - all must match",
+			requirements: []acceptfile.ValidHeaderRequirement{
+				{Header: "x-cortex-service", Values: []string{"scaffolder"}},
+				{Header: "x-cortex-tenant", Values: []string{"acme"}},
+			},
+			headers: map[string]string{
+				"x-cortex-service": "scaffolder",
+				"x-cortex-tenant":  "acme",
+			},
+			shouldMatch: true,
+		},
+		{
+			name: "multiple requirements - one missing",
+			requirements: []acceptfile.ValidHeaderRequirement{
+				{Header: "x-cortex-service", Values: []string{"scaffolder"}},
+				{Header: "x-cortex-tenant", Values: []string{"acme"}},
+			},
+			headers:     map[string]string{"x-cortex-service": "scaffolder"},
+			shouldMatch: false,
+		},
+		{
+			name: "empty values array - just check header exists",
+			requirements: []acceptfile.ValidHeaderRequirement{
+				{Header: "x-cortex-service", Values: []string{}},
+			},
+			headers:     map[string]string{"x-cortex-service": "anything"},
+			shouldMatch: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := matchesValid(tt.requirements, tt.headers)
+			assert.Equal(t, tt.shouldMatch, result)
+		})
+	}
+}
+
+func TestMatchRule_WithValidHeaders(t *testing.T) {
+	// Test that MatchRule correctly uses valid header requirements to select the right rule.
+	rulesJSON := `{
+		"private": [
+			{
+				"method": "any",
+				"path": "/*",
+				"origin": "https://github.com",
+				"valid": [
+					{
+						"header": "x-cortex-service",
+						"values": ["scaffolder"]
+					}
+				]
+			},
+			{
+				"method": "any",
+				"path": "/*",
+				"origin": "https://api.github.com"
+			}
+		]
+	}`
+
+	cfg := config.AgentConfig{
+		HttpServerPort: 8080,
+		PluginDirs:     []string{},
+	}
+
+	rules := makeRules(t, rulesJSON, cfg)
+	// Filter out the axon route added by render.
+	var filteredRules []acceptfile.AcceptFileRuleWrapper
+	for _, r := range rules {
+		if r.Path() != "/__axon/*" {
+			filteredRules = append(filteredRules, r)
+		}
+	}
+
+	t.Run("with scaffolder header - matches first rule", func(t *testing.T) {
+		headers := map[string]string{"x-cortex-service": "scaffolder"}
+		rule := MatchRule(filteredRules, "GET", "/repos/foo", headers)
+		require.NotNil(t, rule)
+		assert.Equal(t, "https://github.com", rule.Origin())
+	})
+
+	t.Run("without scaffolder header - skips first rule, matches second", func(t *testing.T) {
+		headers := map[string]string{"x-other": "value"}
+		rule := MatchRule(filteredRules, "GET", "/repos/foo", headers)
+		require.NotNil(t, rule)
+		assert.Equal(t, "https://api.github.com", rule.Origin())
+	})
+
+	t.Run("no headers - skips first rule, matches second", func(t *testing.T) {
+		rule := MatchRule(filteredRules, "GET", "/repos/foo")
+		require.NotNil(t, rule)
+		assert.Equal(t, "https://api.github.com", rule.Origin())
+	})
+}

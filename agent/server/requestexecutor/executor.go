@@ -51,7 +51,7 @@ func NewRequestExecutor(rules []acceptfile.AcceptFileRuleWrapper, httpClient *ht
 }
 
 func (e *requestExecutor) Execute(ctx context.Context, method, path string, headers map[string]string, body []byte) (*ExecutorResponse, error) {
-	rule := MatchRule(e.rules, method, path)
+	rule := MatchRule(e.rules, method, path, headers)
 	if rule == nil {
 		return nil, ErrNoMatchingRule
 	}

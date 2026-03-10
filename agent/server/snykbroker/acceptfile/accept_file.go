@@ -290,6 +290,50 @@ func (r AcceptFileRuleWrapper) Headers() ResolverMap {
 	return result
 }
 
+// ValidHeaderRequirement represents a header validation rule from the "valid" field.
+type ValidHeaderRequirement struct {
+	Header string
+	Values []string
+}
+
+// Valid returns the header validation requirements for this rule.
+// If the rule has a "valid" field, incoming requests must have headers matching these requirements.
+func (r AcceptFileRuleWrapper) Valid() []ValidHeaderRequirement {
+	validArr, ok := r.dict["valid"].([]any)
+	if !ok {
+		return nil
+	}
+
+	var requirements []ValidHeaderRequirement
+	for _, item := range validArr {
+		itemDict, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		header, _ := itemDict["header"].(string)
+		if header == "" {
+			continue
+		}
+
+		var values []string
+		if valuesArr, ok := itemDict["values"].([]any); ok {
+			for _, v := range valuesArr {
+				if str, ok := v.(string); ok {
+					values = append(values, str)
+				}
+			}
+		}
+
+		requirements = append(requirements, ValidHeaderRequirement{
+			Header: header,
+			Values: values,
+		})
+	}
+
+	return requirements
+}
+
 // Here are our JSON structed types that represent the accept file rules.
 // that we can use for things that we are generating such that we don't need to worry
 // about additional fields that might be in the accept file that we don't know about.

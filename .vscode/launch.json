@@ -112,7 +112,7 @@
                 "relay-grpc",
                 "-v"
             ],
-            //"envFile": "${workspaceFolder}/.env",
+            "envFile": "${workspaceFolder}/.env",
             "env": {
                 "SCAFFOLD_DIR": "${workspaceFolder}/scaffold",
                 "SCAFFOLD_DOCKER_IMAGE": "cortex-axon-agent:local",
@@ -121,6 +121,7 @@
                 "RELAY_MODE": "grpc-tunnel",
                 "BROKER_SERVER_URL": "localhost:50052",
                 "BROKER_TOKEN": "4f49654b-000-0000-000-9deef1d9f2f6",
+                "CORTEX_TENANT_ID": "1",
                 "GRPC_INSECURE": "true",
                 "TUNNEL_COUNT": "1",
                 "CORTEX_API_TOKEN": "abc-123"
