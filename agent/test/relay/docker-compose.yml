@@ -5,6 +5,7 @@ services:
       dockerfile: Dockerfile.snyk-broker-server
     image: cortex-snyk-broker-server:local
     ports:
+      # Expose HTTP for direct test script access (curl commands in relay_test.sh)
       - "${SERVER_PORT}:7341"
     volumes:
       - .:/src
@@ -12,6 +13,19 @@ services:
       ACCEPT: /src/accept-server.json
     networks:
       - external  # snyk-broker is on external network only
+
+  # TLS proxy in front of snyk-broker (mimics production relay.cortex.io setup)
+  # axon-relay connects here via proxy to test TLS-through-proxy scenario
+  snyk-broker-tls:
+    image: nginx:alpine
+    # No external port needed - accessed internally via mitmproxy
+    volumes:
+      - ./nginx-tls-proxy.conf:/etc/nginx/nginx.conf:ro
+      - ./.mitmproxy:/certs:ro
+    depends_on:
+      - snyk-broker
+    networks:
+      - external  # TLS proxy is on external network
 
   mitmproxy:
     image: mitmproxy/mitmproxy:12
@@ -21,7 +35,8 @@ services:
     volumes:
       - ./.mitmproxy:/home/mitmproxy/.mitmproxy
       - ./mitmproxy_addon_header.py:/home/mitmproxy/addon.py
-    command: mitmdump -s /home/mitmproxy/addon.py
+    # Use combined CA bundle (system CAs + our mitmproxy CA for broker cert verification)
+    command: mitmdump -s /home/mitmproxy/addon.py --set ssl_verify_upstream_trusted_ca=/home/mitmproxy/.mitmproxy/combined-ca-bundle.crt
     networks:
       - internal  # mitmproxy bridges both networks
       - external
@@ -46,7 +61,7 @@ services:
     depends_on:
       mitmproxy:
         condition: service_started
-      snyk-broker:
+      snyk-broker-tls:
         condition: service_started
       cortex-fake:
         condition: service_healthy
@@ -81,6 +96,8 @@ services:
       - .:/src
     environment:
       PORT: 8081
+      # Default: HTTP for non-proxy mode (direct connection)
+      # Override in docker-compose.proxy.yml for HTTPS through proxy
       BROKER_SERVER_URL: http://snyk-broker:7341
       TOKEN: ${TOKEN:-0e481b34-76ac-481a-a92f-c94a6cf6f6c2}
     command: sh -c "apk add curl && cd /src && go run cortex-registration-fake.go"

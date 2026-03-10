@@ -634,3 +634,157 @@ func TestWebSocketProxyFullFlowThroughHTTPProxy(t *testing.T) {
 	require.NotNil(t, conn)
 	conn.Close()
 }
+
+func TestWebSocketProxyFullFlowThroughHTTPProxyWithTLS(t *testing.T) {
+	// Create a TLS WebSocket echo server (the actual target)
+	var upgrader = websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool { return true },
+	}
+
+	targetRouter := mux.NewRouter()
+	targetRouter.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+		t.Logf("Target received request: %s %s", r.Method, r.URL)
+		t.Logf("Target headers: Host=%s Upgrade=%s Connection=%s",
+			r.Host, r.Header.Get("Upgrade"), r.Header.Get("Connection"))
+
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Logf("WebSocket upgrade failed: %v", err)
+			return
+		}
+		defer conn.Close()
+
+		// Echo messages back
+		for {
+			messageType, message, err := conn.ReadMessage()
+			if err != nil {
+				t.Logf("Target read error: %v", err)
+				break
+			}
+			t.Logf("Target received message: %s", message)
+			if err := conn.WriteMessage(messageType, message); err != nil {
+				t.Logf("Target write error: %v", err)
+				break
+			}
+		}
+	})
+
+	// Use NewTLSServer for HTTPS target
+	targetServer := httptest.NewTLSServer(targetRouter)
+	defer targetServer.Close()
+
+	t.Logf("TLS Target server at: %s", targetServer.URL)
+
+	// Create an HTTP CONNECT proxy (transparent tunnel - doesn't inspect TLS)
+	proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "CONNECT" {
+			http.Error(w, "Expected CONNECT", http.StatusMethodNotAllowed)
+			return
+		}
+
+		t.Logf("Proxy received CONNECT to %s", r.Host)
+
+		// Connect to the target (TLS server)
+		targetConn, err := net.Dial("tcp", r.Host)
+		if err != nil {
+			t.Logf("Proxy failed to connect to target: %v", err)
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+
+		hijacker, ok := w.(http.Hijacker)
+		if !ok {
+			targetConn.Close()
+			http.Error(w, "Hijacking not supported", http.StatusInternalServerError)
+			return
+		}
+		clientConn, _, err := hijacker.Hijack()
+		if err != nil {
+			targetConn.Close()
+			return
+		}
+
+		// Send 200 OK to establish the tunnel
+		clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
+		t.Log("Proxy sent 200 Connection Established")
+
+		// Bidirectional copy - TLS traffic passes through transparently
+		done := make(chan struct{}, 2)
+		go func() {
+			n, _ := io.Copy(targetConn, clientConn)
+			t.Logf("Proxy: client->target copied %d bytes", n)
+			targetConn.Close()
+			done <- struct{}{}
+		}()
+		go func() {
+			n, _ := io.Copy(clientConn, targetConn)
+			t.Logf("Proxy: target->client copied %d bytes", n)
+			clientConn.Close()
+			done <- struct{}{}
+		}()
+		<-done
+		<-done
+		t.Log("Proxy: tunnel closed")
+	}))
+	defer proxyServer.Close()
+
+	t.Logf("Proxy server at: %s", proxyServer.URL)
+
+	// Create WebSocketProxy with the proxy configured via transport
+	// Use InsecureSkipVerify since the target uses a self-signed test certificate
+	logger := zaptest.NewLogger(t)
+	proxyURL, _ := url.Parse(proxyServer.URL)
+	transport := &http.Transport{
+		Proxy: http.ProxyURL(proxyURL),
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: true,
+		},
+	}
+
+	wsProxy := NewWebSocketProxy(logger, transport)
+
+	// Test dialTarget - this establishes TCP -> CONNECT -> TLS
+	targetURL, _ := url.Parse(targetServer.URL)
+	targetAddr := wsProxy.resolveTargetAddr(targetURL)
+
+	t.Logf("Dialing target URL: %s, addr: %s", targetServer.URL, targetAddr)
+
+	conn, err := wsProxy.dialTarget(targetURL, targetAddr)
+	require.NoError(t, err, "dialTarget through proxy to TLS target should succeed")
+	require.NotNil(t, conn)
+
+	// Verify it's a TLS connection
+	tlsConn, ok := conn.(*tls.Conn)
+	require.True(t, ok, "connection should be a TLS connection")
+
+	state := tlsConn.ConnectionState()
+	t.Logf("TLS state: version=%d, handshakeComplete=%v, serverName=%s",
+		state.Version, state.HandshakeComplete, state.ServerName)
+	require.True(t, state.HandshakeComplete, "TLS handshake should be complete")
+
+	// Now send a WebSocket upgrade request through the TLS tunnel
+	upgradeReq := "GET /ws HTTP/1.1\r\n" +
+		"Host: " + targetURL.Host + "\r\n" +
+		"Upgrade: websocket\r\n" +
+		"Connection: Upgrade\r\n" +
+		"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" +
+		"Sec-WebSocket-Version: 13\r\n" +
+		"\r\n"
+
+	t.Log("Sending WebSocket upgrade request")
+	_, err = conn.Write([]byte(upgradeReq))
+	require.NoError(t, err, "write upgrade request should succeed")
+
+	// Read the response
+	buf := make([]byte, 4096)
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	n, err := conn.Read(buf)
+	require.NoError(t, err, "read upgrade response should succeed")
+
+	response := string(buf[:n])
+	t.Logf("Received response:\n%s", response)
+	require.Contains(t, response, "101 Switching Protocols", "should receive WebSocket upgrade response")
+	require.Contains(t, response, "Upgrade: websocket", "response should have Upgrade header")
+
+	conn.Close()
+}

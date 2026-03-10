@@ -24,7 +24,8 @@ then
     export ENVFILE=proxy.env
     # Base docker-compose.yml has axon-relay on internal network only
     # This enforces that WebSocket connections MUST go through mitmproxy
-    export COMPOSE_FILES="-f docker-compose.yml"
+    # docker-compose.proxy.yml enables HTTPS broker connection through proxy (TLS-through-proxy)
+    export COMPOSE_FILES="-f docker-compose.yml -f docker-compose.proxy.yml"
 else
     echo "TESTING WITHOUT PROXY"
     export ENVFILE=noproxy.env

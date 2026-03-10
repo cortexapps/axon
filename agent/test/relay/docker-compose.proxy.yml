@@ -1,0 +1,17 @@
+# Override for PROXY=1 testing - enables HTTPS broker connection through proxy
+#
+# Usage: docker compose -f docker-compose.yml -f docker-compose.proxy.yml up
+#
+# This enables the full TLS-through-proxy scenario:
+# 1. axon-relay connects via HTTP CONNECT proxy (mitmproxy)
+# 2. Establishes TLS tunnel to snyk-broker-tls (nginx TLS termination)
+# 3. WebSocket upgrade happens over HTTPS/WSS
+#
+# This matches the production scenario where customers connect through
+# corporate proxies to relay.cortex.io:443
+
+services:
+  cortex-fake:
+    environment:
+      # Override to use HTTPS endpoint via TLS proxy
+      BROKER_SERVER_URL: https://snyk-broker-tls:7341
