@@ -33,10 +33,12 @@ services:
       - "9980:8080"
       - "9981:8081"
     volumes:
-      - ./.mitmproxy:/home/mitmproxy/.mitmproxy
+      # Mount to /certs (not /home/mitmproxy/.mitmproxy) to avoid entrypoint usermod failure in CI
+      - ./.mitmproxy:/certs
       - ./mitmproxy_addon_header.py:/home/mitmproxy/addon.py
-    # Use combined CA bundle (system CAs + our mitmproxy CA for broker cert verification)
-    command: mitmdump -s /home/mitmproxy/addon.py --set ssl_verify_upstream_trusted_ca=/home/mitmproxy/.mitmproxy/combined-ca-bundle.crt
+    # Use confdir=/certs so mitmproxy uses our CA files from /certs instead of default location
+    # This avoids the entrypoint script trying to chown files (which fails in CI)
+    command: mitmdump --set confdir=/certs -s /home/mitmproxy/addon.py --set ssl_verify_upstream_trusted_ca=/certs/combined-ca-bundle.crt
     healthcheck:
       test: ["CMD", "python3", "-c", "import socket; s=socket.socket(); s.connect(('localhost', 8080)); s.close()"]
       interval: 2s
