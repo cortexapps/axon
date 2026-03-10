@@ -709,22 +709,20 @@ func TestWebSocketProxyFullFlowThroughHTTPProxyWithTLS(t *testing.T) {
 		t.Log("Proxy sent 200 Connection Established")
 
 		// Bidirectional copy - TLS traffic passes through transparently
+		// Note: Don't use t.Logf in goroutines - test may complete before they finish
 		done := make(chan struct{}, 2)
 		go func() {
-			n, _ := io.Copy(targetConn, clientConn)
-			t.Logf("Proxy: client->target copied %d bytes", n)
+			io.Copy(targetConn, clientConn)
 			targetConn.Close()
 			done <- struct{}{}
 		}()
 		go func() {
-			n, _ := io.Copy(clientConn, targetConn)
-			t.Logf("Proxy: target->client copied %d bytes", n)
+			io.Copy(clientConn, targetConn)
 			clientConn.Close()
 			done <- struct{}{}
 		}()
 		<-done
 		<-done
-		t.Log("Proxy: tunnel closed")
 	}))
 	defer proxyServer.Close()
 
