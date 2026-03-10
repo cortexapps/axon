@@ -51,7 +51,7 @@ func TestNewAgentEnvConfig_DefaultValues(t *testing.T) {
 	// WebSocket upgrade should be enabled by default
 	require.True(t, config.ReflectorWebSocketUpgrade)
 	// Relay idle timeout default
-	require.Equal(t, 5*time.Minute, config.RelayIdleTimeout)
+	require.Equal(t, 10*time.Minute, config.RelayIdleTimeout)
 }
 
 func TestNewAgentEnvConfig_CustomValues(t *testing.T) {
@@ -177,7 +177,7 @@ func TestRelayIdleTimeoutEnvVar(t *testing.T) {
 		envValue string
 		expected time.Duration
 	}{
-		{"default (not set)", "", 5 * time.Minute},
+		{"default (not set)", "", 10 * time.Minute},
 		{"custom value", "10m", 10 * time.Minute},
 		{"disabled", "0s", 0},
 		{"short duration", "30s", 30 * time.Second},

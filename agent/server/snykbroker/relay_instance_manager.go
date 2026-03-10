@@ -49,10 +49,10 @@ type relayInstanceManager struct {
 	config            config.AgentConfig
 	logger            *zap.Logger
 	supervisor        *Supervisor
-	running    atomic.Bool
-	startCount atomic.Int32
-	generation atomic.Int32 // incremented on each Start(), used to deduplicate restart requests
-	tokenInfo  *tokenInfo
+	running           atomic.Bool
+	startCount        atomic.Int32
+	generation        atomic.Int32 // incremented on each Start(), used to deduplicate restart requests
+	tokenInfo         *tokenInfo
 	operationsCounter *prometheus.CounterVec
 	transport         *http.Transport
 
@@ -527,7 +527,9 @@ func (r *relayInstanceManager) Start() error {
 	// WebSocket tunnel death: request restart when the primus tunnel closes.
 	if r.reflector != nil && r.config.HttpRelayReflectorMode.ReflectsRegistration() {
 		r.reflector.SetOnWSTunnelClose(func() {
-			r.requestRestart("ws_tunnel_death", gen)
+			if os.Getenv("BROKER_RESTART_ON_WEBSOCKET_CLOSE") == "true" {
+				r.requestRestart("ws_tunnel_death", gen)
+			}
 		})
 	}
 
@@ -554,6 +556,13 @@ func (r *relayInstanceManager) Start() error {
 		// for the backend.
 		for {
 			if !r.running.Load() {
+				return
+			}
+			// Check if we've been superseded by a restart (new generation).
+			// Without this check, after Restart() calls Start() and sets
+			// running=true, old goroutines would continue making registration
+			// calls alongside new ones, causing duplicate API calls.
+			if r.generation.Load() != gen {
 				return
 			}
 			info, errx = r.getUrlAndToken()

@@ -135,7 +135,7 @@ func TestBuildRelayStack(t *testing.T) {
 	config.FailWaitTime = time.Millisecond
 	config.HttpServerPort = common.GetRandomPort()
 	config.WebhookServerPort = common.GetRandomPort()
-	// Set a random port for the HTTP server
+	config.RelayIdleTimeout = 0 // Disable idle timeout to prevent restart during test
 	stack := buildRelayStack(&cobra.Command{}, config, common.IntegrationInfo{
 		Integration: common.IntegrationGithub,
 	})

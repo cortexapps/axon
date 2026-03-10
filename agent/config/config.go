@@ -81,11 +81,11 @@ type AgentConfig struct {
 	HandlerHistoryMaxAge       time.Duration
 	HandlerHistoryMaxSizeBytes int64
 
-	HttpDisableTLS                bool
-	HttpCaCertFilePath            string
-	HttpRelayReflectorMode        RelayReflectorMode
-	ReflectorWebSocketUpgrade     bool
-	RelayIdleTimeout              time.Duration
+	HttpDisableTLS            bool
+	HttpCaCertFilePath        string
+	HttpRelayReflectorMode    RelayReflectorMode
+	ReflectorWebSocketUpgrade bool
+	RelayIdleTimeout          time.Duration
 }
 
 func (ac AgentConfig) HttpBaseUrl() string {
@@ -293,7 +293,7 @@ func NewAgentEnvConfig() AgentConfig {
 		cfg.ReflectorWebSocketUpgrade = false
 	}
 
-	cfg.RelayIdleTimeout = 5 * time.Minute
+	cfg.RelayIdleTimeout = 10 * time.Minute
 	if relayIdleTimeout := os.Getenv("RELAY_IDLE_TIMEOUT"); relayIdleTimeout != "" {
 		rit, err := time.ParseDuration(relayIdleTimeout)
 		if err != nil {
