@@ -13,28 +13,33 @@ set -e
 
 export TOKEN=0e481b34-76ac-481a-a92f-c94a6cf6f6c1
 export GRPC_PORT=50152
+export HTTP_PORT=58180
 
 if [ "$PROXY" == "1" ]; then
     echo "TESTING WITH PROXY"
     export ENVFILE=proxy.env
-    export HTTP_PORT=58180
+    # Base docker-compose.grpc.yml has axon-relay on internal network only
+    # This enforces that gRPC connections MUST go through mitmproxy
+    export COMPOSE_FILES="-f docker-compose.grpc.yml"
 else
     echo "TESTING WITHOUT PROXY"
     export ENVFILE=noproxy.env
-    export HTTP_PORT=58180
-fi
+    # Add external network so axon-relay can connect directly to grpc-tunnel-server
+    export COMPOSE_FILES="-f docker-compose.grpc.yml -f docker-compose.grpc.noproxy.yml"
 
-COMPOSE="docker compose -f docker-compose.grpc.yml"
+    # Also set the HTTP_PORT to a different value to ensure we respect that port
+    export HTTP_PORT=58280
+fi
 
 function cleanup {
     echo "Cleanup: Stopping docker-compose"
-    $COMPOSE down
+    docker compose $COMPOSE_FILES down
     rm -f /tmp/token-* /tmp/axon-test-token /tmp/binary-test-*.bin /tmp/binary-test-*.downloaded
 }
 trap cleanup EXIT
 
 echo "Starting docker compose (gRPC tunnel)..."
-$COMPOSE up -d
+docker compose $COMPOSE_FILES up -d
 sleep 5
 
 function get_container_status {
@@ -57,7 +62,7 @@ AXON_STATUS=$(get_container_status relay-axon-relay-1)
 while [ "$SERVER_STATUS" != "running" ] || [ "$AXON_STATUS" != "running" ]; do
     if [ $COUNTER -eq 0 ]; then
         echo "Containers did not start in time"
-        $COMPOSE logs
+        docker compose $COMPOSE_FILES logs
         exit 1
     fi
 
@@ -74,7 +79,7 @@ COUNTER=30
 while ! curl -sf http://localhost:$HTTP_PORT/healthz > /dev/null 2>&1; do
     if [ $COUNTER -eq 0 ]; then
         echo "grpc-tunnel-server healthz did not pass in time"
-        $COMPOSE logs grpc-tunnel-server
+        docker compose $COMPOSE_FILES logs grpc-tunnel-server
         exit 1
     fi
     sleep 1
@@ -95,7 +100,7 @@ while true; do
     if [ $COUNTER -eq 0 ]; then
         echo "No tunnel streams registered in time"
         echo "Server health: $HEALTH"
-        $COMPOSE logs
+        docker compose $COMPOSE_FILES logs
         exit 1
     fi
     sleep 1
@@ -128,7 +133,7 @@ result=$(curlw $DISPATCH_URL/$FILENAME)
 
 if [ "$result" != "$TOKEN" ]; then
     echo "FAIL: Expected $TOKEN, got $result"
-    $COMPOSE logs
+    docker compose $COMPOSE_FILES logs
     exit 1
 fi
 echo "Success: Text file relay through gRPC tunnel"
@@ -143,7 +148,7 @@ curl -s -f -o "$BINARY_DOWNLOAD" "$DISPATCH_URL/$BINARY_FILENAME"
 DOWNLOAD_STATUS=$?
 if [ $DOWNLOAD_STATUS -ne 0 ]; then
     echo "FAIL: curl failed to download binary file (exit code $DOWNLOAD_STATUS)"
-    $COMPOSE logs
+    docker compose $COMPOSE_FILES logs
     exit 1
 fi
 
@@ -162,7 +167,7 @@ echo "Checking HTTPS relay (GitHub README)..."
 if ! proxy_result=$(curlw -f -v $DISPATCH_URL/cortexapps/axon/refs/heads/main/README.md 2>&1); then
     echo "FAIL: Expected to be able to read the axon readme from GitHub, but got error"
     echo "$proxy_result"
-    $COMPOSE logs
+    docker compose $COMPOSE_FILES logs
     exit 1
 fi
 echo "Success: HTTPS relay through gRPC tunnel"
@@ -201,7 +206,7 @@ if [ "$PROXY" == "1" ]; then
 
     # Verify gRPC tunnel streams are active (replaces WebSocket tunnel check).
     echo "Checking gRPC tunnel streams..."
-    axon_logs=$($COMPOSE logs axon-relay 2>&1)
+    axon_logs=$(docker compose $COMPOSE_FILES logs axon-relay 2>&1)
     if ! echo "$axon_logs" | grep -q "Tunnel stream established"; then
         echo "FAIL: Expected 'Tunnel stream established' in agent logs but not found"
         echo "=== Axon Relay Logs (last 50) ==="
@@ -219,5 +224,83 @@ else
         echo "Success: Did not find 'x-proxy-mitmproxy' header (as expected)"
     fi
 fi
+
+echo "=== gRPC tunnel reconnection after SIGKILL ==="
+
+# Force-kill the grpc-tunnel-server container to simulate a non-graceful disconnect.
+# This tears down the TCP connection without sending a gRPC GoAway frame, which
+# is what happens when the tunnel server crashes or the network drops.
+echo "Force-killing grpc-tunnel-server container..."
+docker kill --signal=KILL relay-grpc-tunnel-server-1
+
+# Wait for the container to be fully dead
+sleep 2
+SERVER_STATUS=$(get_container_status relay-grpc-tunnel-server-1)
+if [ "$SERVER_STATUS" == "running" ]; then
+    echo "FAIL: grpc-tunnel-server should be dead after SIGKILL"
+    exit 1
+fi
+echo "grpc-tunnel-server is stopped (status=$SERVER_STATUS)"
+
+# Restart the tunnel server
+echo "Restarting grpc-tunnel-server container..."
+docker compose $COMPOSE_FILES up -d grpc-tunnel-server
+
+# Wait for the tunnel server to be healthy again
+COUNTER=30
+while [ $COUNTER -gt 0 ]; do
+    SERVER_STATUS=$(get_container_status relay-grpc-tunnel-server-1)
+    if [ "$SERVER_STATUS" == "running" ]; then
+        if curl -s -f http://localhost:$HTTP_PORT/healthz > /dev/null 2>&1; then
+            break
+        fi
+    fi
+    echo "Waiting for grpc-tunnel-server to be healthy ($COUNTER)..."
+    sleep 1
+    COUNTER=$((COUNTER-1))
+done
+
+if [ $COUNTER -eq 0 ]; then
+    echo "FAIL: grpc-tunnel-server did not become healthy in time"
+    docker compose $COMPOSE_FILES logs grpc-tunnel-server
+    exit 1
+fi
+echo "grpc-tunnel-server is back up"
+
+# Give the axon relay time to detect the disconnect and reconnect.
+# The gRPC tunnel client uses exponential backoff so 15s should be enough
+# for the first reconnect attempt.
+echo "Waiting for axon relay to reconnect..."
+COUNTER=60
+while [ $COUNTER -gt 0 ]; do
+    HEALTH=$(curl -sf http://localhost:$HTTP_PORT/healthz 2>/dev/null || echo '{}')
+    STREAMS=$(echo "$HEALTH" | grep -o '"streams":[0-9]*' | grep -o '[0-9]*' || echo "0")
+    if [ "$STREAMS" -gt 0 ]; then
+        break
+    fi
+    echo "Waiting for tunnel stream re-establishment ($COUNTER)..."
+    sleep 1
+    COUNTER=$((COUNTER-1))
+done
+
+if [ $COUNTER -eq 0 ]; then
+    echo "FAIL: Tunnel stream did not re-establish in time"
+    docker compose $COMPOSE_FILES logs --tail=80 axon-relay
+    exit 1
+fi
+echo "Tunnel re-established with $STREAMS active stream(s)"
+
+# Now verify the relay is working again by sending a request through the tunnel
+FILENAME="token-reconnect-$(date +%s)"
+echo "$TOKEN" > /tmp/$FILENAME
+result=$(curlw $DISPATCH_URL/$FILENAME)
+
+if [ "$result" != "$TOKEN" ]; then
+    echo "FAIL: Expected $TOKEN after reconnect, got '$result'"
+    echo "=== Axon Relay Logs (last 80) ==="
+    docker compose $COMPOSE_FILES logs --tail=80 axon-relay
+    exit 1
+fi
+echo "Success: gRPC tunnel passthrough works after SIGKILL + restart"
 
 echo "Success! gRPC tunnel e2e test passed!"

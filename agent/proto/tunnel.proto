@@ -1,0 +1,111 @@
+syntax = "proto3";
+
+package cortex.axon.tunnel;
+
+option go_package = "github.com/cortexapps/axon/tunnelpb";
+
+// TunnelService provides a bidirectional streaming tunnel between
+// Axon agents (clients) and the gRPC relay server. The server dispatches
+// HTTP requests from the Cortex backend through the tunnel to agents
+// running inside customer networks.
+service TunnelService {
+  // Tunnel establishes a persistent bidirectional stream.
+  // Client sends ClientHello first, then heartbeats and HTTP responses.
+  // Server sends ServerHello, then heartbeats and HTTP requests.
+  rpc Tunnel(stream TunnelClientMessage) returns (stream TunnelServerMessage);
+}
+
+// Client → Server envelope
+message TunnelClientMessage {
+  oneof message {
+    ClientHello hello = 1;
+    Heartbeat heartbeat = 2;
+    HttpResponse http_response = 3;
+  }
+}
+
+// Server → Client envelope
+message TunnelServerMessage {
+  oneof message {
+    ServerHello hello = 1;
+    Heartbeat heartbeat = 2;
+    HttpRequest http_request = 3;
+  }
+}
+
+// ClientHello is the first message sent by the client after opening a stream.
+// It carries identity information and the Cortex-API-issued broker token.
+message ClientHello {
+  // Cortex-API-issued token, used for BROKER_SERVER dispatch routing.
+  string broker_token = 1;
+  // Client software version.
+  string client_version = 2;
+  // Tenant identifier from Cortex API registration.
+  string tenant_id = 3;
+  // Integration type, e.g. "github", "jira".
+  string integration = 4;
+  // Integration alias name.
+  string alias = 5;
+  // Unique agent instance ID (from config.InstanceId).
+  string instance_id = 6;
+  // Cortex API token for optional server-side JWT validation.
+  string cortex_api_token = 7;
+  // Arbitrary metadata.
+  map<string, string> metadata = 8;
+}
+
+// ServerHello is the response to ClientHello.
+message ServerHello {
+  // Server hostname (HOSTNAME env var, or UUID fallback).
+  string server_id = 1;
+  // Interval at which the server sends heartbeats.
+  int32 heartbeat_interval_ms = 2;
+  // Server-generated UUID for this specific stream.
+  string stream_id = 3;
+}
+
+// Heartbeat is sent by both sides to verify tunnel liveness.
+message Heartbeat {
+  // Unix timestamp in milliseconds.
+  int64 timestamp_ms = 1;
+}
+
+// HttpRequest is an HTTP request dispatched from the server to the client.
+// Large bodies are chunked: the first chunk carries method/path/headers,
+// subsequent chunks carry only body/chunk_index/is_final.
+message HttpRequest {
+  // Unique request identifier for correlating responses.
+  string request_id = 1;
+  // HTTP method (GET, POST, PUT, DELETE, etc.).
+  string method = 2;
+  // Request path (e.g. "/api/v1/repos").
+  string path = 3;
+  // HTTP headers. Only set on first chunk (chunk_index=0).
+  map<string, string> headers = 4;
+  // Request body chunk.
+  bytes body = 5;
+  // Zero-based chunk index.
+  int32 chunk_index = 6;
+  // True if this is the last chunk for this request.
+  bool is_final = 7;
+  // Maximum time in milliseconds the server will wait for a response.
+  int32 timeout_ms = 8;
+}
+
+// HttpResponse is an HTTP response sent from the client back to the server.
+// Large bodies are chunked: the first chunk carries status_code/headers,
+// subsequent chunks carry only body/chunk_index/is_final.
+message HttpResponse {
+  // Must match the request_id of the corresponding HttpRequest.
+  string request_id = 1;
+  // HTTP status code. Only set on first chunk (chunk_index=0).
+  int32 status_code = 2;
+  // HTTP response headers. Only set on first chunk (chunk_index=0).
+  map<string, string> headers = 3;
+  // Response body chunk.
+  bytes body = 4;
+  // Zero-based chunk index.
+  int32 chunk_index = 5;
+  // True if this is the last chunk for this response.
+  bool is_final = 6;
+}

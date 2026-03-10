@@ -1,13 +1,17 @@
 package grpctunnel
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"math/rand/v2"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -315,8 +319,8 @@ func (tc *tunnelClient) startAsync() {
 	serverAddr = stripScheme(serverAddr)
 
 	// Establish gRPC connection.
-	creds := tc.buildTransportCredentials()
-	conn, err := grpc.NewClient(serverAddr, grpc.WithTransportCredentials(creds))
+	dialOpts, dialAddr := tc.buildDialOptions(serverAddr)
+	conn, err := grpc.NewClient(dialAddr, dialOpts...)
 	if err != nil {
 		tc.logger.Error("Failed to connect to gRPC server", zap.String("addr", serverAddr), zap.Error(err))
 		return
@@ -742,6 +746,105 @@ func (tc *tunnelClient) Close() error {
 
 	tc.logger.Info("gRPC tunnel closed")
 	return nil
+}
+
+func (tc *tunnelClient) buildDialOptions(targetAddr string) ([]grpc.DialOption, string) {
+	opts := []grpc.DialOption{}
+	dialAddr := targetAddr
+
+	// Add transport credentials.
+	creds := tc.buildTransportCredentials()
+	opts = append(opts, grpc.WithTransportCredentials(creds))
+
+	// Check for HTTP proxy configuration.
+	proxyURL := tc.getProxyURL(targetAddr)
+	if proxyURL != nil {
+		tc.logger.Info("Using HTTP proxy for gRPC connection",
+			zap.String("proxy", proxyURL.Host),
+			zap.String("target", targetAddr),
+		)
+		dialer := tc.buildProxyDialer(proxyURL)
+		opts = append(opts, grpc.WithContextDialer(dialer))
+
+		// Use passthrough scheme to skip local DNS resolution.
+		// This ensures the address is passed directly to our custom dialer,
+		// which will connect through the proxy and let the proxy resolve the hostname.
+		dialAddr = "passthrough:///" + targetAddr
+	}
+
+	return opts, dialAddr
+}
+
+// getProxyURL returns the proxy URL to use for the target address, or nil if no proxy.
+func (tc *tunnelClient) getProxyURL(targetAddr string) *url.URL {
+	// Build a fake request to use http.ProxyFromEnvironment
+	// This respects HTTP_PROXY, HTTPS_PROXY, and NO_PROXY.
+	scheme := "https"
+	if tc.config.GrpcInsecure {
+		scheme = "http"
+	}
+	fakeReq, _ := http.NewRequest("GET", fmt.Sprintf("%s://%s/", scheme, targetAddr), nil)
+	proxyURL, err := http.ProxyFromEnvironment(fakeReq)
+	if err != nil || proxyURL == nil {
+		return nil
+	}
+	return proxyURL
+}
+
+// buildProxyDialer returns a context dialer that connects through an HTTP CONNECT proxy.
+func (tc *tunnelClient) buildProxyDialer(proxyURL *url.URL) func(ctx context.Context, addr string) (net.Conn, error) {
+	return func(ctx context.Context, addr string) (net.Conn, error) {
+		// Connect to the proxy.
+		proxyAddr := proxyURL.Host
+		if proxyURL.Port() == "" {
+			proxyAddr = net.JoinHostPort(proxyURL.Hostname(), "8080")
+		}
+
+		var d net.Dialer
+		conn, err := d.DialContext(ctx, "tcp", proxyAddr)
+		if err != nil {
+			return nil, fmt.Errorf("failed to connect to proxy %s: %w", proxyAddr, err)
+		}
+
+		// Send HTTP CONNECT request.
+		connectReq := fmt.Sprintf("CONNECT %s HTTP/1.1\r\nHost: %s\r\n", addr, addr)
+
+		// Add proxy authentication if present.
+		if proxyURL.User != nil {
+			username := proxyURL.User.Username()
+			password, _ := proxyURL.User.Password()
+			auth := base64.StdEncoding.EncodeToString([]byte(username + ":" + password))
+			connectReq += fmt.Sprintf("Proxy-Authorization: Basic %s\r\n", auth)
+		}
+
+		connectReq += "\r\n"
+
+		if _, err := conn.Write([]byte(connectReq)); err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("failed to send CONNECT request: %w", err)
+		}
+
+		// Read the response.
+		br := bufio.NewReader(conn)
+		resp, err := http.ReadResponse(br, nil)
+		if err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("failed to read CONNECT response: %w", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			conn.Close()
+			return nil, fmt.Errorf("proxy CONNECT failed with status %d", resp.StatusCode)
+		}
+
+		tc.logger.Debug("HTTP CONNECT tunnel established",
+			zap.String("proxy", proxyURL.Host),
+			zap.String("target", addr),
+		)
+
+		return conn, nil
+	}
 }
 
 func (tc *tunnelClient) buildTransportCredentials() credentials.TransportCredentials {

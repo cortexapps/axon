@@ -1,0 +1,12 @@
+# Override for PROXY=0 testing - adds external network for direct access
+#
+# Usage: docker compose -f docker-compose.grpc.yml -f docker-compose.grpc.noproxy.yml up
+#
+# Without this override, axon-relay can only reach grpc-tunnel-server through mitmproxy.
+# This adds the external network so axon-relay can connect directly.
+
+services:
+  axon-relay:
+    networks:
+      - internal
+      - external

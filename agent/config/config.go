@@ -59,6 +59,13 @@ func (m RelayReflectorMode) IsEnabled() bool {
 	return m != RelayReflectorDisabled
 }
 
+type RelayMode string
+
+const (
+	RelayModeSnykBroker RelayMode = "snyk-broker"
+	RelayModeGrpcTunnel RelayMode = "grpc-tunnel"
+)
+
 type AgentConfig struct {
 	GrpcPort              int
 	CortexApiBaseUrl      string
@@ -93,6 +100,8 @@ type AgentConfig struct {
 	TunnelCount int
 	// GrpcInsecure disables TLS on the gRPC tunnel connection (separate from HttpDisableTLS).
 	GrpcInsecure bool
+	// GrpcTunnelServer is the address of the gRPC tunnel server (host:port).
+	GrpcTunnelServer string
 }
 
 func (ac AgentConfig) HttpBaseUrl() string {
@@ -331,6 +340,8 @@ func NewAgentEnvConfig() AgentConfig {
 	if grpcInsecure := os.Getenv("GRPC_INSECURE"); grpcInsecure == "true" {
 		cfg.GrpcInsecure = true
 	}
+
+	cfg.GrpcTunnelServer = os.Getenv("GRPC_TUNNEL_SERVER")
 
 	return cfg
 }

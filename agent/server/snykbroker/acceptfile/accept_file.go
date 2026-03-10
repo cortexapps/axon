@@ -308,3 +308,29 @@ type AcceptFileRuleAuth struct {
 	Password string `json:"password,omitempty"`
 	Token    string `json:"token,omitempty"`
 }
+
+// Rule represents a routing rule from the accept file.
+type Rule struct {
+	Method  string
+	Path    string
+	Origin  string
+	Headers ResolverMap
+}
+
+// GetPrivateRules returns the private routing rules from the accept file.
+func (a *AcceptFile) GetPrivateRules() []Rule {
+	wrapper := newAcceptFileWrapper(a.content, a)
+	wrappedRules := wrapper.PrivateRules()
+
+	rules := make([]Rule, len(wrappedRules))
+	for i, r := range wrappedRules {
+		rules[i] = Rule{
+			Method:  r.Method(),
+			Path:    r.Path(),
+			Origin:  r.Origin(),
+			Headers: r.Headers(),
+		}
+	}
+	return rules
+}
+
