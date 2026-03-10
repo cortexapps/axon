@@ -64,17 +64,6 @@
             "console": "integratedTerminal",            
             
         },  
-        {
-            "name": "Launch Go EV-Data Example",
-            "type": "go",
-            "request": "launch",
-            "mode": "auto",
-            "program": "${workspaceFolder}/examples/go/axon-ev-sync/main.go",
-            "env": {
-                "LOG_LEVEL": "info"
-            } 
-        }, 
-
 
         {
             "name": "Launch Agent (relay)",
@@ -98,7 +87,46 @@
                 "BUILTIN_PLUGIN_DIR": "${workspaceFolder}/agent/server/snykbroker/plugins",
             }        
         },
+        {
+            "name": "Launch gRPC Tunnel Server",
+            "type": "go",
+            "request": "launch",
+            "mode": "auto",
+            "program": "${workspaceFolder}/server/cmd/main.go",
+            "env": {
+            "LOG_LEVEL": "info"
+            }
+        },
 
-       
+        {
+            "name": "Launch Agent (relay gRPC)",
+            "type": "go",
+            "request": "launch",
+            "mode": "auto",
+            "program": "${workspaceFolder}/agent/main.go",
+            "args": [
+                "relay",
+                "-i",
+                "github",
+                "--alias",
+                "relay-grpc",
+                "-v"
+            ],
+            "envFile": "${workspaceFolder}/.env",
+            "env": {
+                "SCAFFOLD_DIR": "${workspaceFolder}/scaffold",
+                "SCAFFOLD_DOCKER_IMAGE": "cortex-axon-agent:local",
+                "PORT": "7399",
+                "BUILTIN_PLUGIN_DIR": "${workspaceFolder}/agent/server/snykbroker/plugins",
+                "RELAY_MODE": "grpc-tunnel",
+                "BROKER_SERVER_URL": "localhost:50052",
+                "BROKER_TOKEN": "4f49654b-000-0000-000-9deef1d9f2f6",
+                "CORTEX_TENANT_ID": "1",
+                "GRPC_INSECURE": "true",
+                "TUNNEL_COUNT": "1",
+                "CORTEX_API_TOKEN": "abc-123"
+            }
+        },
+
     ]
 }
