@@ -29,6 +29,15 @@ then
 
     # Generate TLS certificates if needed (for CI environments)
     ./generate-certs.sh
+
+    # Verify required files exist
+    echo "=== Verifying certificate files ==="
+    ls -la .mitmproxy/*.pem .mitmproxy/*.crt 2>/dev/null || echo "Warning: some cert files missing"
+    if [ ! -f .mitmproxy/combined-ca-bundle.crt ]; then
+        echo "ERROR: combined-ca-bundle.crt not found!"
+        exit 1
+    fi
+    echo "combined-ca-bundle.crt size: $(wc -c < .mitmproxy/combined-ca-bundle.crt) bytes"
 else
     echo "TESTING WITHOUT PROXY"
     export ENVFILE=noproxy.env
@@ -49,7 +58,13 @@ function cleanup {
 trap cleanup EXIT
 
 echo "Starting docker compose ..."
-docker compose $COMPOSE_FILES up -d
+if ! docker compose $COMPOSE_FILES up -d; then
+    echo "=== Docker compose failed, checking mitmproxy logs ==="
+    docker compose $COMPOSE_FILES logs mitmproxy 2>&1 || true
+    echo "=== Checking mounted files in mitmproxy container ==="
+    docker compose $COMPOSE_FILES run --rm --entrypoint="" mitmproxy ls -la /home/mitmproxy/.mitmproxy/ 2>&1 || true
+    exit 1
+fi
 sleep 5
 
 # Loop until healthcheck for server broker passes
