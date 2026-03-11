@@ -3,4 +3,7 @@ __debug*
 *_mock.go
 axon-agent
 *.pyc
-test/relay/.mitmproxy
+# mitmproxy: ignore generated/derived files, track CA files
+test/relay/.mitmproxy/broker-server-*
+test/relay/.mitmproxy/combined-ca-bundle.crt
+test/relay/.mitmproxy/*.srl

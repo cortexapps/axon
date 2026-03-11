@@ -185,11 +185,30 @@ func (wp *WebSocketProxy) dialThroughProxy(proxyURL *url.URL, targetAddr string,
 
 	// Upgrade to TLS if needed
 	if tlsConfig != nil {
+		wp.logger.Debug("Starting TLS handshake through proxy tunnel",
+			zap.String("serverName", tlsConfig.ServerName))
+
 		tlsConn := tls.Client(proxyConn, tlsConfig)
 		if err := tlsConn.Handshake(); err != nil {
 			tlsConn.Close()
 			return nil, fmt.Errorf("TLS handshake failed: %w", err)
 		}
+
+		// Log TLS connection details for debugging
+		state := tlsConn.ConnectionState()
+		wp.logger.Debug("TLS handshake completed",
+			zap.String("serverName", state.ServerName),
+			zap.String("negotiatedProtocol", state.NegotiatedProtocol),
+			zap.Uint16("version", state.Version),
+			zap.Bool("handshakeComplete", state.HandshakeComplete),
+			zap.Int("peerCertificates", len(state.PeerCertificates)))
+
+		if len(state.PeerCertificates) > 0 {
+			wp.logger.Debug("TLS peer certificate",
+				zap.String("subject", state.PeerCertificates[0].Subject.String()),
+				zap.String("issuer", state.PeerCertificates[0].Issuer.String()))
+		}
+
 		return tlsConn, nil
 	}
 
@@ -230,11 +249,26 @@ func (wp *WebSocketProxy) sendConnectRequest(conn net.Conn, targetAddr string, p
 		return fmt.Errorf("CONNECT request failed: %w", err)
 	}
 
-	resp, err := http.ReadResponse(bufio.NewReader(conn), req)
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, req)
 	if err != nil {
 		return fmt.Errorf("CONNECT response failed: %w", err)
 	}
 	defer resp.Body.Close()
+
+	// Log detailed CONNECT response info for debugging proxy issues
+	wp.logger.Debug("CONNECT response received",
+		zap.String("status", resp.Status),
+		zap.Int("statusCode", resp.StatusCode),
+		zap.Bool("closeIndicated", resp.Close),
+		zap.Int64("contentLength", resp.ContentLength),
+		zap.Any("headers", resp.Header))
+
+	// Check if bufio.Reader buffered extra data (should be 0 for CONNECT)
+	if br.Buffered() > 0 {
+		wp.logger.Warn("CONNECT response had buffered data",
+			zap.Int("bufferedBytes", br.Buffered()))
+	}
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("proxy rejected CONNECT: %s", resp.Status)
@@ -306,9 +340,31 @@ func (wp *WebSocketProxy) runTunnel(clientConn, targetConn net.Conn, targetAddr 
 
 func (wp *WebSocketProxy) copyWithIdleTimeout(dst, src net.Conn, direction string) {
 	buf := make([]byte, 32*1024)
+	isFirstRead := true
 	for {
 		src.SetReadDeadline(time.Now().Add(wp.IdleTimeout))
 		n, err := src.Read(buf)
+
+		// Log first read details for debugging tunnel startup issues
+		if isFirstRead {
+			isFirstRead = false
+			if err != nil {
+				wp.logger.Debug("Tunnel first read failed",
+					zap.String("direction", direction),
+					zap.Int("bytesRead", n),
+					zap.Error(err),
+					zap.String("srcType", fmt.Sprintf("%T", src)),
+					zap.String("srcAddr", src.RemoteAddr().String()))
+			} else if n > 0 {
+				// Log the start of what was received (may be HTTP response)
+				preview := string(buf[:min(n, 200)])
+				wp.logger.Debug("Tunnel first read successful",
+					zap.String("direction", direction),
+					zap.Int("bytesRead", n),
+					zap.String("preview", preview))
+			}
+		}
+
 		if n > 0 {
 			dst.SetWriteDeadline(time.Now().Add(wp.HandshakeTimeout))
 			if _, writeErr := dst.Write(buf[:n]); writeErr != nil {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path"
@@ -48,10 +49,10 @@ type relayInstanceManager struct {
 	config            config.AgentConfig
 	logger            *zap.Logger
 	supervisor        *Supervisor
-	running    atomic.Bool
-	startCount atomic.Int32
-	generation atomic.Int32 // incremented on each Start(), used to deduplicate restart requests
-	tokenInfo  *tokenInfo
+	running           atomic.Bool
+	startCount        atomic.Int32
+	generation        atomic.Int32 // incremented on each Start(), used to deduplicate restart requests
+	tokenInfo         *tokenInfo
 	operationsCounter *prometheus.CounterVec
 	transport         *http.Transport
 
@@ -342,12 +343,42 @@ func (r *relayInstanceManager) Restart() error {
 		r.logger.Error("unable to close supervisor on Restart", zap.Error(err))
 	}
 
+	// Wait for the broker port to become available.
+	// After the process exits, TCP sockets may remain in TIME_WAIT state,
+	// causing EADDRINUSE if we start too quickly.
+	port := r.getSnykBrokerPort()
+	if waitErr := r.waitForPortAvailable(port, 10*time.Second); waitErr != nil {
+		r.logger.Warn("Port not available after timeout, proceeding anyway",
+			zap.Int("port", port), zap.Error(waitErr))
+	}
+
 	r.logger.Info("Restarting broker")
 	err = r.Start()
 	if err != nil {
 		return fmt.Errorf("unable to start supervisor on Restart: %w", err)
 	}
 	return nil
+}
+
+// waitForPortAvailable waits until the given port is available for binding,
+// or until the timeout expires. This handles the TCP TIME_WAIT issue where
+// the OS hasn't released the port yet after the previous process exited.
+func (r *relayInstanceManager) waitForPortAvailable(port int, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+
+	for time.Now().Before(deadline) {
+		ln, err := net.Listen("tcp", addr)
+		if err == nil {
+			ln.Close()
+			r.logger.Debug("Port is available", zap.Int("port", port))
+			return nil
+		}
+		r.logger.Debug("Port not yet available, waiting",
+			zap.Int("port", port), zap.Error(err))
+		time.Sleep(100 * time.Millisecond)
+	}
+	return fmt.Errorf("port %d not available after %v", port, timeout)
 }
 
 func (r *relayInstanceManager) getUrlAndToken() (*tokenInfo, error) {
@@ -496,7 +527,9 @@ func (r *relayInstanceManager) Start() error {
 	// WebSocket tunnel death: request restart when the primus tunnel closes.
 	if r.reflector != nil && r.config.HttpRelayReflectorMode.ReflectsRegistration() {
 		r.reflector.SetOnWSTunnelClose(func() {
-			r.requestRestart("ws_tunnel_death", gen)
+			if os.Getenv("BROKER_RESTART_ON_WEBSOCKET_CLOSE") == "true" {
+				r.requestRestart("ws_tunnel_death", gen)
+			}
 		})
 	}
 
@@ -523,6 +556,13 @@ func (r *relayInstanceManager) Start() error {
 		// for the backend.
 		for {
 			if !r.running.Load() {
+				return
+			}
+			// Check if we've been superseded by a restart (new generation).
+			// Without this check, after Restart() calls Start() and sets
+			// running=true, old goroutines would continue making registration
+			// calls alongside new ones, causing duplicate API calls.
+			if r.generation.Load() != gen {
 				return
 			}
 			info, errx = r.getUrlAndToken()

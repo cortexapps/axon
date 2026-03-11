@@ -24,7 +24,20 @@ then
     export ENVFILE=proxy.env
     # Base docker-compose.yml has axon-relay on internal network only
     # This enforces that WebSocket connections MUST go through mitmproxy
-    export COMPOSE_FILES="-f docker-compose.yml"
+    # docker-compose.proxy.yml enables HTTPS broker connection through proxy (TLS-through-proxy)
+    export COMPOSE_FILES="-f docker-compose.yml -f docker-compose.proxy.yml"
+
+    # Generate TLS certificates if needed (for CI environments)
+    ./generate-certs.sh
+
+    # Verify required files exist
+    echo "=== Verifying certificate files ==="
+    ls -la .mitmproxy/*.pem .mitmproxy/*.crt 2>/dev/null || echo "Warning: some cert files missing"
+    if [ ! -f .mitmproxy/combined-ca-bundle.crt ]; then
+        echo "ERROR: combined-ca-bundle.crt not found!"
+        exit 1
+    fi
+    echo "combined-ca-bundle.crt size: $(wc -c < .mitmproxy/combined-ca-bundle.crt) bytes"
 else
     echo "TESTING WITHOUT PROXY"
     export ENVFILE=noproxy.env
@@ -45,7 +58,13 @@ function cleanup {
 trap cleanup EXIT
 
 echo "Starting docker compose ..."
-docker compose $COMPOSE_FILES up -d
+if ! docker compose $COMPOSE_FILES up -d; then
+    echo "=== Docker compose failed, checking mitmproxy logs ==="
+    docker compose $COMPOSE_FILES logs mitmproxy 2>&1 || true
+    echo "=== Checking mounted files in mitmproxy container ==="
+    docker compose $COMPOSE_FILES run --rm --entrypoint="" mitmproxy ls -la /home/mitmproxy/.mitmproxy/ 2>&1 || true
+    exit 1
+fi
 sleep 5
 
 # Loop until healthcheck for server broker passes
@@ -101,13 +120,22 @@ function curlw {
 }
 
 echo "Checking axon endpoints..."
-# First make sure we can call the status endpoint which is implemented by 
+# First make sure we can call the status endpoint which is implemented by
 # the agent, so this is localhost right at the agent
 
 info_result=$(curlw http://localhost:$SERVER_PORT/broker/$TOKEN/__axon/info)
 result=$(echo "$info_result" | jq -r '.alias')
 if [ "$result" != "axon-test" ]; then
-    echo "FAIL: Expected alias 'axon-relay', got '$result'"
+    echo "FAIL: Expected alias 'axon-test', got '$result'"
+    echo "=== Info response: $info_result ==="
+    echo "=== axon-relay logs (last 50) ==="
+    docker compose $COMPOSE_FILES logs --tail=50 axon-relay
+    if [ "$PROXY" == "1" ]; then
+        echo "=== mitmproxy logs (last 30) ==="
+        docker compose $COMPOSE_FILES logs --tail=30 mitmproxy
+        echo "=== Certificate files ==="
+        ls -la .mitmproxy/*.pem .mitmproxy/*.crt 2>/dev/null || echo "No certs found"
+    fi
     exit 1
 fi
 result=$(echo "$info_result" | jq -r '.integration')

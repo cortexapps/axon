@@ -5,6 +5,7 @@ services:
       dockerfile: Dockerfile.snyk-broker-server
     image: cortex-snyk-broker-server:local
     ports:
+      # Expose HTTP for direct test script access (curl commands in relay_test.sh)
       - "${SERVER_PORT}:7341"
     volumes:
       - .:/src
@@ -13,15 +14,36 @@ services:
     networks:
       - external  # snyk-broker is on external network only
 
+  # TLS proxy in front of snyk-broker (mimics production relay.cortex.io setup)
+  # axon-relay connects here via proxy to test TLS-through-proxy scenario
+  snyk-broker-tls:
+    image: nginx:alpine
+    # No external port needed - accessed internally via mitmproxy
+    volumes:
+      - ./nginx-tls-proxy.conf:/etc/nginx/nginx.conf:ro
+      - ./.mitmproxy:/certs:ro
+    depends_on:
+      - snyk-broker
+    networks:
+      - external  # TLS proxy is on external network
+
   mitmproxy:
     image: mitmproxy/mitmproxy:12
     ports:
       - "9980:8080"
       - "9981:8081"
     volumes:
-      - ./.mitmproxy:/home/mitmproxy/.mitmproxy
+      # Mount to /certs (not /home/mitmproxy/.mitmproxy) to avoid entrypoint usermod failure in CI
+      - ./.mitmproxy:/certs
       - ./mitmproxy_addon_header.py:/home/mitmproxy/addon.py
-    command: mitmdump -s /home/mitmproxy/addon.py
+    # Use confdir=/certs so mitmproxy uses our CA files from /certs instead of default location
+    # This avoids the entrypoint script trying to chown files (which fails in CI)
+    command: mitmdump --set confdir=/certs -s /home/mitmproxy/addon.py --set ssl_verify_upstream_trusted_ca=/certs/combined-ca-bundle.crt
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import socket; s=socket.socket(); s.connect(('localhost', 8080)); s.close()"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
     networks:
       - internal  # mitmproxy bridges both networks
       - external
@@ -45,8 +67,8 @@ services:
     command: relay -f /src/accept-client.json -i github -a axon-test
     depends_on:
       mitmproxy:
-        condition: service_started
-      snyk-broker:
+        condition: service_healthy
+      snyk-broker-tls:
         condition: service_started
       cortex-fake:
         condition: service_healthy
@@ -81,6 +103,8 @@ services:
       - .:/src
     environment:
       PORT: 8081
+      # Default: HTTP for non-proxy mode (direct connection)
+      # Override in docker-compose.proxy.yml for HTTPS through proxy
       BROKER_SERVER_URL: http://snyk-broker:7341
       TOKEN: ${TOKEN:-0e481b34-76ac-481a-a92f-c94a6cf6f6c2}
     command: sh -c "apk add curl && cd /src && go run cortex-registration-fake.go"

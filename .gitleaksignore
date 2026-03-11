@@ -1,0 +1,2 @@
+# Test certificates for relay E2E tests (not real credentials)
+agent/test/relay/.mitmproxy/*
