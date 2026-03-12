@@ -90,6 +90,13 @@ func (h *axonHandler) returnJson(obj interface{}, w http.ResponseWriter) {
 	w.Write(json)
 }
 
+func getBuildVersion() string {
+	if v := os.Getenv("AXON_BUILD_VERSION"); v != "" {
+		return v
+	}
+	return "dev"
+}
+
 func (h *axonHandler) healthcheck(w http.ResponseWriter, r *http.Request) {
 	result := map[string]interface{}{
 		"OK": true,
@@ -104,11 +111,13 @@ func (h *axonHandler) info(w http.ResponseWriter, r *http.Request) {
 		Alias       string   `json:"alias"`
 		Handlers    []string `json:"handlers"`
 		InstanceID  string   `json:"instance_id"`
+		Version     string   `json:"version"`
 	}{
 		InstanceID:  h.config.InstanceId,
 		Integration: h.config.Integration,
 		Alias:       h.config.IntegrationAlias,
 		Handlers:    []string{},
+		Version:     getBuildVersion(),
 	}
 
 	handlers, err := h.fetchHandlers(r)
