@@ -70,6 +70,8 @@ COPY docker/entrypoint.sh /agent/entrypoint.sh
 COPY docker/app_entrypoint.sh /app/app_entrypoint.sh
 COPY docker/scripts /agent/scripts
 
+ARG BUILD_VERSION=dev
+ENV AXON_BUILD_VERSION=${BUILD_VERSION}
 ENV CORTEX_API_BASE_URL=https://api.getcortexapp.com
 ENV HANDLER_HISTORY_PATH=/var/log/axon/history
 ENV NODE_OPTIONS=--use-openssl-ca

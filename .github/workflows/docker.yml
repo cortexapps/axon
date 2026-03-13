@@ -60,6 +60,8 @@ jobs:
           push: ${{ env.IS_PUBLISH == 'true' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            BUILD_VERSION=${{ github.ref_name }}-${{ github.sha }}
           # arm64 via QEMU is slow, so only build it on main branch or tags (not workflow_dispatch)
           platforms: ${{ env.IS_ARM64_BUILD == 'true' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
           cache-from: type=local,src=/tmp/.buildx-cache
