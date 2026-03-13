@@ -111,13 +111,13 @@ func (h *axonHandler) info(w http.ResponseWriter, r *http.Request) {
 		Alias       string   `json:"alias"`
 		Handlers    []string `json:"handlers"`
 		InstanceID  string   `json:"instance_id"`
-		Version     string   `json:"version"`
+		BuildVersion string   `json:"build_version"`
 	}{
 		InstanceID:  h.config.InstanceId,
 		Integration: h.config.Integration,
 		Alias:       h.config.IntegrationAlias,
 		Handlers:    []string{},
-		Version:     getBuildVersion(),
+		BuildVersion: getBuildVersion(),
 	}
 
 	handlers, err := h.fetchHandlers(r)
