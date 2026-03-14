@@ -1,7 +1,7 @@
 # Stage 1: Build the Go agent binary
 FROM debian:stable-slim AS builder
 
-RUN apt update && apt install -y protobuf-compiler git wget build-essential
+RUN apt-get update && apt-get upgrade -y && apt-get install -y protobuf-compiler git wget build-essential
 
 ENV GOLANG_VERSION=1.26.1
 RUN wget -q "https://dl.google.com/go/go${GOLANG_VERSION}.linux-$(dpkg --print-architecture).tar.gz" -O /tmp/go.tar.gz \
@@ -22,7 +22,7 @@ FROM debian:stable-slim
 WORKDIR /agent
 
 # Install dependencies
-RUN apt update && apt install -y protobuf-compiler git python3 python3-venv wget build-essential openssl jq
+RUN apt-get update && apt-get upgrade -y && apt-get install -y protobuf-compiler git python3 python3-venv wget build-essential openssl jq
 
 # Install NodeJS and Snyk Broker
 ENV NODE_VERSION=20
