@@ -477,7 +477,7 @@ func (r *relayInstanceManager) Start() error {
 		// Check if any routes have custom headers - these require traffic reflection mode
 		for _, route := range renderContext.AcceptFile.PrivateRules() {
 			if len(route.Headers()) > 0 && !r.config.HttpRelayReflectorMode.ReflectsTraffic() {
-				return fmt.Errorf("ENABLE_RELAY_REFLECTOR must be set to 'all' or 'traffic' to use custom headers in accept files")
+				panic("ENABLE_RELAY_REFLECTOR must be set to 'all' or 'traffic' to use custom headers in accept files")
 			}
 		}
 
@@ -511,8 +511,8 @@ func (r *relayInstanceManager) Start() error {
 	err = os.WriteFile(tmpAcceptFile, rendered, 0644)
 
 	if err != nil {
-		r.logger.Error("Error writing accept file", zap.Error(err))
-		return fmt.Errorf("error writing accept file: %w", err)
+		fmt.Println("Error writing accept file", err)
+		panic(err)
 	}
 
 	gen := r.generation.Load()
