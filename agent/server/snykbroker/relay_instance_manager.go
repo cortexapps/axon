@@ -27,6 +27,15 @@ import (
 const defaultSnykBroker = "snyk-broker"
 const brokerPort = 7343
 
+// maskToken returns a masked version of a token for safe logging.
+// Shows first 4 and last 4 characters, e.g. "abcd...wxyz".
+func maskToken(token string) string {
+	if len(token) <= 8 {
+		return "***"
+	}
+	return token[:4] + "..." + token[len(token)-4:]
+}
+
 // restartRequest is sent to the restart channel by any code path that
 // needs to restart the broker.  The generation field ties the request
 // to the broker lifecycle that triggered it, so the consumer can
@@ -187,8 +196,14 @@ func (r *relayInstanceManager) handleReregister(w http.ResponseWriter, req *http
 	}
 
 	if info.HasChanged {
-		r.Restart()
+		if err := r.Restart(); err != nil {
+			r.logger.Error("Unable to restart after reregistration", zap.Error(err))
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte("Unable to restart after reregistration"))
+			return
+		}
 	}
+	w.WriteHeader(http.StatusOK)
 }
 
 func (r *relayInstanceManager) getSnykBrokerPort() int {
@@ -212,16 +227,16 @@ func (r *relayInstanceManager) handleSystemCheck(w http.ResponseWriter, req *htt
 		return
 	}
 	defer resp.Body.Close()
-	for k, v := range resp.Header {
-		w.Header().Set(k, strings.Join(v, ","))
-	}
-	w.WriteHeader(resp.StatusCode)
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		r.logger.Error("Unable to read system check response", zap.Error(err))
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
+	for k, v := range resp.Header {
+		w.Header().Set(k, strings.Join(v, ","))
+	}
+	w.WriteHeader(resp.StatusCode)
 	w.Write(body)
 
 }
@@ -394,7 +409,7 @@ func (r *relayInstanceManager) getUrlAndToken() (*tokenInfo, error) {
 	}
 
 	if !tokenInfo.equals(r.tokenInfo) {
-		r.logger.Info("Registration info has changed", zap.String("uri", tokenInfo.ServerUri), zap.String("token", tokenInfo.Token))
+		r.logger.Info("Registration info has changed", zap.String("uri", tokenInfo.ServerUri), zap.String("token", maskToken(tokenInfo.Token)))
 		tokenInfo.HasChanged = true
 		r.tokenInfo = tokenInfo
 	}
@@ -598,7 +613,7 @@ func (r *relayInstanceManager) Start() error {
 		r.logger.Debug("Starting broker",
 			zap.String("executable", executable),
 			zap.Strings("args", args),
-			zap.String("token", info.Token),
+			zap.String("token", maskToken(info.Token)),
 			zap.String("uri", info.ServerUri),
 			zap.String("acceptFile", tmpAcceptFile),
 		)
@@ -622,7 +637,7 @@ func (r *relayInstanceManager) Start() error {
 				key := strings.TrimPrefix(parts[0], prefix)
 				value := parts[1]
 				brokerEnv[key] = value
-				r.logger.Debug("Adding SNYKBROKER_ environment variable", zap.String("key", key), zap.String("value", value))
+				r.logger.Debug("Adding SNYKBROKER_ environment variable", zap.String("key", key))
 			}
 		}
 
