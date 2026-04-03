@@ -45,10 +45,10 @@ jobs:
 
       - name: Fail on CRITICAL/HIGH vulnerabilities
         run: |
-          COUNT=$(jq '[.runs[].results[]] | length' trivy-results.sarif)
+          COUNT=$(jq '[.runs[].results[] | select(.level == "error")] | length' trivy-results.sarif)
           if [ "$COUNT" -gt 0 ]; then
             echo "::error::Found $COUNT CRITICAL/HIGH fixable vulnerabilities:"
-            jq -r '.runs[].results[] | "\(.ruleId): \(.message.text | split("\n") | .[0])"' trivy-results.sarif
+            jq -r '.runs[].results[] | select(.level == "error") | "\(.ruleId): \(.message.text | split("\n") | .[0])"' trivy-results.sarif
             exit 1
           fi
 
