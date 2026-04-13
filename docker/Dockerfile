@@ -3,7 +3,7 @@ FROM debian:stable-slim AS builder
 
 RUN apt-get update && apt-get upgrade -y && apt-get install -y protobuf-compiler git wget build-essential
 
-ENV GOLANG_VERSION=1.26.1
+ENV GOLANG_VERSION=1.26.2
 RUN wget -q "https://dl.google.com/go/go${GOLANG_VERSION}.linux-$(dpkg --print-architecture).tar.gz" -O /tmp/go.tar.gz \
     && tar -C /usr/local -xzf /tmp/go.tar.gz \
     && rm /tmp/go.tar.gz
@@ -44,7 +44,7 @@ RUN git clone https://github.com/cortexapps/snyk-broker.git /tmp/snyk-broker && 
 ENV PATH="/usr/local/lib/node_modules/.bin:${PATH}"
 
 # Install Go (needed by scaffold apps that build on top of this image)
-ENV GOLANG_VERSION=1.26.1
+ENV GOLANG_VERSION=1.26.2
 RUN wget -q "https://dl.google.com/go/go${GOLANG_VERSION}.linux-$(dpkg --print-architecture).tar.gz" -O /tmp/go.tar.gz \
     && tar -C /usr/local -xzf /tmp/go.tar.gz \
     && rm /tmp/go.tar.gz
