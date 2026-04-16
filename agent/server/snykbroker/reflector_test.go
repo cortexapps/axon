@@ -651,3 +651,78 @@ func TestWebSocketProxyWithoutTransport(t *testing.T) {
 	require.NotNil(t, wsProxy)
 	require.False(t, wsProxy.IsConnected())
 }
+
+// The reflector must preserve percent-encoded characters (notably %2F) in the
+// path when forwarding to the registered target. Reading from r.URL.Path alone
+// and writing back to r.URL.Path without updating r.URL.RawPath causes Go's
+// reverse-proxy to emit the decoded path on the wire, which turns a GitLab
+// namespace/project identifier like `foo%2Fbar` into `foo/bar` and makes
+// GitLab return 404 for anything past the project segment.
+func TestServeHTTP_PreservesPercentEncodedSlashMidPath(t *testing.T) {
+	env := newTestReflectorEnv(t)
+
+	var gotEscapedPath string
+	env.Router.PathPrefix("/api/").Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotEscapedPath = r.URL.EscapedPath()
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	proxyURI := env.Reflector.ProxyURI(env.Server.URL)
+
+	const encoded = "/api/v4/projects/test.project%2Fcli-functional-test-xxx/approval_rules"
+	req, err := http.NewRequest("GET", proxyURI+encoded, nil)
+	require.NoError(t, err)
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	require.Equal(t, encoded, gotEscapedPath,
+		"mid-path %%2F must survive the reflector hop")
+}
+
+func TestServeHTTP_PreservesPercentEncodedSlashTrailing(t *testing.T) {
+	env := newTestReflectorEnv(t)
+
+	var gotEscapedPath string
+	env.Router.PathPrefix("/api/").Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotEscapedPath = r.URL.EscapedPath()
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	proxyURI := env.Reflector.ProxyURI(env.Server.URL)
+
+	const encoded = "/api/v4/projects/test.project%2Fcli-functional-test-xxx"
+	req, err := http.NewRequest("GET", proxyURI+encoded, nil)
+	require.NoError(t, err)
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	require.Equal(t, encoded, gotEscapedPath,
+		"trailing %%2F must survive the reflector hop")
+}
+
+func TestServeHTTP_PreservesPercentEncodedSlashDefaultTarget(t *testing.T) {
+	env := newTestReflectorEnv(t)
+
+	var gotEscapedPath string
+	env.Router.PathPrefix("/api/").Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotEscapedPath = r.URL.EscapedPath()
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	proxyURI := env.Reflector.ProxyURI(env.Server.URL, WithDefault(true))
+
+	const encoded = "/api/v4/projects/test.project%2Fcli-functional-test-xxx/approval_rules"
+	req, err := http.NewRequest("GET", proxyURI+encoded, nil)
+	require.NoError(t, err)
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	require.Equal(t, encoded, gotEscapedPath,
+		"mid-path %%2F must survive the reflector hop in default-target mode")
+}
