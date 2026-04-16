@@ -285,7 +285,15 @@ func (rr *RegistrationReflector) ServeHTTP(w http.ResponseWriter, r *http.Reques
 		fields = append(fields, zap.String("connection", r.Header.Get("Connection")))
 	}
 	rr.logger.Debug("Reflector request", fields...)
-	entry, newPath, err := rr.parseTargetUri(r.URL.Path)
+	// Parse against the escaped (raw) path so that percent-encoded characters
+	// such as %2F in mid-path segments (e.g. GitLab namespace/project IDs)
+	// survive this hop. r.URL.Path is always percent-decoded; slicing it
+	// silently loses %2F, and writing r.URL.Path without also updating
+	// r.URL.RawPath causes EscapedPath() — which the downstream reverse proxy
+	// uses on the wire — to fall back to PathEscape(Path), which does not
+	// re-encode '/'.
+	escapedPath := r.URL.EscapedPath()
+	entry, newPath, err := rr.parseTargetUri(escapedPath)
 	if err != nil {
 		rr.logger.Error("Failed to find Entry for target URI", zap.Error(err))
 		http.Error(w, "Invalid target URI", http.StatusBadGateway)
@@ -296,7 +304,14 @@ func (rr *RegistrationReflector) ServeHTTP(w http.ResponseWriter, r *http.Reques
 	if !strings.HasPrefix(newPath, "/") {
 		newPath = "/" + newPath
 	}
-	r.URL.Path = newPath
+	decodedPath, err := url.PathUnescape(newPath)
+	if err != nil {
+		rr.logger.Error("Failed to decode target path", zap.Error(err))
+		http.Error(w, "Invalid target path", http.StatusBadRequest)
+		return
+	}
+	r.URL.Path = decodedPath
+	r.URL.RawPath = newPath
 	rr.logger.Debug("Proxying request",
 		zap.String("targetURI", entry.TargetURI),
 		zap.String("proxyURI", entry.proxyURI),
