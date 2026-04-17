@@ -99,7 +99,11 @@ func (ac AgentConfig) Print() {
 	}
 	fmt.Println("\tCortex API Base URL: ", ac.CortexApiBaseUrl)
 	if ac.CortexApiToken != "" {
-		fmt.Printf("\tCortex API Token: %s...%s\n", ac.CortexApiToken[0:5], ac.CortexApiToken[len(ac.CortexApiToken)-5:])
+		if len(ac.CortexApiToken) >= 10 {
+			fmt.Printf("\tCortex API Token: %s...%s\n", ac.CortexApiToken[0:5], ac.CortexApiToken[len(ac.CortexApiToken)-5:])
+		} else {
+			fmt.Printf("\tCortex API Token: ***\n")
+		}
 	}
 	if ac.DryRun {
 		fmt.Println("\tDry Run: Enabled")

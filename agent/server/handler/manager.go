@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	pb "github.com/cortexapps/axon/.generated/proto/github.com/cortexapps/axon"
@@ -27,6 +28,7 @@ type Manager interface {
 }
 
 type handlerManager struct {
+	mu                  sync.RWMutex
 	logger              *zap.Logger
 	dispatchQueues      map[string]chan Invocable
 	outstandingRequests map[string]Invocable
@@ -92,6 +94,8 @@ func (s *handlerManager) IsFinished() bool {
 }
 
 func (s *handlerManager) checkFinished() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	for _, entry := range s.handlers {
 		if !entry.IsFinished() {
 			return false
@@ -101,6 +105,9 @@ func (s *handlerManager) checkFinished() bool {
 }
 
 func (s *handlerManager) RegisterHandler(dispatchId string, name string, timeout time.Duration, options ...*pb.HandlerOption) (string, error) {
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	if s.finished {
 		panic("handler manager has been closed")
@@ -152,45 +159,66 @@ func (s *handlerManager) createEntry(
 }
 
 func (s *handlerManager) UnregisterHandler(id string) {
+	s.mu.Lock()
 	entry, ok := s.handlers[id]
 	if !ok {
+		s.mu.Unlock()
 		return
 	}
-	s.removeHandler(entry)
+	s.removeHandlerLocked(entry)
+	s.mu.Unlock()
 }
 
 func (s *handlerManager) ClearHandlers(id string) {
+	s.mu.Lock()
+	var toClear []HandlerEntry
 	for _, entry := range s.handlers {
 		if entry.DispatchId() == id {
-			s.removeHandler(entry)
+			toClear = append(toClear, entry)
 		}
 	}
+	for _, entry := range toClear {
+		s.removeHandlerLocked(entry)
+	}
+	s.mu.Unlock()
 }
 
 func (s *handlerManager) Start(dispatchId string) error {
+	s.mu.RLock()
+	var toStart []HandlerEntry
 	for _, entry := range s.handlers {
 		if entry.DispatchId() == dispatchId {
-			err := entry.Start()
-			if err != nil {
-				return err
-			}
+			toStart = append(toStart, entry)
+		}
+	}
+	s.mu.RUnlock()
+	for _, entry := range toStart {
+		if err := entry.Start(); err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
 func (s *handlerManager) Stop(dispatchId string) error {
+	s.mu.RLock()
+	var toStop []HandlerEntry
 	for _, entry := range s.handlers {
 		if entry.DispatchId() == dispatchId {
-			entry.Close()
+			toStop = append(toStop, entry)
 		}
+	}
+	s.mu.RUnlock()
+	for _, entry := range toStop {
+		entry.Close()
 	}
 	return nil
 }
 
-func (s *handlerManager) removeHandler(entry HandlerEntry) {
-	entry.Close()
+// removeHandlerLocked removes a handler while the caller already holds s.mu.
+func (s *handlerManager) removeHandlerLocked(entry HandlerEntry) {
 	delete(s.handlers, entry.Id())
+	entry.Close()
 }
 
 func (s *handlerManager) Dequeue(ctx context.Context, dispatchId string, waitTime time.Duration) (Invocable, error) {
@@ -209,7 +237,9 @@ func (s *handlerManager) Dequeue(ctx context.Context, dispatchId string, waitTim
 func (s *handlerManager) Trigger(handler Invocable) error {
 
 	handlerName := handler.GetEntry().Name()
+	s.mu.RLock()
 	entry := s.handlers[handler.GetEntry().Id()]
+	s.mu.RUnlock()
 
 	if entry == nil {
 		s.logger.Error("handler not found", zap.String("handler", handlerName))
@@ -261,7 +291,8 @@ func (s *handlerManager) Trigger(handler Invocable) error {
 }
 
 func (s *handlerManager) getDispatchQueue(DispatchId string) chan Invocable {
-
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	queue, ok := s.dispatchQueues[DispatchId]
 	if !ok {
 		queue = make(chan Invocable, 100)
@@ -271,6 +302,8 @@ func (s *handlerManager) getDispatchQueue(DispatchId string) chan Invocable {
 }
 
 func (s *handlerManager) ListHandlers() []HandlerEntry {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	var entries []HandlerEntry
 	for _, entry := range s.handlers {
 		entries = append(entries, entry)
@@ -279,6 +312,8 @@ func (s *handlerManager) ListHandlers() []HandlerEntry {
 }
 
 func (s *handlerManager) GetByTag(tag string) HandlerEntry {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	for _, entry := range s.handlers {
 		if entry.Tag() == tag && entry.IsActive() {
 			return entry
