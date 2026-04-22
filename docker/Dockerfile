@@ -21,8 +21,14 @@ RUN cd /build && go build -o /agent/cortex-axon-agent
 FROM debian:stable-slim
 WORKDIR /agent
 
-# Install dependencies
-RUN apt-get update && apt-get upgrade -y && apt-get install -y protobuf-compiler git python3 python3-venv wget build-essential openssl jq
+# Install dependencies. libngtcp2-16 and libngtcp2-crypto-gnutls8 are pinned
+# to the patched 1.11.0-1+deb13u1 to address CVE-2026-40170; they're pulled
+# transitively via wget -> libcurl3-gnutls. Bump these pins if Debian ships
+# a newer fix or the current version ages out of the archive.
+RUN apt-get update && apt-get upgrade -y && apt-get install -y \
+    protobuf-compiler git python3 python3-venv wget build-essential openssl jq \
+    libngtcp2-16=1.11.0-1+deb13u1 \
+    libngtcp2-crypto-gnutls8=1.11.0-1+deb13u1
 
 # Install NodeJS and Snyk Broker
 ENV NODE_VERSION=20
@@ -75,14 +81,6 @@ ENV AXON_BUILD_VERSION=${BUILD_VERSION}
 ENV CORTEX_API_BASE_URL=https://api.getcortexapp.com
 ENV HANDLER_HISTORY_PATH=/var/log/axon/history
 ENV NODE_OPTIONS=--use-openssl-ca
-
-# Final security upgrade: BUILD_VERSION cache-busts this layer on every commit,
-# so transitive deps installed after the earlier upgrade (e.g. libngtcp2 via
-# the nodesource-pulled curl) pick up the latest security patches.
-RUN apt-get update \
- && apt-get upgrade -y \
- && apt-get clean \
- && rm -rf /var/lib/apt/lists/*
 
 EXPOSE 50051
 
