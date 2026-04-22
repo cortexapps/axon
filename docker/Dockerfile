@@ -76,6 +76,14 @@ ENV CORTEX_API_BASE_URL=https://api.getcortexapp.com
 ENV HANDLER_HISTORY_PATH=/var/log/axon/history
 ENV NODE_OPTIONS=--use-openssl-ca
 
+# Final security upgrade: BUILD_VERSION cache-busts this layer on every commit,
+# so transitive deps installed after the earlier upgrade (e.g. libngtcp2 via
+# the nodesource-pulled curl) pick up the latest security patches.
+RUN apt-get update \
+ && apt-get upgrade -y \
+ && apt-get clean \
+ && rm -rf /var/lib/apt/lists/*
+
 EXPOSE 50051
 
 ENTRYPOINT [ "/agent/entrypoint.sh" ]
