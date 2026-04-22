@@ -21,8 +21,14 @@ RUN cd /build && go build -o /agent/cortex-axon-agent
 FROM debian:stable-slim
 WORKDIR /agent
 
-# Install dependencies
-RUN apt-get update && apt-get upgrade -y && apt-get install -y protobuf-compiler git python3 python3-venv wget build-essential openssl jq
+# Install dependencies. libngtcp2-16 and libngtcp2-crypto-gnutls8 are pinned
+# to the patched 1.11.0-1+deb13u1 to address CVE-2026-40170; they're pulled
+# transitively via wget -> libcurl3-gnutls. Bump these pins if Debian ships
+# a newer fix or the current version ages out of the archive.
+RUN apt-get update && apt-get upgrade -y && apt-get install -y \
+    protobuf-compiler git python3 python3-venv wget build-essential openssl jq \
+    libngtcp2-16=1.11.0-1+deb13u1 \
+    libngtcp2-crypto-gnutls8=1.11.0-1+deb13u1
 
 # Install NodeJS and Snyk Broker
 ENV NODE_VERSION=20
