@@ -1,6 +1,6 @@
 module github.com/cortexapps/axon_apps/{{.ProjectName}}
 
-go 1.26.2
+go 1.26.3
 
 require (
 	github.com/google/uuid v1.6.0
