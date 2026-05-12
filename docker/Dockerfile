@@ -3,7 +3,7 @@ FROM debian:stable-slim AS builder
 
 RUN apt-get update && apt-get upgrade -y && apt-get install -y protobuf-compiler git wget build-essential
 
-ENV GOLANG_VERSION=1.26.2
+ENV GOLANG_VERSION=1.26.3
 RUN wget -q "https://dl.google.com/go/go${GOLANG_VERSION}.linux-$(dpkg --print-architecture).tar.gz" -O /tmp/go.tar.gz \
     && tar -C /usr/local -xzf /tmp/go.tar.gz \
     && rm /tmp/go.tar.gz
@@ -33,7 +33,7 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y \
 # Install NodeJS and Snyk Broker
 ENV NODE_VERSION=20
 
-ARG SNYK_BROKER_VERSION=v1.0.11-axon
+ARG SNYK_BROKER_VERSION=v1.0.13-axon
 RUN wget -q -O - https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash - && apt-get install -y nodejs
 RUN npm install --global npm@latest typescript@4.9.3
 RUN git clone https://github.com/cortexapps/snyk-broker.git /tmp/snyk-broker && \
@@ -50,7 +50,7 @@ RUN git clone https://github.com/cortexapps/snyk-broker.git /tmp/snyk-broker && 
 ENV PATH="/usr/local/lib/node_modules/.bin:${PATH}"
 
 # Install Go (needed by scaffold apps that build on top of this image)
-ENV GOLANG_VERSION=1.26.2
+ENV GOLANG_VERSION=1.26.3
 RUN wget -q "https://dl.google.com/go/go${GOLANG_VERSION}.linux-$(dpkg --print-architecture).tar.gz" -O /tmp/go.tar.gz \
     && tar -C /usr/local -xzf /tmp/go.tar.gz \
     && rm /tmp/go.tar.gz
