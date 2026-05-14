@@ -14,6 +14,7 @@ ENV GOPROXY="https://proxy.golang.org,direct"
 ENV PATH="${GOROOT}/bin:${GOPATH}/bin:${PATH}"
 
 COPY agent/. /build/.
+COPY proto/ /proto/
 RUN make -C /build setup proto
 RUN cd /build && go build -o /agent/cortex-axon-agent
 
