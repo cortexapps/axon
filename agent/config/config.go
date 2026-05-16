@@ -98,6 +98,20 @@ type AgentConfig struct {
 	RelayMode string
 	// TunnelCount is the number of parallel gRPC tunnel streams to open (grpc-tunnel mode only).
 	TunnelCount int
+	// MaxStreamsPerServer caps how many streams may land on the same server_id.
+	// Default 2; 0 means unlimited. Replaces strict server-id dedup so a small
+	// server pool still gets independent-TCP redundancy.
+	MaxStreamsPerServer int
+	// MaxInflightRequests caps concurrent in-flight requests dispatched into the
+	// agent across all streams. Requests over the cap return 503 immediately.
+	MaxInflightRequests int
+	// MaxRequestTimeout is the absolute ceiling on any single request, even when
+	// the server provides TimeoutMs=0. Prevents goroutine accumulation during
+	// slow-loris downstream incidents.
+	MaxRequestTimeout time.Duration
+	// RegistrationRefreshInterval controls how often the agent re-registers with
+	// the Cortex API to pick up rotated tokens. 0 disables periodic refresh.
+	RegistrationRefreshInterval time.Duration
 	// GrpcInsecure disables TLS on the gRPC tunnel connection (separate from HttpDisableTLS).
 	GrpcInsecure bool
 	// GrpcTunnelServer is the address of the gRPC tunnel server (host:port).
@@ -342,6 +356,42 @@ func NewAgentEnvConfig() AgentConfig {
 	}
 
 	cfg.GrpcTunnelServer = os.Getenv("GRPC_TUNNEL_SERVER")
+
+	cfg.MaxStreamsPerServer = 2
+	if maxStreamsPerServer := os.Getenv("MAX_STREAMS_PER_SERVER"); maxStreamsPerServer != "" {
+		v, err := strconv.Atoi(maxStreamsPerServer)
+		if err != nil {
+			panic(err)
+		}
+		cfg.MaxStreamsPerServer = v
+	}
+
+	cfg.MaxInflightRequests = 256
+	if maxInflight := os.Getenv("MAX_INFLIGHT_REQUESTS"); maxInflight != "" {
+		v, err := strconv.Atoi(maxInflight)
+		if err != nil {
+			panic(err)
+		}
+		cfg.MaxInflightRequests = v
+	}
+
+	cfg.MaxRequestTimeout = 5 * time.Minute
+	if maxReqTimeout := os.Getenv("MAX_REQUEST_TIMEOUT"); maxReqTimeout != "" {
+		v, err := time.ParseDuration(maxReqTimeout)
+		if err != nil {
+			panic(err)
+		}
+		cfg.MaxRequestTimeout = v
+	}
+
+	cfg.RegistrationRefreshInterval = 12 * time.Hour
+	if refresh := os.Getenv("REGISTRATION_REFRESH_INTERVAL"); refresh != "" {
+		v, err := time.ParseDuration(refresh)
+		if err != nil {
+			panic(err)
+		}
+		cfg.RegistrationRefreshInterval = v
+	}
 
 	return cfg
 }

@@ -13,6 +13,8 @@ import (
 	pb "github.com/cortexapps/axon-server/.generated/proto/tunnelpb"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // ResponseHandler is called when an HttpResponse is received from a client.
@@ -84,12 +86,14 @@ func (s *Service) Tunnel(stream pb.TunnelService_TunnelServer) error {
 		return fmt.Errorf("first message must be ClientHello")
 	}
 
-	// Validate required fields.
+	// Validate required fields. Return Unauthenticated so the client can
+	// distinguish auth failures from transient network errors and trigger an
+	// immediate re-registration with the Cortex API.
 	if hello.BrokerToken == "" {
-		return fmt.Errorf("broker_token is required")
+		return status.Error(codes.Unauthenticated, "broker_token is required")
 	}
 	if hello.TenantId == "" {
-		return fmt.Errorf("tenant_id is required")
+		return status.Error(codes.Unauthenticated, "tenant_id is required")
 	}
 
 	streamID := uuid.New().String()

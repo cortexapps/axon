@@ -7,7 +7,7 @@ import (
 )
 
 func TestRequestAssembler_SingleChunk(t *testing.T) {
-	ra := newRequestAssembler()
+	ra := newRequestAssembler(defaultMaxPending, nil)
 
 	// A single-chunk request (chunk_index=0, is_final=true) should pass through directly.
 	req := &pb.HttpRequest{
@@ -49,7 +49,7 @@ func TestRequestAssembler_SingleChunk(t *testing.T) {
 }
 
 func TestRequestAssembler_MultiChunk(t *testing.T) {
-	ra := newRequestAssembler()
+	ra := newRequestAssembler(defaultMaxPending, nil)
 
 	// Chunk 0: first chunk with metadata.
 	chunk0 := &pb.HttpRequest{
@@ -127,7 +127,7 @@ func TestRequestAssembler_MultiChunk(t *testing.T) {
 }
 
 func TestRequestAssembler_FirstChunkStoresMetadata(t *testing.T) {
-	ra := newRequestAssembler()
+	ra := newRequestAssembler(defaultMaxPending, nil)
 
 	// First chunk carries all metadata.
 	chunk0 := &pb.HttpRequest{
@@ -183,7 +183,7 @@ func TestRequestAssembler_FirstChunkStoresMetadata(t *testing.T) {
 }
 
 func TestRequestAssembler_IncompleteRequestDiscarded(t *testing.T) {
-	ra := newRequestAssembler()
+	ra := newRequestAssembler(defaultMaxPending, nil)
 
 	// Start a multi-chunk request but never send the final chunk.
 	chunk0 := &pb.HttpRequest{
@@ -226,7 +226,7 @@ func TestRequestAssembler_IncompleteRequestDiscarded(t *testing.T) {
 }
 
 func TestRequestAssembler_OrphanChunkIgnored(t *testing.T) {
-	ra := newRequestAssembler()
+	ra := newRequestAssembler(defaultMaxPending, nil)
 
 	// Send a continuation chunk without a preceding first chunk.
 	orphan := &pb.HttpRequest{
@@ -250,7 +250,7 @@ func TestRequestAssembler_OrphanChunkIgnored(t *testing.T) {
 }
 
 func TestRequestAssembler_MultipleConcurrentRequests(t *testing.T) {
-	ra := newRequestAssembler()
+	ra := newRequestAssembler(defaultMaxPending, nil)
 
 	// Start two multi-chunk requests interleaved.
 	ra.handleChunk(&pb.HttpRequest{
@@ -278,7 +278,7 @@ func TestRequestAssembler_MultipleConcurrentRequests(t *testing.T) {
 
 	// req-a was already completed, so a second final chunk for it is an orphan.
 	// Let's re-test properly: we need to restart.
-	ra2 := newRequestAssembler()
+	ra2 := newRequestAssembler(defaultMaxPending, nil)
 	ra2.handleChunk(&pb.HttpRequest{
 		RequestId: "req-a", Method: "GET", Path: "/a",
 		Headers: map[string]string{"X-Req": "a"},
