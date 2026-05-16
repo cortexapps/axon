@@ -66,7 +66,6 @@ func (b *Supervisor) Start(maxRetries int, window time.Duration) error {
 func (b *Supervisor) runExecutionLoop(maxRetries int, window time.Duration) error {
 
 	tracker := newEventTracker()
-	startTime := time.Now()
 
 	finish := func(err error) {
 		b.Lock()
@@ -86,8 +85,9 @@ func (b *Supervisor) runExecutionLoop(maxRetries int, window time.Duration) erro
 		defer close(fastfail)
 		for maxRetries > 0 {
 			tracker.AddEvent()
+			processStart := time.Now()
 			err := b.runCommand()
-			runTime := time.Since(startTime)
+			runTime := time.Since(processStart)
 
 			if errors.Is(err, errKilled) {
 				finish(nil)
