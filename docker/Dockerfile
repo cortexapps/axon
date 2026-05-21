@@ -27,18 +27,10 @@ WORKDIR /agent
 # when the scheduled Trivy scan flags OS-package CVEs whose fixes are already
 # in the archive — the cache is just serving a stale layer. Leaves the rest of
 # the build (Go, npm, snyk-broker clone) hitting cache as normal.
-#
-# libngtcp2-16, libngtcp2-crypto-gnutls8, and libnghttp2-14 are pinned to
-# patched Debian versions for CVE-2026-40170 and CVE-2026-27135; pulled
-# transitively via wget -> libcurl3-gnutls. Bump if Debian ships a newer fix
-# or the current version ages out of the archive.
 ARG APT_CACHE_BUST=2026-05-19
 RUN echo "apt cache bust: $APT_CACHE_BUST" \
     && apt-get update && apt-get upgrade -y && apt-get install -y \
-    protobuf-compiler git python3 python3-venv wget build-essential openssl jq \
-    libngtcp2-16=1.11.0-1+deb13u1 \
-    libngtcp2-crypto-gnutls8=1.11.0-1+deb13u1 \
-    libnghttp2-14=1.64.0-1.1+deb13u1
+    protobuf-compiler git python3 python3-venv wget build-essential openssl jq
 
 # Install NodeJS and Snyk Broker
 ENV NODE_VERSION=20
