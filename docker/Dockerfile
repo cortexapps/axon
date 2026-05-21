@@ -21,21 +21,21 @@ RUN cd /build && go build -o /agent/cortex-axon-agent
 FROM debian:stable-slim
 WORKDIR /agent
 
-# Install dependencies. libngtcp2-16, libngtcp2-crypto-gnutls8, and libnghttp2-14
-# are pinned to patched Debian versions to address CVE-2026-40170 and
-# CVE-2026-27135; they're pulled transitively via wget -> libcurl3-gnutls. Bump
-# these pins if Debian ships a newer fix or the current version ages out of the
-# archive.
-RUN apt-get update && apt-get upgrade -y && apt-get install -y \
-    protobuf-compiler git python3 python3-venv wget build-essential openssl jq \
-    libngtcp2-16=1.11.0-1+deb13u1 \
-    libngtcp2-crypto-gnutls8=1.11.0-1+deb13u1 \
-    libnghttp2-14=1.64.0-1.1+deb13u1
+# APT_CACHE_BUST participates in buildx's layer cache key for the RUN below.
+# Bump its value (a one-line PR is enough) to invalidate the cached layer and
+# force `apt-get update && upgrade` to re-fetch from Debian's archive. Use this
+# when the scheduled Trivy scan flags OS-package CVEs whose fixes are already
+# in the archive — the cache is just serving a stale layer. Leaves the rest of
+# the build (Go, npm, snyk-broker clone) hitting cache as normal.
+ARG APT_CACHE_BUST=2026-05-19
+RUN echo "apt cache bust: $APT_CACHE_BUST" \
+    && apt-get update && apt-get upgrade -y && apt-get install -y \
+    protobuf-compiler git python3 python3-venv wget build-essential openssl jq
 
 # Install NodeJS and Snyk Broker
 ENV NODE_VERSION=20
 
-ARG SNYK_BROKER_VERSION=v1.0.13-axon
+ARG SNYK_BROKER_VERSION=v1.0.14-axon
 RUN wget -q -O - https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash - && apt-get install -y nodejs
 RUN npm install --global npm@latest typescript@4.9.3
 RUN git clone https://github.com/cortexapps/snyk-broker.git /tmp/snyk-broker && \
