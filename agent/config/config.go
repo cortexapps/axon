@@ -72,6 +72,7 @@ type AgentConfig struct {
 	WebhookServerPort     int
 	SnykBrokerPort        int
 	EnableApiProxy        bool
+	EnablePprof           bool
 	FailWaitTime          time.Duration
 	AutoRegisterFrequency time.Duration
 	VerboseOutput         bool
@@ -108,6 +109,9 @@ func (ac AgentConfig) Print() {
 		fmt.Println("\tAPI Port: ", ac.HttpServerPort)
 	} else {
 		fmt.Println("\tAPI Proxy: Disabled")
+	}
+	if ac.EnablePprof {
+		fmt.Println("\tpprof: Enabled at /pprof")
 	}
 
 	fmt.Printf("\tFast fail time: %v\n", ac.FailWaitTime)
@@ -180,6 +184,11 @@ func NewAgentEnvConfig() AgentConfig {
 		dryRun = dryRunEnv == "true" || dryRunEnv == "1"
 	}
 
+	enablePprof := false
+	if pprofEnv := os.Getenv("ENABLE_PPROF"); pprofEnv != "" {
+		enablePprof = pprofEnv == "true" || pprofEnv == "1"
+	}
+
 	dequeueWaitTime := 1 * time.Second
 	if dequeueWaitTimeEnv := os.Getenv("DEQUEUE_WAIT_TIME"); dequeueWaitTimeEnv != "" {
 		dwt, err := time.ParseDuration(dequeueWaitTimeEnv)
@@ -243,6 +252,7 @@ func NewAgentEnvConfig() AgentConfig {
 		WebhookServerPort:          WebhookServerPort,
 		SnykBrokerPort:             snykBrokerPort,
 		EnableApiProxy:             true,
+		EnablePprof:                enablePprof,
 		FailWaitTime:               time.Second * 2,
 		PluginDirs:                 []string{"./plugins"},
 		AutoRegisterFrequency:      reregisterFrequency,
