@@ -54,5 +54,10 @@ func NewMainHttpServer(p MainHttpServerParams) cortexHttp.Server {
 		httpServer.RegisterHandler(metricsHandler)
 	}
 
+	if config.EnablePprof {
+		pprofHandler := cortexHttp.NewPprofHandler(config, p.Logger)
+		httpServer.RegisterHandler(pprofHandler)
+	}
+
 	return httpServer
 }

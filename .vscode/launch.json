@@ -96,6 +96,7 @@
                 "SCAFFOLD_DOCKER_IMAGE": "cortex-axon-agent:local",
                 "PORT" : "7399",
                 "BUILTIN_PLUGIN_DIR": "${workspaceFolder}/agent/server/snykbroker/plugins",
+                "ENABLE_PPROF": "true"
             }        
         },
 
