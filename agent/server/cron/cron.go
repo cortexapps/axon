@@ -12,8 +12,12 @@ type Cron interface {
 }
 
 func New() Cron {
+	c := cronLib.New()
+	// The robfig/cron scheduler only dispatches jobs once it has been
+	// started; without this, AddFunc registers entries that never fire.
+	c.Start()
 	return &cronLibWrapper{
-		cron: cronLib.New(),
+		cron: c,
 	}
 }
 
