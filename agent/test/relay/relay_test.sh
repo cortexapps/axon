@@ -186,6 +186,24 @@ else
     echo "Success: Binary file (1MB) checksum verified ($ORIGINAL_CHECKSUM)"
 fi
 
+# Verify the GitLab scaffolder Basic-auth injection (mirrors accept.gitlab.json).
+# The /gitlab/* rule in accept-client.json carries:
+#   auth: { scheme: basic, username: ${GITLAB_USERNAME:oauth2}, password: ${GITLAB_TOKEN} }
+# GITLAB_USERNAME is unset, so the username falls back to "oauth2" and the broker should
+# inject "Authorization: Basic base64(oauth2:gitlab-test-token)" toward the echo origin,
+# which reflects request headers back to us. This is the auth-scheme injection that the
+# git-over-HTTP clone path depends on and that the file-shape unit test cannot cover.
+echo "Checking GitLab scaffolder Basic-auth injection..."
+gitlab_auth_result=$(curlw "http://localhost:$SERVER_PORT/broker/$TOKEN/gitlab/myrepo.git/info/refs?service=git-upload-pack")
+expected_gitlab_auth="Basic $(printf '%s' 'oauth2:gitlab-test-token' | base64)"
+if ! echo "$gitlab_auth_result" | grep -qF "$expected_gitlab_auth"; then
+    echo "FAIL: Expected injected GitLab Basic auth ($expected_gitlab_auth) not found in echoed headers"
+    echo "$gitlab_auth_result"
+    exit 1
+else
+    echo "Success: GitLab accept rule injected Basic auth on the git smart-HTTP path"
+fi
+
 # To validate this we call out to the AXON readme, which hits an HTTPS server
 # so we validate proxy and cert handling
 if ! proxy_result=$(curlw -f -v http://localhost:$SERVER_PORT/broker/$TOKEN/cortexapps/axon/refs/heads/main/README.md 2>&1)
