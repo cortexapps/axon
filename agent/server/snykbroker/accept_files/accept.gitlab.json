@@ -1,6 +1,36 @@
 {
   "private": [
     {
+      "method": "GET",
+      "path": "/*/info/refs",
+      "origin": "${GITLAB_API}",
+      "auth": {
+        "scheme": "basic",
+        "username": "${GITLAB_USERNAME:oauth2}",
+        "password": "${GITLAB_TOKEN}"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/*/git-upload-pack",
+      "origin": "${GITLAB_API}",
+      "auth": {
+        "scheme": "basic",
+        "username": "${GITLAB_USERNAME:oauth2}",
+        "password": "${GITLAB_TOKEN}"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/*/git-receive-pack",
+      "origin": "${GITLAB_API}",
+      "auth": {
+        "scheme": "basic",
+        "username": "${GITLAB_USERNAME:oauth2}",
+        "password": "${GITLAB_TOKEN}"
+      }
+    },
+    {
       "method": "any",
       "path": "/*",
       "origin": "${GITLAB_API}",

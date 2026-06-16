@@ -61,6 +61,9 @@ services:
       CORTEX_API_TOKEN: fake-token
       CORTEX_API_BASE_URL: http://cortex-fake:8081
       GITHUB_RAW_API: https://raw.githubusercontent.com
+      # GITLAB_TOKEN drives the /gitlab/* Basic-auth rule in accept-client.json.
+      # GITLAB_USERNAME is intentionally left unset to exercise the ${GITLAB_USERNAME:oauth2} default.
+      GITLAB_TOKEN: gitlab-test-token
       PORT: 7433
       PLUGIN_DIRS: /agent/plugins
     env_file: ${ENVFILE:-noproxy.env}

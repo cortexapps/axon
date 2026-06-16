@@ -79,7 +79,11 @@ func main() {
 		fmt.Println("Received request /healthcheck")
 		w.WriteHeader(http.StatusOK)
 	})
-	http.HandleFunc("/echo/", func(w http.ResponseWriter, r *http.Request) {
+	// echoHandler reflects the request URI and headers back to the caller. It is
+	// used to assert that the broker injected the expected headers/credentials.
+	// Registered for /echo/ (header-injection rules) and /gitlab/ (the GitLab
+	// scaffolder Basic-auth rule, so tests can verify the injected Authorization).
+	echoHandler := func(w http.ResponseWriter, r *http.Request) {
 		fmt.Println("Received request /echo")
 		responseBody := map[string]string{
 			"message": "Echo response",
@@ -94,7 +98,9 @@ func main() {
 		}
 
 		w.WriteHeader(http.StatusOK)
-	})
+	}
+	http.HandleFunc("/echo/", echoHandler)
+	http.HandleFunc("/gitlab/", echoHandler)
 
 	// Start the HTTP server
 	port := ":8080"

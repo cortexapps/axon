@@ -20,10 +20,20 @@
         "origin": "http://cortex-fake:8081",
         "headers": {
           "x-test-header": "added-fake-server",
-          "x-test-header-plugin": "${plugin:plugin.sh}"         
+          "x-test-header-plugin": "${plugin:plugin.sh}"
         }
       },
-      
+      {
+        "method": "any",
+        "path": "/gitlab/*",
+        "origin": "http://cortex-fake:8081",
+        "auth": {
+          "scheme": "basic",
+          "username": "${GITLAB_USERNAME:oauth2}",
+          "password": "${GITLAB_TOKEN}"
+        }
+      },
+
       {
         "method": "any",
         "path": "/*",
