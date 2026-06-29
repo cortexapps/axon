@@ -27,7 +27,7 @@ WORKDIR /agent
 # when the scheduled Trivy scan flags OS-package CVEs whose fixes are already
 # in the archive — the cache is just serving a stale layer. Leaves the rest of
 # the build (Go, npm, snyk-broker clone) hitting cache as normal.
-ARG APT_CACHE_BUST=2026-06-11
+ARG APT_CACHE_BUST=2026-06-29
 RUN echo "apt cache bust: $APT_CACHE_BUST" \
     && apt-get update && apt-get upgrade -y && apt-get install -y \
     protobuf-compiler git python3 python3-venv wget build-essential openssl jq
