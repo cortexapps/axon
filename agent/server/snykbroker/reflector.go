@@ -8,6 +8,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -24,6 +25,7 @@ type RegistrationReflector struct {
 	logger          *zap.Logger
 	transport       *http.Transport
 	server          cortexHttp.Server
+	mu              sync.RWMutex
 	targets         map[string]proxyEntry
 	serverStarted   atomic.Bool
 	mode            config.RelayReflectorMode
@@ -152,6 +154,9 @@ func (rr *RegistrationReflector) getProxy(targetURI string, isDefault bool, head
 
 	key := newEntry.key()
 
+	rr.mu.Lock()
+	defer rr.mu.Unlock()
+
 	entry, exists := rr.targets[key]
 	if !exists {
 		entry = *newEntry
@@ -188,6 +193,10 @@ func (rr *RegistrationReflector) parseTargetUri(proxyPath string) (*proxyEntry, 
 		remainder = path[slash:]
 	}
 	hash := rr.extractHash(beforeSlash)
+
+	rr.mu.RLock()
+	defer rr.mu.RUnlock()
+
 	if hash == "" {
 		// find the default proxy entry
 		if entry, exists := rr.targets["default"]; exists {
@@ -245,6 +254,9 @@ func (rr *RegistrationReflector) getUriForTarget(target string) (string, error) 
 		return "", fmt.Errorf("target URI cannot be empty")
 	}
 
+	rr.mu.RLock()
+	defer rr.mu.RUnlock()
+
 	for _, entry := range rr.targets {
 		if entry.TargetURI == target {
 			return entry.proxyURI, nil
@@ -297,7 +309,6 @@ func (rr *RegistrationReflector) ServeHTTP(w http.ResponseWriter, r *http.Reques
 	if err != nil {
 		rr.logger.Error("Failed to find Entry for target URI", zap.Error(err))
 		http.Error(w, "Invalid target URI", http.StatusBadGateway)
-		w.WriteHeader(http.StatusBadGateway)
 		return
 	}
 
