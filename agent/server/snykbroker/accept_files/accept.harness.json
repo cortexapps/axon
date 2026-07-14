@@ -1,0 +1,12 @@
+{
+  "private": [
+    {
+      "method": "any",
+      "path": "/*",
+      "origin": "${HARNESS_API}",
+      "headers": {
+        "x-api-key": "${HARNESS_TOKEN}"
+      }
+    }
+  ]
+}

@@ -85,6 +85,7 @@ Generally the naming works like:
 | **Bitbucket Hosted**  | `BITBUCKET_API=https://bitbucket.mycompany.com`, `BITBUCKET_USERNAME`, `BITBUCKET_PASSWORD`                                                                                                                                                     |
 | **Jira**              | `JIRA_API=https://jira.mycompany.com`, `JIRA_USERNAME`, `JIRA_TOKEN`                                                                                                                                                                            |
 | **Jira Bearer/Cloud** | Arg `-s bearer`, `JIRA_API=https://mycompany.atlassian.com`, `JIRA_TOKEN`                                                                                                                                                                       |
+| **Harness**           | `HARNESS_API=https://app.harness.io`, `HARNESS_TOKEN`                                                                                                                                                                                           |
 
 ## How it works
 

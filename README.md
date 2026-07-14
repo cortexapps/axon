@@ -30,6 +30,7 @@ Axon Relay currently supports access to:
 * Jira
 * SonarQube
 * Prometheus
+* Harness
 
 For details on Relay, see [here](README.relay.md).
 

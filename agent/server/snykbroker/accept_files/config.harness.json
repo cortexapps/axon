@@ -1,0 +1,11 @@
+{
+    "validation": [
+        {
+            "url": "$HARNESS_API/ng/api/user/currentUser",
+            "auth": {
+                "type": "header",
+                "value": "$HARNESS_TOKEN"
+            }
+        }
+    ]
+}
