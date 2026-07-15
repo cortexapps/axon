@@ -3,7 +3,7 @@ FROM debian:stable-slim AS builder
 
 RUN apt-get update && apt-get upgrade -y && apt-get install -y protobuf-compiler git wget build-essential
 
-ENV GOLANG_VERSION=1.26.4
+ENV GOLANG_VERSION=1.26.5
 RUN wget -q "https://dl.google.com/go/go${GOLANG_VERSION}.linux-$(dpkg --print-architecture).tar.gz" -O /tmp/go.tar.gz \
     && tar -C /usr/local -xzf /tmp/go.tar.gz \
     && rm /tmp/go.tar.gz
@@ -27,13 +27,13 @@ WORKDIR /agent
 # when the scheduled Trivy scan flags OS-package CVEs whose fixes are already
 # in the archive — the cache is just serving a stale layer. Leaves the rest of
 # the build (Go, npm, snyk-broker clone) hitting cache as normal.
-ARG APT_CACHE_BUST=2026-07-07
+ARG APT_CACHE_BUST=2026-07-14
 RUN echo "apt cache bust: $APT_CACHE_BUST" \
     && apt-get update && apt-get upgrade -y && apt-get install -y \
     protobuf-compiler git python3 python3-venv wget build-essential openssl jq
 
 # Install NodeJS and Snyk Broker
-ENV NODE_VERSION=22
+ENV NODE_VERSION=20
 
 ARG SNYK_BROKER_VERSION=v1.0.16-axon
 RUN wget -q -O - https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash - && apt-get install -y nodejs
@@ -52,7 +52,7 @@ RUN git clone https://github.com/cortexapps/snyk-broker.git /tmp/snyk-broker && 
 ENV PATH="/usr/local/lib/node_modules/.bin:${PATH}"
 
 # Install Go (needed by scaffold apps that build on top of this image)
-ENV GOLANG_VERSION=1.26.4
+ENV GOLANG_VERSION=1.26.5
 RUN wget -q "https://dl.google.com/go/go${GOLANG_VERSION}.linux-$(dpkg --print-architecture).tar.gz" -O /tmp/go.tar.gz \
     && tar -C /usr/local -xzf /tmp/go.tar.gz \
     && rm /tmp/go.tar.gz
