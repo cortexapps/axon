@@ -140,6 +140,40 @@ func TestLoadIntegrationAcceptFilePoolVars(t *testing.T) {
 	require.NotContains(t, string(contents), "GITHUB_TOKEN_POOL")
 }
 
+func TestLoadIntegrationAcceptFileHarness(t *testing.T) {
+	os.Setenv("HARNESS_API", "https://app.harness.io")
+	os.Setenv("HARNESS_TOKEN", "the-harness-token")
+
+	acceptFile, err := loadAcceptFile(t, IntegrationHarness)
+	require.NoError(t, err)
+	contents, err := acceptFile.Render(zap.NewNop())
+	require.NoError(t, err)
+	require.Contains(t, string(contents), `"x-api-key":"${HARNESS_TOKEN}"`)
+	require.Contains(t, string(contents), `"origin":"${HARNESS_API}"`)
+}
+
+func TestLoadIntegrationAcceptFileHarnessMissingVars(t *testing.T) {
+	os.Setenv("HARNESS_API", "")
+	os.Setenv("HARNESS_TOKEN", "")
+
+	acceptFile, err := loadAcceptFile(t, IntegrationHarness)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "HARNESS_API")
+	require.Empty(t, acceptFile)
+}
+
+func TestLoadValidationParamsHarness(t *testing.T) {
+	ii := IntegrationInfo{
+		Integration: IntegrationHarness,
+	}
+
+	validationParams := ii.GetValidationConfig()
+	require.NotNil(t, validationParams)
+	require.Equal(t, "$HARNESS_API/ng/api/user/currentUser", validationParams.URL)
+	require.Equal(t, "header", validationParams.Auth.Type)
+	require.Equal(t, "$HARNESS_TOKEN", validationParams.Auth.Value)
+}
+
 func TestGetOrigin(t *testing.T) {
 
 	os.Setenv("USER", "testuser")
