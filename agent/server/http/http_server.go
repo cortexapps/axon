@@ -223,8 +223,9 @@ func (h *httpServer) requestMiddleware(next http.Handler) http.Handler {
 		)
 		next.ServeHTTP(rec, r)
 		duration := time.Since(start)
-		h.requestCounter.WithLabelValues(r.Method, r.URL.Path, fmt.Sprintf("%d", rec.statusCode)).Inc()
-		h.requestLatency.WithLabelValues(r.Method, r.URL.Path, fmt.Sprintf("%d", rec.statusCode)).Observe(duration.Seconds())
+		path := metricPath(r)
+		h.requestCounter.WithLabelValues(r.Method, path, fmt.Sprintf("%d", rec.statusCode)).Inc()
+		h.requestLatency.WithLabelValues(r.Method, path, fmt.Sprintf("%d", rec.statusCode)).Observe(duration.Seconds())
 		h.logger.Info("<== HTTP request",
 			zap.String("method", r.Method),
 			zap.String("path", r.URL.Path),
@@ -234,6 +235,26 @@ func (h *httpServer) requestMiddleware(next http.Handler) http.Handler {
 			zap.String("user_agent", r.UserAgent()),
 		)
 	})
+}
+
+// unmatchedMetricPath is the "path" metric label used when a request has no
+// resolvable route template. It is a fixed value so it can never contribute to
+// unbounded label cardinality.
+const unmatchedMetricPath = "<unmatched>"
+
+// metricPath returns the value to use for the "path" label of the request
+// metrics. It uses the matched mux route template (e.g. "/webhook/" or
+// "/webhook/{id}") rather than the raw request path, so that requests carrying
+// unique path segments (webhook ids, resource ids, uuids, ...) collapse to a
+// single bounded series instead of leaking one permanent counter + histogram
+// per distinct URL.
+func metricPath(r *http.Request) string {
+	if route := mux.CurrentRoute(r); route != nil {
+		if tmpl, err := route.GetPathTemplate(); err == nil && tmpl != "" {
+			return tmpl
+		}
+	}
+	return unmatchedMetricPath
 }
 
 var defaultReadTimeout = time.Second
