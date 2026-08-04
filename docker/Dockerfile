@@ -27,7 +27,7 @@ WORKDIR /agent
 # when the scheduled Trivy scan flags OS-package CVEs whose fixes are already
 # in the archive — the cache is just serving a stale layer. Leaves the rest of
 # the build (Go, npm, snyk-broker clone) hitting cache as normal.
-ARG APT_CACHE_BUST=2026-07-14
+ARG APT_CACHE_BUST=2026-08-03
 RUN echo "apt cache bust: $APT_CACHE_BUST" \
     && apt-get update && apt-get upgrade -y && apt-get install -y \
     protobuf-compiler git python3 python3-venv wget build-essential openssl jq
@@ -35,7 +35,7 @@ RUN echo "apt cache bust: $APT_CACHE_BUST" \
 # Install NodeJS and Snyk Broker
 ENV NODE_VERSION=20
 
-ARG SNYK_BROKER_VERSION=v1.0.16-axon
+ARG SNYK_BROKER_VERSION=v1.0.17-axon
 RUN wget -q -O - https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash - && apt-get install -y nodejs
 RUN npm install --global npm@11.18.0 typescript@4.9.3
 RUN git clone https://github.com/cortexapps/snyk-broker.git /tmp/snyk-broker && \
