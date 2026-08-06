@@ -452,6 +452,40 @@ func (r *relayInstanceManager) getAcceptFilePath() string {
 	return path.Join(os.TempDir(), fmt.Sprintf("axon-accept-file.%s.%s.%v.json", r.integrationInfo.Integration, r.integrationInfo.Alias, os.Getpid()))
 }
 
+// reflectorRenderStep rewrites each private rule's origin to point back at the
+// reflector, which is what lets the agent inject headers and retarget hosts on
+// traffic the broker would otherwise send straight upstream. The encoded proxy
+// URI carries a path segment identifying the original route.
+func (r *relayInstanceManager) reflectorRenderStep(renderContext acceptfile.RenderContext) error {
+	// These are reflector-only features, so a rule using one without the
+	// reflector would silently not get it.
+	if !r.config.HttpRelayReflectorMode.ReflectsTraffic() {
+		for _, route := range renderContext.AcceptFile.PrivateRules() {
+			if len(route.Headers()) > 0 {
+				panic("ENABLE_RELAY_REFLECTOR must be set to 'all' or 'traffic' to use custom headers in accept files")
+			}
+			if len(route.DynamicTargetHosts()) > 0 {
+				panic("ENABLE_RELAY_REFLECTOR must be set to 'all' or 'traffic' to use dynamicTargetHosts in accept files")
+			}
+		}
+		return nil
+	}
+
+	if r.reflector == nil {
+		return nil
+	}
+
+	for _, route := range renderContext.AcceptFile.PrivateRules() {
+		routeUri := r.reflector.ProxyURI(
+			route.Origin(),
+			WithHeadersResolver(route.Headers()),
+			WithDynamicTargetHosts(route.DynamicTargetHosts()...),
+		)
+		route.SetOrigin(routeUri)
+	}
+	return nil
+}
+
 func (r *relayInstanceManager) Start() error {
 
 	if !r.running.CompareAndSwap(false, true) {
@@ -472,34 +506,7 @@ func (r *relayInstanceManager) Start() error {
 		return fmt.Errorf("error creating accept file: %w", err)
 	}
 
-	rendered, err := af.Render(r.logger, func(renderContext acceptfile.RenderContext) error {
-		// Check if any routes have custom headers - these require traffic reflection mode
-		for _, route := range renderContext.AcceptFile.PrivateRules() {
-			if len(route.Headers()) > 0 && !r.config.HttpRelayReflectorMode.ReflectsTraffic() {
-				panic("ENABLE_RELAY_REFLECTOR must be set to 'all' or 'traffic' to use custom headers in accept files")
-			}
-		}
-
-		// Rewrite accept file origins through reflector when mode reflects traffic (traffic, all)
-		if r.reflector != nil && r.config.HttpRelayReflectorMode.ReflectsTraffic() {
-
-			// Here we loop all the private (incoming) routes and do two things
-			// 1. We rewrite the origin to point back to the reflector.  This captures the original URI so
-			//    that the reflector can proxy the request to the correct origin.
-			// 2. We add any custom headers that are defined in the route, which is a functional addition not available
-			//    in the original accept file / snyk-broker.
-			//
-			// The returned proxyURI is an encoded URI path that has an additional path section which is used
-			// to identify the original route and headers.
-
-			for _, route := range renderContext.AcceptFile.PrivateRules() {
-				headers := route.Headers()
-				routeUri := r.reflector.ProxyURI(route.Origin(), WithHeadersResolver(headers))
-				route.SetOrigin(routeUri)
-			}
-		}
-		return nil
-	})
+	rendered, err := af.Render(r.logger, r.reflectorRenderStep)
 
 	if err != nil {
 		r.logger.Error("Error rendering accept file", zap.Error(err))

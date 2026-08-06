@@ -192,7 +192,8 @@ func (w acceptFileWrapper) AddRule(routeType string, entry acceptFileRule) accep
 	}
 	existingRoutes := w.dict[routeType].([]any)
 	w.dict[routeType] = append([]any{routeDict}, existingRoutes...)
-	return acceptFileRuleWrapper{dict: routeDict}
+	// without the back-reference every accessor that logs would nil-deref
+	return acceptFileRuleWrapper{dict: routeDict, acceptFile: w.acceptFile}
 }
 
 func (w acceptFileWrapper) toJSON() ([]byte, error) {
@@ -239,6 +240,42 @@ func (r acceptFileRuleWrapper) SetOrigin(origin string) {
 	r.dict["origin"] = origin
 }
 
+// RuleKeyDynamicTargetHosts is an Axon extension to the Snyk Broker rule
+// format. Its value is a list of host patterns the rule may be retargeted to
+// per request, each either an exact host or a leading wildcard such as
+// "*.googleapis.com". A rule that omits it cannot be retargeted at all.
+//
+// Like "headers", the broker has no knowledge of this key and ignores it:
+// rules round-trip through map[string]any and the broker applies no schema
+// validation.
+const RuleKeyDynamicTargetHosts = "dynamicTargetHosts"
+
+// DynamicTargetHosts returns the rule's retargeting allowlist, or nil if it
+// declares none. A malformed value panics rather than silently disabling
+// retargeting, which would otherwise surface as an unexplained 403 per
+// request.
+func (r acceptFileRuleWrapper) DynamicTargetHosts() []string {
+	value, present := r.dict[RuleKeyDynamicTargetHosts]
+	if !present {
+		return nil
+	}
+	entries, ok := value.([]any)
+	if !ok {
+		r.acceptFile.logger.Panic("accept file rule has a non-list "+RuleKeyDynamicTargetHosts,
+			zap.Any("value", value))
+	}
+	hosts := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		host, ok := entry.(string)
+		if !ok || host == "" {
+			r.acceptFile.logger.Panic("accept file rule has an empty or non-string "+RuleKeyDynamicTargetHosts+" entry",
+				zap.Any("entry", entry))
+		}
+		hosts = append(hosts, host)
+	}
+	return hosts
+}
+
 func (r acceptFileRuleWrapper) Headers() ResolverMap {
 	headers, ok := r.dict["headers"].(map[string]any)
 	if !ok {
@@ -259,11 +296,12 @@ func (r acceptFileRuleWrapper) Headers() ResolverMap {
 // about additional fields that might be in the accept file that we don't know about.
 
 type acceptFileRule struct {
-	Method  string              `json:"method"`
-	Path    string              `json:"path"`
-	Origin  string              `json:"origin"`
-	Auth    *acceptFileRuleAuth `json:"auth,omitempty"`
-	Headers map[string]string   `json:"headers,omitempty"`
+	Method             string              `json:"method"`
+	Path               string              `json:"path"`
+	Origin             string              `json:"origin"`
+	Auth               *acceptFileRuleAuth `json:"auth,omitempty"`
+	Headers            map[string]string   `json:"headers,omitempty"`
+	DynamicTargetHosts []string            `json:"dynamicTargetHosts,omitempty"`
 }
 
 type acceptFileRuleAuth struct {
