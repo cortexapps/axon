@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -24,6 +26,7 @@ type RegistrationReflector struct {
 	logger          *zap.Logger
 	transport       *http.Transport
 	server          cortexHttp.Server
+	targetsMu       sync.RWMutex
 	targets         map[string]proxyEntry
 	serverStarted   atomic.Bool
 	mode            config.RelayReflectorMode
@@ -152,6 +155,9 @@ func (rr *RegistrationReflector) getProxy(targetURI string, isDefault bool, head
 
 	key := newEntry.key()
 
+	rr.targetsMu.Lock()
+	defer rr.targetsMu.Unlock()
+
 	entry, exists := rr.targets[key]
 	if !exists {
 		entry = *newEntry
@@ -188,6 +194,10 @@ func (rr *RegistrationReflector) parseTargetUri(proxyPath string) (*proxyEntry, 
 		remainder = path[slash:]
 	}
 	hash := rr.extractHash(beforeSlash)
+
+	rr.targetsMu.RLock()
+	defer rr.targetsMu.RUnlock()
+
 	if hash == "" {
 		// find the default proxy entry
 		if entry, exists := rr.targets["default"]; exists {
@@ -199,11 +209,9 @@ func (rr *RegistrationReflector) parseTargetUri(proxyPath string) (*proxyEntry, 
 		}
 	}
 
-	for _, entry := range rr.targets {
-		if entry.key() == hash {
-			// Found the target URI
-			return &entry, remainder, nil
-		}
+	// the map is keyed by exactly the value key() returns
+	if entry, exists := rr.targets[hash]; exists {
+		return &entry, remainder, nil
 	}
 
 	return nil, "", fmt.Errorf("no proxy entry found for path: %s", proxyPath)
@@ -244,6 +252,9 @@ func (rr *RegistrationReflector) getUriForTarget(target string) (string, error) 
 	if target == "" {
 		return "", fmt.Errorf("target URI cannot be empty")
 	}
+
+	rr.targetsMu.RLock()
+	defer rr.targetsMu.RUnlock()
 
 	for _, entry := range rr.targets {
 		if entry.TargetURI == target {
@@ -413,9 +424,15 @@ func (pe *proxyEntry) key() string {
 		key := pe.TargetURI
 
 		if len(pe.headers) > 0 {
-			// Create a unique key that includes headers to allow different header sets for the same URI
-			headerKey := ""
+			// Create a unique key that includes headers to allow different header sets for the same URI.
+			// Sorted so the hash is stable across map iteration order.
+			names := make([]string, 0, len(pe.headers))
 			for k := range pe.headers {
+				names = append(names, k)
+			}
+			sort.Strings(names)
+			headerKey := ""
+			for _, k := range names {
 				headerKey += fmt.Sprintf("|%s=%s", k, pe.headers.ResolverKey(k))
 			}
 			key = key + headerKey

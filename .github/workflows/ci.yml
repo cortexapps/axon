@@ -34,6 +34,9 @@ jobs:
       - name: Run Agent tests
         run: make -C agent test
 
+      - name: Run Agent race detector
+        run: make -C agent test-race
+
       - name: Run Go SDK tests
         run: |
           cd sdks/go
