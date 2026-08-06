@@ -32,6 +32,25 @@ func newTestReflectorEnv(t *testing.T) *testReflectorEnv {
 	})
 }
 
+// waitForTunnelDrain blocks until no WebSocket tunnel is still copying.
+// activeConnections is decremented only after both copy goroutines have
+// returned, so reaching zero means none of them can log again.
+func waitForTunnelDrain(t *testing.T, rr *RegistrationReflector) {
+	t.Helper()
+	if rr.wsProxy == nil {
+		return
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for rr.wsProxy.ActiveConnections() > 0 {
+		if time.Now().After(deadline) {
+			t.Errorf("websocket tunnels did not drain within 5s (%d still active)",
+				rr.wsProxy.ActiveConnections())
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func newTestReflectorEnvWithConfig(t *testing.T, cfg config.AgentConfig) *testReflectorEnv {
 	logger := zaptest.NewLogger(t)
 	rr := NewRegistrationReflector(RegistrationReflectorParams{
@@ -41,6 +60,11 @@ func newTestReflectorEnvWithConfig(t *testing.T, cfg config.AgentConfig) *testRe
 	})
 	router := mux.NewRouter()
 	server := httptest.NewServer(router)
+	// Cleanups run LIFO, so this drain runs last - after Stop and server.Close
+	// have torn the connections down. Tunnel goroutines outlive the request
+	// that started them and log through the zaptest logger, which races the
+	// test being marked done if we return while one is still copying.
+	t.Cleanup(func() { waitForTunnelDrain(t, rr) })
 	t.Cleanup(server.Close)
 	t.Cleanup(func() { rr.Stop() })
 	return &testReflectorEnv{
