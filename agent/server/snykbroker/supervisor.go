@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -189,20 +190,23 @@ func (b *Supervisor) runCommand() error {
 	// sigChan triggers shutdown
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigChan)
 
 	running := make(chan struct{})
 
 	go func() {
-		<-sigChan
-		b.stopFunc()
+		sig, ok := <-sigChan
+		if ok && sig != nil {
+			b.stopFunc()
+		}
 	}()
 
-	killed := false
+	var killed atomic.Bool
 
 	// our stopfunc allows anyone to close the process
 	// and wait for it to finish
 	b.stopFunc = func() {
-		killed = true
+		killed.Store(true)
 
 		// if process is running trigger a kill
 		if cmd.Process != nil {
@@ -244,7 +248,7 @@ func (b *Supervisor) runCommand() error {
 	stopStdErr()
 	wg.Wait()
 
-	if killed {
+	if killed.Load() {
 		err = errKilled
 		fmt.Printf("Process %v (pid=%v) killed\n", cmd.Path, pid)
 	}
@@ -266,20 +270,20 @@ func (b *Supervisor) Close() error {
 
 func (b *Supervisor) scanLines(reader io.Reader, output chan string, refCount *sync.WaitGroup) func() {
 
-	done := false
+	var done atomic.Bool
 
 	refCount.Add(1)
 
 	// increase buffer size from default of 60K to 1MB
 	buffer := make([]byte, 1024*1024)
 	go func() {
-		for !done {
+		for !done.Load() {
 			scanner := bufio.NewScanner(reader)
 			scanner.Buffer(buffer, cap(buffer)-1)
 			for scanner.Scan() {
 				ln := scanner.Text()
 				output <- ln
-				if done {
+				if done.Load() {
 					return
 				}
 			}
@@ -302,7 +306,7 @@ func (b *Supervisor) scanLines(reader io.Reader, output chan string, refCount *s
 	}()
 
 	return func() {
-		done = true
+		done.Store(true)
 		refCount.Done()
 	}
 }

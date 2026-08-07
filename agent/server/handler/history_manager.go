@@ -110,8 +110,8 @@ func (s *historyManager) getHistoryDirectory() (string, error) {
 }
 
 func (s *historyManager) getHistoryPath(handlerName string, timestamp time.Time) string {
-
-	return fmt.Sprintf("%s/%d-%s.json", s.config.HandlerHistoryPath, timestamp.UnixMilli(), handlerName)
+	safeName := filepath.Base(handlerName)
+	return fmt.Sprintf("%s/%d-%s.json", s.config.HandlerHistoryPath, timestamp.UnixMilli(), safeName)
 }
 
 func (s *historyManager) cleanupDirectory(path string, minTimestamp time.Time, maxSizeBytes int64, extractTimestamp func(info os.FileInfo) time.Time) (int, error) {
