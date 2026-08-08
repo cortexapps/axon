@@ -9,7 +9,6 @@ import (
 	"net/url"
 	"sort"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -23,11 +22,12 @@ import (
 )
 
 type RegistrationReflector struct {
-	logger          *zap.Logger
-	transport       *http.Transport
-	server          cortexHttp.Server
-	targetsMu       sync.RWMutex
-	targets         map[string]proxyEntry
+	logger    *zap.Logger
+	transport *http.Transport
+	server    cortexHttp.Server
+	// Never mutated once published; registration swaps in a new map. Readers
+	// hold no lock, so the map a reader is ranging over must stay frozen.
+	targets         atomic.Pointer[map[string]proxyEntry]
 	serverStarted   atomic.Bool
 	mode            config.RelayReflectorMode
 	config          config.AgentConfig
@@ -61,10 +61,10 @@ func NewRegistrationReflector(p RegistrationReflectorParams) *RegistrationReflec
 		transport: p.Transport,
 		server:    server,
 		logger:    httpParams.Logger,
-		targets:   make(map[string]proxyEntry),
 		mode:      p.Config.HttpRelayReflectorMode,
 		config:    p.Config,
 	}
+	rr.targets.Store(&map[string]proxyEntry{})
 
 	// Create WebSocket proxy with callbacks for tunnel lifecycle
 	rr.wsProxy = NewWebSocketProxy(httpParams.Logger, p.Transport)
@@ -155,15 +155,30 @@ func (rr *RegistrationReflector) getProxy(targetURI string, isDefault bool, head
 
 	key := newEntry.key()
 
-	rr.targetsMu.Lock()
-	defer rr.targetsMu.Unlock()
+	// Set before the entry is published so the copy in the map carries the
+	// header too, rather than only the reverse proxy's captured newEntry.
+	newEntry.addResponseHeader("x-axon-relay-instance", rr.config.InstanceId)
 
-	entry, exists := rr.targets[key]
-	if !exists {
-		entry = *newEntry
-		rr.targets[key] = entry
-		newEntry.addResponseHeader("x-axon-relay-instance", rr.config.InstanceId)
+	// Copy-on-write: publish a new map rather than mutating the live one, so
+	// readers never synchronize. Retried on CAS failure because a concurrent
+	// registration may have published between the load and the swap.
+	for {
+		current := rr.targets.Load()
+		if entry, exists := (*current)[key]; exists {
+			return &entry, nil
+		}
 
+		next := make(map[string]proxyEntry, len(*current)+1)
+		for k, v := range *current {
+			next[k] = v
+		}
+		next[key] = *newEntry
+
+		if !rr.targets.CompareAndSwap(current, &next) {
+			continue
+		}
+
+		entry := next[key]
 		rr.logger.Info("Registered redirector",
 			zap.String("targetURI", entry.TargetURI),
 			zap.String("proxyURI", entry.proxyURI),
@@ -173,7 +188,6 @@ func (rr *RegistrationReflector) getProxy(targetURI string, isDefault bool, head
 		)
 		return &entry, nil
 	}
-	return &entry, nil
 }
 
 func (rr *RegistrationReflector) extractHash(part string) string {
@@ -195,12 +209,11 @@ func (rr *RegistrationReflector) parseTargetUri(proxyPath string) (*proxyEntry, 
 	}
 	hash := rr.extractHash(beforeSlash)
 
-	rr.targetsMu.RLock()
-	defer rr.targetsMu.RUnlock()
+	targets := *rr.targets.Load()
 
 	if hash == "" {
 		// find the default proxy entry
-		if entry, exists := rr.targets["default"]; exists {
+		if entry, exists := targets["default"]; exists {
 			// Found the default proxy entry
 			return &entry, proxyPath, nil
 		} else {
@@ -210,7 +223,7 @@ func (rr *RegistrationReflector) parseTargetUri(proxyPath string) (*proxyEntry, 
 	}
 
 	// the map is keyed by exactly the value key() returns
-	if entry, exists := rr.targets[hash]; exists {
+	if entry, exists := targets[hash]; exists {
 		return &entry, remainder, nil
 	}
 
@@ -247,16 +260,15 @@ func WithHeadersResolver(headers acceptfile.ResolverMap) ProxyOption {
 	}
 }
 
+// getUriForTarget scans by target URI rather than by key. Only tests need this
+// direction, so the linear scan is not on any request path.
 func (rr *RegistrationReflector) getUriForTarget(target string) (string, error) {
 
 	if target == "" {
 		return "", fmt.Errorf("target URI cannot be empty")
 	}
 
-	rr.targetsMu.RLock()
-	defer rr.targetsMu.RUnlock()
-
-	for _, entry := range rr.targets {
+	for _, entry := range *rr.targets.Load() {
 		if entry.TargetURI == target {
 			return entry.proxyURI, nil
 		}

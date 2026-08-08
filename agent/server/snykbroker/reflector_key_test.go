@@ -34,11 +34,11 @@ func TestProxyEntryKeyStableAcrossHeaderOrder(t *testing.T) {
 }
 
 // TestConcurrentGetProxyAndParseTargetUri reproduces the production race
-// between registration writing rr.targets (the auto-register timer and the
-// POST /__axon/broker/reregister handler both reach getProxy at runtime) and
-// ServeHTTP reading it through parseTargetUri. Without the mutex this is a
-// concurrent map read-and-write, which is a Go runtime throw rather than a
-// tolerable race. Only meaningful under -race.
+// between registration writing rr.targets (the broker start path retries
+// registration on its own goroutine, so it can register entries long after
+// Start returned) and ServeHTTP reading it through parseTargetUri. Mutating
+// the map in place makes this a concurrent map read-and-write, which is a Go
+// runtime throw rather than a tolerable race. Only meaningful under -race.
 func TestConcurrentGetProxyAndParseTargetUri(t *testing.T) {
 	env := newTestReflectorEnv(t)
 
@@ -95,8 +95,7 @@ func TestConcurrentGetProxyAndParseTargetUri(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	// every writer URI registered exactly one entry, plus the seeds
-	env.Reflector.targetsMu.RLock()
-	defer env.Reflector.targetsMu.RUnlock()
-	require.Len(t, env.Reflector.targets, 4+workers*perWorker)
+	// every writer URI registered exactly one entry, plus the seeds. A lost
+	// copy-on-write update would show up here as a short map.
+	require.Len(t, *env.Reflector.targets.Load(), 4+workers*perWorker)
 }
