@@ -1,0 +1,110 @@
+services:
+  grpc-tunnel-server:
+    build:
+      context: ../../..
+      dockerfile: server/docker/Dockerfile
+    image: cortex-axon-tunnel-server:local
+    ports:
+      - "${GRPC_PORT}:50052"
+      - "${HTTP_PORT}:8080"
+    environment:
+      GRPC_PORT: 50052
+      HTTP_PORT: 8080
+      SERVER_ID: test-server-1
+      DISPATCH_TIMEOUT: 60s
+      HEARTBEAT_INTERVAL: 10s
+      ENV: development
+      TOKEN: ${TOKEN:-0e481b34-76ac-481a-a92f-c94a6cf6f6c1}
+    networks:
+      - external  # grpc-tunnel-server is on external network only
+
+  mitmproxy:
+    image: mitmproxy/mitmproxy:12
+    ports:
+      - "9980:8080"
+      - "9981:8081"
+    volumes:
+      - ./.mitmproxy:/home/mitmproxy/.mitmproxy
+      - ./mitmproxy_addon_header.py:/home/mitmproxy/addon.py
+    command: mitmdump -s /home/mitmproxy/addon.py
+    networks:
+      - internal  # mitmproxy bridges both networks
+      - external
+
+  axon-relay:
+    build:
+      context: ../../..
+      dockerfile: docker/Dockerfile
+    image: cortex-axon-agent:local
+    volumes:
+      - .:/src
+      - ./.mitmproxy:/certs
+      - ../../server/snykbroker/acceptfile:/agent/plugins
+    environment:
+      CORTEX_API_TOKEN: fake-token
+      CORTEX_API_BASE_URL: http://cortex-fake:8081
+      GITHUB_RAW_API: https://raw.githubusercontent.com
+      PORT: 7433
+      PLUGIN_DIRS: /agent/plugins
+      RELAY_MODE: grpc-tunnel
+      TUNNEL_COUNT: 2
+      BROKER_SERVER_URL: grpc-tunnel-server:50052
+      GRPC_INSECURE: "true"
+      CORTEX_TENANT_ID: test-tenant
+      TOKEN: ${TOKEN:-0e481b34-76ac-481a-a92f-c94a6cf6f6c1}
+    env_file: ${ENVFILE:-noproxy.env}
+    command: relay -f /src/accept-client.json -i github -a axon-test
+    depends_on:
+      mitmproxy:
+        condition: service_started
+      grpc-tunnel-server:
+        condition: service_started
+      cortex-fake:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7433/healthcheck"]
+      interval: 5s
+      timeout: 5s
+      retries: 6
+    networks:
+      - internal
+      # For PROXY=1: this is the only network, forcing traffic through mitmproxy
+      # For PROXY=0: docker-compose.grpc.noproxy.yml adds external network
+
+  python-server:
+    image: python:3.12-alpine
+    volumes:
+      - /tmp:/tmp
+    command: sh -c "apk add curl && python3 -m http.server 80 -d /tmp"
+    healthcheck:
+      test: ["CMD", "sh", "-c", "curl -f http://localhost:80/ || true"]  # just check server is up
+      interval: 5s
+      timeout: 5s
+      retries: 6
+    stop_grace_period: 1s  # SIGKILL after 1s
+    networks:
+      - internal  # python-server is a local customer service
+
+  cortex-fake:
+    image: golang:1.24-alpine
+    volumes:
+      - .:/src
+    environment:
+      PORT: 8081
+      BROKER_SERVER_URL: http://grpc-tunnel-server:8080
+      TOKEN: ${TOKEN:-0e481b34-76ac-481a-a92f-c94a6cf6f6c1}
+    command: sh -c "apk add curl && cd /src && go run cortex-registration-fake.go"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/healthcheck"]
+      interval: 1s
+      timeout: 1s
+      retries: 30
+    networks:
+      - internal  # cortex-fake is accessed by axon-relay for registration
+
+networks:
+  internal:
+    # Internal network - axon-relay, python-server, cortex-fake
+    # axon-relay can only reach external network via mitmproxy
+  external:
+    # External network - grpc-tunnel-server (mimics Cortex side)

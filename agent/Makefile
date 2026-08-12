@@ -11,7 +11,20 @@ GO_FILES := $(patsubst proto/%.proto,$(GENERATED_PATH)/%.pb.go,$(PROTO_FILES))
 GOPATH ?= $(HOME)/go
 GOBIN ?= $(GOPATH)/bin
 
-proto: setup $(GO_FILES) version
+TUNNEL_PROTO = ../proto/tunnel/tunnel.proto
+TUNNEL_GENERATED = $(GENERATED_DIR)/github.com/cortexapps/axon/tunnelpb
+
+proto: setup $(GO_FILES) tunnel-proto version
+
+tunnel-proto: $(TUNNEL_PROTO)
+	@echo "Generating tunnel protobuf for agent"
+	@mkdir -p $(GENERATED_DIR)
+	@protoc -I=../proto/tunnel \
+		--go_out=$(GENERATED_DIR) --go-grpc_out=$(GENERATED_DIR) \
+		--go_opt=Mtunnel.proto=github.com/cortexapps/axon/tunnelpb \
+		--go-grpc_opt=Mtunnel.proto=github.com/cortexapps/axon/tunnelpb \
+		$(TUNNEL_PROTO)
+.PHONY: tunnel-proto
 
 version: $(GO_SDK_DIR)/version/agentversion.txt $(PYTHON_SDK_DIR)/cortex_axon/agentversion.py
 
@@ -83,7 +96,17 @@ relay-test-with-proxy:
 
 relay-test: relay-test-no-proxy relay-test-with-proxy
 
-.PHONY: relay-test relay-test-no-proxy relay-test-with-proxy
+grpc-relay-test-no-proxy:
+	@echo "Running gRPC relay tests: no proxy"
+	cd test/relay && export PROXY=0 && ./relay_test.grpc.sh
+
+grpc-relay-test-with-proxy:
+	@echo "Running gRPC relay tests: with proxy"
+	cd test/relay && export PROXY=1 && ./relay_test.grpc.sh
+
+grpc-relay-test: grpc-relay-test-no-proxy grpc-relay-test-with-proxy
+
+.PHONY: relay-test relay-test-no-proxy relay-test-with-proxy grpc-relay-test grpc-relay-test-no-proxy grpc-relay-test-with-proxy
 
 run: proto
 	go run main.go serve
