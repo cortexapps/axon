@@ -87,6 +87,34 @@ Generally the naming works like:
 | **Jira Bearer/Cloud** | Arg `-s bearer`, `JIRA_API=https://mycompany.atlassian.com`, `JIRA_TOKEN`                                                                                                                                                                       |
 | **Harness**           | `HARNESS_API=https://app.harness.io`, `HARNESS_TOKEN`                                                                                                                                                                                           |
 
+## Relay transports
+
+The relay agent supports two wire transports between your network and the
+Cortex cloud, selected with the `AXON_RELAY_TRANSPORT` environment variable:
+
+| Transport | `AXON_RELAY_TRANSPORT` | Status |
+|-----------|------------------------|--------|
+| Snyk Broker (WebSocket) | `snyk-broker` | Default |
+| gRPC tunnel | `grpc-tunnel` | Incubating (opt-in) |
+
+Both transports use the same accept files, the same `/register` handshake,
+and the same Cortex-side configuration — the accept-file conformance suite
+(`agent/test/conformance/`) pins their semantics to a single definition, so
+switching transports never changes which requests are allowed or how they
+are rewritten. To switch, set the environment variable and restart the
+agent; to roll back, unset it and restart. No state carries between modes.
+
+gRPC-tunnel-specific settings (all optional):
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `AXON_GRPC_TUNNEL_SLOTS` | `32` | Concurrent tunnel streams per agent |
+| `AXON_GRPC_TUNNEL_INSECURE` | `false` | Skip TLS on the tunnel dial (dev only) |
+| `AXON_GRPC_TUNNEL_MAX_REQUEST_TIMEOUT` | `5m` | Hard ceiling on any single relayed call |
+
+The design, wire protocol, and rollout plan are documented in
+[docs/design/grpc-tunnel-v2.md](docs/design/grpc-tunnel-v2.md).
+
 ## How it works
 
 Internally, Cortex Axon uses an open-source project published by Snyk called [Snyk Broker](https://docs.snyk.io/enterprise-setup/snyk-broker). 
