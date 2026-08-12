@@ -24,9 +24,17 @@ services:
       - "9980:8080"
       - "9981:8081"
     volumes:
-      - ./.mitmproxy:/home/mitmproxy/.mitmproxy
+      # Mount to /certs (not /home/mitmproxy/.mitmproxy) to avoid entrypoint usermod failure in CI
+      - ./.mitmproxy:/certs
       - ./mitmproxy_addon_header.py:/home/mitmproxy/addon.py
-    command: mitmdump -s /home/mitmproxy/addon.py
+    # Use confdir=/certs so mitmproxy uses our CA files from /certs instead of default location
+    # This avoids the entrypoint script trying to chown files (which fails in CI)
+    command: mitmdump --set confdir=/certs -s /home/mitmproxy/addon.py
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import socket; s=socket.socket(); s.connect(('localhost', 8080)); s.close()"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
     networks:
       - internal  # mitmproxy bridges both networks
       - external
@@ -59,7 +67,7 @@ services:
     command: relay -f /src/accept-client.json -i github -a axon-test
     depends_on:
       mitmproxy:
-        condition: service_started
+        condition: service_healthy
       grpc-tunnel-server:
         condition: service_started
       cortex-fake:
