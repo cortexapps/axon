@@ -18,7 +18,6 @@ import (
 	"github.com/cortexapps/axon/common"
 	"github.com/cortexapps/axon/config"
 	cortexHttp "github.com/cortexapps/axon/server/http"
-	"github.com/cortexapps/axon/server/requestexecutor"
 	"github.com/cortexapps/axon/server/snykbroker"
 	"github.com/cortexapps/axon/server/snykbroker/acceptfile"
 	"github.com/gorilla/mux"
@@ -36,7 +35,6 @@ import (
 const (
 	maxChunkSize              = 1024 * 1024
 	maxGrpcMsgSize            = 8 * 1024 * 1024
-	defaultMaxPending         = 64
 	handshakeTimeout          = 30 * time.Second
 	keepaliveInterval         = 20 * time.Second
 	keepaliveTimeout          = 10 * time.Second
@@ -69,7 +67,8 @@ type tunnelClient struct {
 	logger          *zap.Logger
 	integrationInfo common.IntegrationInfo
 	registration    snykbroker.Registration
-	executor        requestexecutor.RequestExecutor
+	router          *Router
+	backend         Backend
 	httpClient      *http.Client
 
 	running   atomic.Bool
@@ -120,109 +119,18 @@ type tunnelStream struct {
 // streamCtx bundles the per-stream values needed to run streamLoop after a
 // successful handshake.
 type streamCtx struct {
-	ts     *tunnelStream
-	stream pb.TunnelService_TunnelClient
-	sendFn sendFunc
-	hbMs   int32
+	ts            *tunnelStream
+	stream        pb.TunnelService_TunnelClient
+	sendFn        sendFunc
+	hbMs          int32
+	maxFrameBytes int32
 }
 
 // sendFunc serializes Send() calls on a gRPC stream. Multiple goroutines
 // (heartbeat responses, HTTP response handlers) may send concurrently; the
 // mutex prevents data races. On a Send error the func cancels the stream so
 // the recv loop notices and reconnects.
-type sendFunc func(msg *pb.TunnelClientMessage) error
-
-type requestAssembler struct {
-	mu         sync.Mutex
-	pending    map[string]*pendingRequest
-	order      []string // insertion order for LRU eviction
-	maxPending int
-	logger     *zap.Logger
-}
-
-type pendingRequest struct {
-	method    string
-	path      string
-	headers   map[string]string
-	body      []byte
-	timeoutMs int32
-}
-
-func newRequestAssembler(maxPending int, logger *zap.Logger) *requestAssembler {
-	if logger == nil {
-		logger = zap.NewNop()
-	}
-	return &requestAssembler{
-		pending:    make(map[string]*pendingRequest),
-		maxPending: maxPending,
-		logger:     logger,
-	}
-}
-
-// handleChunk processes an incoming HttpRequest chunk. It returns a fully
-// assembled *pb.HttpRequest when the final chunk arrives, or nil if more
-// chunks are still expected.
-func (ra *requestAssembler) handleChunk(chunk *pb.HttpRequest) *pb.HttpRequest {
-	if chunk.ChunkIndex == 0 && chunk.IsFinal {
-		return chunk
-	}
-
-	ra.mu.Lock()
-	defer ra.mu.Unlock()
-
-	if chunk.ChunkIndex == 0 {
-		if ra.maxPending > 0 && len(ra.pending) >= ra.maxPending {
-			evicted := ra.order[0]
-			ra.order = ra.order[1:]
-			delete(ra.pending, evicted)
-			ra.logger.Warn("Request assembler at cap; evicting oldest pending",
-				zap.String("evictedRequestId", evicted),
-				zap.Int("maxPending", ra.maxPending),
-			)
-		}
-		ra.pending[chunk.RequestId] = &pendingRequest{
-			method:    chunk.Method,
-			path:      chunk.Path,
-			headers:   chunk.Headers,
-			body:      append([]byte(nil), chunk.Body...),
-			timeoutMs: chunk.TimeoutMs,
-		}
-		ra.order = append(ra.order, chunk.RequestId)
-		return nil
-	}
-
-	pr, ok := ra.pending[chunk.RequestId]
-	if !ok {
-		return nil
-	}
-	pr.body = append(pr.body, chunk.Body...)
-	if !chunk.IsFinal {
-		return nil
-	}
-	delete(ra.pending, chunk.RequestId)
-	for i, id := range ra.order {
-		if id == chunk.RequestId {
-			ra.order = append(ra.order[:i], ra.order[i+1:]...)
-			break
-		}
-	}
-	return &pb.HttpRequest{
-		RequestId: chunk.RequestId,
-		Method:    pr.method,
-		Path:      pr.path,
-		Headers:   pr.headers,
-		Body:      pr.body,
-		TimeoutMs: pr.timeoutMs,
-		IsFinal:   true,
-	}
-}
-
-func (ra *requestAssembler) discardAll() {
-	ra.mu.Lock()
-	defer ra.mu.Unlock()
-	ra.pending = make(map[string]*pendingRequest)
-	ra.order = nil
-}
+type sendFunc func(msg *pb.ClientFrame) error
 
 type TunnelClientParams struct {
 	fx.In
@@ -384,12 +292,16 @@ func (tc *tunnelClient) Start() error {
 }
 
 func (tc *tunnelClient) startAsync() {
-	// Allow tests to pre-populate the executor and skip accept-file rendering.
-	if tc.executor == nil {
-		if err := tc.setupExecutor(); err != nil {
-			tc.logger.Error("Failed to set up request executor", zap.Error(err))
+	// Allow tests to pre-populate the router/backend and skip accept-file
+	// rendering.
+	if tc.router == nil {
+		if err := tc.setupRouter(); err != nil {
+			tc.logger.Error("Failed to set up call router", zap.Error(err))
 			return
 		}
+	}
+	if tc.backend == nil {
+		tc.backend = NewHttpBackend(tc.httpClient, tc.logger)
 	}
 
 	if err := tc.initialRegister(); err != nil {
@@ -421,7 +333,7 @@ func (tc *tunnelClient) startAsync() {
 	)
 }
 
-func (tc *tunnelClient) setupExecutor() error {
+func (tc *tunnelClient) setupRouter() error {
 	af, err := tc.integrationInfo.ToAcceptFile(tc.config, tc.logger)
 	if err != nil {
 		return fmt.Errorf("error creating accept file: %w", err)
@@ -434,8 +346,7 @@ func (tc *tunnelClient) setupExecutor() error {
 	if err != nil {
 		return fmt.Errorf("error parsing rendered accept file: %w", err)
 	}
-	rules := af2.Wrapper().PrivateRules()
-	tc.executor = requestexecutor.NewRequestExecutor(rules, tc.httpClient, tc.logger)
+	tc.router = NewRouter(af2.Wrapper().PrivateRules(), tc.logger)
 	return nil
 }
 
@@ -734,8 +645,8 @@ func (tc *tunnelClient) openSlot(index int) (*streamCtx, error) {
 		return nil, newConnectErr("open_stream", err)
 	}
 
-	hello := &pb.TunnelClientMessage{
-		Message: &pb.TunnelClientMessage_Hello{
+	hello := &pb.ClientFrame{
+		Msg: &pb.ClientFrame_Hello{
 			Hello: &pb.ClientHello{
 				BrokerToken:    token,
 				ClientVersion:  common.ClientVersion,
@@ -799,10 +710,11 @@ func (tc *tunnelClient) openSlot(index int) (*streamCtx, error) {
 	)
 
 	return &streamCtx{
-		ts:     ts,
-		stream: stream,
-		sendFn: tc.makeSendFunc(ts, stream),
-		hbMs:   serverHello.HeartbeatIntervalMs,
+		ts:            ts,
+		stream:        stream,
+		sendFn:        tc.makeSendFunc(ts, stream),
+		hbMs:          serverHello.HeartbeatIntervalMs,
+		maxFrameBytes: serverHello.MaxFrameBytes,
 	}, nil
 }
 
@@ -815,7 +727,7 @@ func (tc *tunnelClient) makeSendFunc(ts *tunnelStream, stream pb.TunnelService_T
 		sendMu     sync.Mutex
 		cancelOnce sync.Once
 	)
-	return func(msg *pb.TunnelClientMessage) error {
+	return func(msg *pb.ClientFrame) error {
 		sendMu.Lock()
 		defer sendMu.Unlock()
 		err := stream.Send(msg)
@@ -833,13 +745,20 @@ func (tc *tunnelClient) makeSendFunc(ts *tunnelStream, stream pb.TunnelService_T
 }
 
 func (tc *tunnelClient) streamLoop(sc *streamCtx) error {
-	assembler := newRequestAssembler(defaultMaxPending, tc.logger)
-	defer assembler.discardAll()
+	table := newCallTable()
+	defer table.cancelAll()
 
 	var heartbeatTimer *time.Timer
 	if sc.hbMs > 0 {
 		timeout := 2 * time.Duration(sc.hbMs) * time.Millisecond
 		heartbeatTimer = time.AfterFunc(timeout, func() {
+			// While a call is active the recv loop may be blocked delivering
+			// body bytes to a slow upstream, starving heartbeat reads without
+			// the connection being dead. Transport-level gRPC keepalive
+			// covers dead TCP during calls.
+			if table.active() {
+				return
+			}
 			tc.logger.Warn("Heartbeat timeout; cancelling stream",
 				zap.String("serverId", sc.ts.serverID),
 				zap.String("streamId", sc.ts.streamID),
@@ -861,10 +780,10 @@ func (tc *tunnelClient) streamLoop(sc *streamCtx) error {
 			heartbeatTimer.Reset(2 * time.Duration(sc.hbMs) * time.Millisecond)
 		}
 
-		switch m := msg.Message.(type) {
-		case *pb.TunnelServerMessage_Heartbeat:
-			if err := sc.sendFn(&pb.TunnelClientMessage{
-				Message: &pb.TunnelClientMessage_Heartbeat{
+		switch m := msg.Msg.(type) {
+		case *pb.ServerFrame_Heartbeat:
+			if err := sc.sendFn(&pb.ClientFrame{
+				Msg: &pb.ClientFrame_Heartbeat{
 					Heartbeat: &pb.Heartbeat{TimestampMs: time.Now().UnixMilli()},
 				},
 			}); err != nil {
@@ -872,128 +791,12 @@ func (tc *tunnelClient) streamLoop(sc *streamCtx) error {
 				// will exit. No need to log again here.
 				_ = err
 			}
-		case *pb.TunnelServerMessage_HttpRequest:
-			assembled := assembler.handleChunk(m.HttpRequest)
-			if assembled != nil {
-				go tc.handleRequest(sc.sendFn, assembled)
-			}
-		case *pb.TunnelServerMessage_Hello:
+		case *pb.ServerFrame_Call:
+			tc.handleCallFrame(sc, table, m.Call)
+		case *pb.ServerFrame_Hello:
 			tc.logger.Warn("Unexpected ServerHello after handshake")
 		}
 	}
-}
-
-func (tc *tunnelClient) handleRequest(sendFn sendFunc, req *pb.HttpRequest) {
-	// Non-blocking acquire on the in-flight semaphore. If full, reject fast
-	// rather than queueing requests that could OOM the agent during a
-	// downstream incident.
-	if tc.inflightSem != nil {
-		select {
-		case tc.inflightSem <- struct{}{}:
-			tc.requestsInflight.Inc()
-			defer func() {
-				<-tc.inflightSem
-				tc.requestsInflight.Dec()
-			}()
-		default:
-			tc.requestsRejected.Inc()
-			tc.requestsTotal.WithLabelValues(req.Method, "503").Inc()
-			tc.sendErrorResponse(sendFn, req.RequestId, 503, "agent at in-flight cap")
-			return
-		}
-	}
-
-	if tc.executor == nil {
-		tc.sendErrorResponse(sendFn, req.RequestId, 503, "executor not ready")
-		return
-	}
-
-	start := time.Now()
-
-	// Always cap the request: the server's TimeoutMs is honored when smaller,
-	// but MaxRequestTimeout prevents a buggy/missing server timeout from
-	// leaking goroutines indefinitely against slow downstreams.
-	maxTimeout := tc.config.MaxRequestTimeout
-	if maxTimeout <= 0 {
-		maxTimeout = 5 * time.Minute
-	}
-	timeout := maxTimeout
-	if req.TimeoutMs > 0 && time.Duration(req.TimeoutMs)*time.Millisecond < maxTimeout {
-		timeout = time.Duration(req.TimeoutMs) * time.Millisecond
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	resp, err := tc.executor.Execute(ctx, req.Method, req.Path, req.Headers, req.Body)
-	if err != nil {
-		tc.logger.Error("Request execution failed",
-			zap.String("requestId", req.RequestId),
-			zap.String("method", req.Method),
-			zap.String("path", req.Path),
-			zap.Error(err),
-		)
-		statusCode := 502
-		if err == requestexecutor.ErrNoMatchingRule {
-			statusCode = 404
-		}
-		tc.requestsTotal.WithLabelValues(req.Method, fmt.Sprintf("%d", statusCode)).Inc()
-		tc.sendErrorResponse(sendFn, req.RequestId, int32(statusCode), err.Error())
-		return
-	}
-
-	duration := time.Since(start)
-	tc.requestsTotal.WithLabelValues(req.Method, fmt.Sprintf("%d", resp.StatusCode)).Inc()
-	tc.requestDuration.WithLabelValues(req.Method).Observe(float64(duration.Milliseconds()))
-
-	tc.sendResponse(sendFn, req.RequestId, resp)
-}
-
-func (tc *tunnelClient) sendResponse(sendFn sendFunc, requestID string, resp *requestexecutor.ExecutorResponse) {
-	for i := 0; i < len(resp.Body); i += maxChunkSize {
-		end := i + maxChunkSize
-		if end > len(resp.Body) {
-			end = len(resp.Body)
-		}
-		chunkIndex := int32(i / maxChunkSize)
-
-		httpResp := &pb.HttpResponse{
-			RequestId:  requestID,
-			Body:       resp.Body[i:end],
-			ChunkIndex: chunkIndex,
-			IsFinal:    end == len(resp.Body),
-		}
-		if chunkIndex == 0 {
-			httpResp.StatusCode = int32(resp.StatusCode)
-			httpResp.Headers = resp.Headers
-		}
-
-		if err := sendFn(&pb.TunnelClientMessage{
-			Message: &pb.TunnelClientMessage_HttpResponse{HttpResponse: httpResp},
-		}); err != nil {
-			tc.logger.Warn("Failed to send response chunk; aborting remaining chunks",
-				zap.String("requestId", requestID),
-				zap.Int32("chunkIndex", chunkIndex),
-				zap.Error(err),
-			)
-			return
-		}
-	}
-}
-
-func (tc *tunnelClient) sendErrorResponse(sendFn sendFunc, requestID string, statusCode int32, message string) {
-	_ = sendFn(&pb.TunnelClientMessage{
-		Message: &pb.TunnelClientMessage_HttpResponse{
-			HttpResponse: &pb.HttpResponse{
-				RequestId:        requestID,
-				StatusCode:       statusCode,
-				Headers:          map[string]string{"Content-Type": "text/plain"},
-				Body:             []byte(message),
-				ChunkIndex:       0,
-				IsFinal:          true,
-				IsFailedDispatch: true,
-			},
-		},
-	})
 }
 
 func (tc *tunnelClient) Restart() error {

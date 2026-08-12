@@ -1,15 +1,13 @@
-package requestexecutor
+package acceptfile
 
 import (
 	"path"
 	"strings"
-
-	"github.com/cortexapps/axon/server/snykbroker/acceptfile"
 )
 
 // MatchRule finds the first accept file rule that matches the given HTTP method, path, and headers.
 // Returns nil if no rule matches.
-func MatchRule(rules []acceptfile.AcceptFileRuleWrapper, method, requestPath string, headers ...map[string]string) *acceptfile.AcceptFileRuleWrapper {
+func MatchRule(rules []AcceptFileRuleWrapper, method, requestPath string, headers ...map[string]string) *AcceptFileRuleWrapper {
 	var reqHeaders map[string]string
 	if len(headers) > 0 {
 		reqHeaders = headers[0]
@@ -26,7 +24,7 @@ func MatchRule(rules []acceptfile.AcceptFileRuleWrapper, method, requestPath str
 
 // matchesValid checks if the request headers satisfy the rule's "valid" requirements.
 // If no requirements are specified, returns true.
-func matchesValid(requirements []acceptfile.ValidHeaderRequirement, headers map[string]string) bool {
+func matchesValid(requirements []ValidHeaderRequirement, headers map[string]string) bool {
 	if len(requirements) == 0 {
 		return true
 	}

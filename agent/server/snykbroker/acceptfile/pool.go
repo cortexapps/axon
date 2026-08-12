@@ -1,4 +1,4 @@
-package requestexecutor
+package acceptfile
 
 import (
 	"os"

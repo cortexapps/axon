@@ -180,6 +180,17 @@ func getInstanceId() string {
 	return string(id)
 }
 
+// envFirst returns the first non-empty value among the given environment
+// variable names.
+func envFirst(names ...string) string {
+	for _, n := range names {
+		if v := os.Getenv(n); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 func NewAgentEnvConfig() AgentConfig {
 
 	baseUrl := os.Getenv("CORTEX_API_BASE_URL")
@@ -347,13 +358,15 @@ func NewAgentEnvConfig() AgentConfig {
 		cfg.RelayIdleTimeout = rit
 	}
 
+	// AXON_RELAY_TRANSPORT is the documented name (design doc §10);
+	// RELAY_MODE is accepted as an alias.
 	cfg.RelayMode = "snyk-broker"
-	if relayMode := os.Getenv("RELAY_MODE"); relayMode != "" {
+	if relayMode := envFirst("AXON_RELAY_TRANSPORT", "RELAY_MODE"); relayMode != "" {
 		cfg.RelayMode = relayMode
 	}
 
-	cfg.TunnelCount = 3
-	if tunnelCount := os.Getenv("TUNNEL_COUNT"); tunnelCount != "" {
+	cfg.TunnelCount = 32
+	if tunnelCount := envFirst("AXON_GRPC_TUNNEL_SLOTS", "TUNNEL_COUNT"); tunnelCount != "" {
 		tc, err := strconv.Atoi(tunnelCount)
 		if err != nil {
 			panic(err)
@@ -361,7 +374,7 @@ func NewAgentEnvConfig() AgentConfig {
 		cfg.TunnelCount = tc
 	}
 
-	if grpcInsecure := os.Getenv("GRPC_INSECURE"); grpcInsecure == "true" {
+	if grpcInsecure := envFirst("AXON_GRPC_TUNNEL_INSECURE", "GRPC_INSECURE"); grpcInsecure == "true" {
 		cfg.GrpcInsecure = true
 	}
 
@@ -386,7 +399,7 @@ func NewAgentEnvConfig() AgentConfig {
 	}
 
 	cfg.MaxRequestTimeout = 5 * time.Minute
-	if maxReqTimeout := os.Getenv("MAX_REQUEST_TIMEOUT"); maxReqTimeout != "" {
+	if maxReqTimeout := envFirst("AXON_GRPC_TUNNEL_MAX_REQUEST_TIMEOUT", "MAX_REQUEST_TIMEOUT"); maxReqTimeout != "" {
 		v, err := time.ParseDuration(maxReqTimeout)
 		if err != nil {
 			panic(err)

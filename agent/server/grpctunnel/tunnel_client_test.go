@@ -1,11 +1,12 @@
 package grpctunnel
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"net"
-	"os"
+	"net/http"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -15,8 +16,8 @@ import (
 	pb "github.com/cortexapps/axon/.generated/proto/github.com/cortexapps/axon/tunnelpb"
 	"github.com/cortexapps/axon/common"
 	"github.com/cortexapps/axon/config"
-	"github.com/cortexapps/axon/server/requestexecutor"
 	"github.com/cortexapps/axon/server/snykbroker"
+	"github.com/cortexapps/axon/server/snykbroker/acceptfile"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/require"
@@ -56,8 +57,8 @@ func (r *fakeRegistration) Register(integration common.Integration, alias string
 	}, nil
 }
 
-// stubExecutor is a deterministic RequestExecutor for handleRequest tests.
-type stubExecutor struct {
+// stubBackend is a deterministic Backend for call-handling tests.
+type stubBackend struct {
 	mu          sync.Mutex
 	delay       time.Duration
 	statusCode  int
@@ -68,12 +69,16 @@ type stubExecutor struct {
 	lastTimeout time.Duration
 }
 
-func (s *stubExecutor) Execute(ctx context.Context, method, path string, headers map[string]string, body []byte) (*requestexecutor.ExecutorResponse, error) {
+func (s *stubBackend) Do(ctx context.Context, req *BackendRequest) (*BackendResponse, error) {
 	atomic.AddInt32(&s.calls, 1)
 	if dl, ok := ctx.Deadline(); ok {
 		s.mu.Lock()
 		s.lastTimeout = time.Until(dl)
 		s.mu.Unlock()
+	}
+	// Drain the request body like a real backend would.
+	if req.Body != nil {
+		io.Copy(io.Discard, req.Body)
 	}
 	if s.respectCtx && s.delay > 0 {
 		select {
@@ -87,11 +92,24 @@ func (s *stubExecutor) Execute(ctx context.Context, method, path string, headers
 	if s.err != nil {
 		return nil, s.err
 	}
-	return &requestexecutor.ExecutorResponse{
+	return &BackendResponse{
 		StatusCode: s.statusCode,
-		Headers:    map[string]string{"Content-Type": "text/plain"},
-		Body:       s.body,
+		Header:     http.Header{"Content-Type": []string{"text/plain"}},
+		Body:       io.NopCloser(bytes.NewReader(s.body)),
+		Trailer:    func() http.Header { return nil },
 	}, nil
+}
+
+// catchAllRouter builds a Router with a single any-method wildcard rule so
+// every call routes; the stub backend never dials the origin.
+func catchAllRouter(t *testing.T) *Router {
+	t.Helper()
+	cfg := config.AgentConfig{HttpServerPort: 8080, PluginDirs: []string{}}
+	af, err := acceptfile.NewAcceptFile([]byte(`{
+		"private": [{"method": "any", "path": "/*", "origin": "http://stub.internal"}]
+	}`), cfg, zap.NewNop())
+	require.NoError(t, err)
+	return NewRouter(af.Wrapper().PrivateRules(), zap.NewNop())
 }
 
 // -----------------------------------------------------------------------------
@@ -131,8 +149,8 @@ func (s *fakeTunnelService) Tunnel(stream pb.TunnelService_TunnelServer) error {
 		hbMs = 30000
 	}
 
-	if err := stream.Send(&pb.TunnelServerMessage{
-		Message: &pb.TunnelServerMessage_Hello{
+	if err := stream.Send(&pb.ServerFrame{
+		Msg: &pb.ServerFrame_Hello{
 			Hello: &pb.ServerHello{
 				ServerId:            s.behavior.serverID,
 				HeartbeatIntervalMs: hbMs,
@@ -176,7 +194,8 @@ func startFakeServer(t *testing.T, svc pb.TunnelServiceServer) (string, func()) 
 // -----------------------------------------------------------------------------
 
 // newTestClient builds a tunnelClient ready for testing, with metrics
-// registered, a stub executor wired in, and the given registration backend.
+// registered, a stub router/backend wired in, and the given registration
+// backend.
 func newTestClient(t *testing.T, cfg config.AgentConfig, reg snykbroker.Registration) (*tunnelClient, *prometheus.Registry) {
 	t.Helper()
 	logger := zaptest.NewLogger(t)
@@ -209,7 +228,8 @@ func newTestClient(t *testing.T, cfg config.AgentConfig, reg snykbroker.Registra
 		registration:       reg,
 		serverStreamCounts: make(map[string]int),
 	}
-	tc.executor = &stubExecutor{statusCode: 200, body: []byte("ok")}
+	tc.router = catchAllRouter(t)
+	tc.backend = &stubBackend{statusCode: 200, body: []byte("ok")}
 
 	if cfg.MaxInflightRequests > 0 {
 		tc.inflightSem = make(chan struct{}, cfg.MaxInflightRequests)
@@ -241,6 +261,17 @@ func newTestClient(t *testing.T, cfg config.AgentConfig, reg snykbroker.Registra
 	)
 
 	return tc, registry
+}
+
+// newTestStreamCtx builds a streamCtx suitable for driving startCall directly
+// (no live gRPC stream behind it).
+func newTestStreamCtx(sendFn sendFunc) *streamCtx {
+	_, cancel := context.WithCancel(context.Background())
+	return &streamCtx{
+		ts:            &tunnelStream{streamID: "test-stream", serverID: "test-server", cancel: cancel},
+		sendFn:        sendFn,
+		maxFrameBytes: 1024,
+	}
 }
 
 // startClientWithEnv sets BROKER_SERVER_URL/BROKER_TOKEN so the client uses
@@ -288,6 +319,64 @@ func waitFor(t *testing.T, timeout time.Duration, cond func() bool) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("condition not met within %v", timeout)
+}
+
+// collectFrames wires a sendFn that gathers outgoing call frames.
+type frameCollector struct {
+	mu     sync.Mutex
+	frames []*pb.CallFrame
+	doneC  chan string // receives call_id when a terminal frame (End/Cancel) arrives
+}
+
+func newFrameCollector() *frameCollector {
+	return &frameCollector{doneC: make(chan string, 16)}
+}
+
+func (fc *frameCollector) sendFn(msg *pb.ClientFrame) error {
+	call := msg.GetCall()
+	if call == nil {
+		return nil
+	}
+	fc.mu.Lock()
+	fc.frames = append(fc.frames, call)
+	fc.mu.Unlock()
+	switch call.Body.(type) {
+	case *pb.CallFrame_End, *pb.CallFrame_Cancel:
+		fc.doneC <- call.CallId
+	}
+	return nil
+}
+
+// byCall returns the collected frames for one call id.
+func (fc *frameCollector) byCall(id string) []*pb.CallFrame {
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	var out []*pb.CallFrame
+	for _, f := range fc.frames {
+		if f.CallId == id {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// waitDone waits for n calls to terminate.
+func (fc *frameCollector) waitDone(t *testing.T, n int) {
+	t.Helper()
+	for range n {
+		select {
+		case <-fc.doneC:
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for call to terminate")
+		}
+	}
+}
+
+func reqStart(method, path string, timeoutMs int32) *pb.CallStart {
+	return &pb.CallStart{
+		PseudoHeaders: map[string]string{":method": method, ":path": path},
+		TimeoutMs:     timeoutMs,
+	}
 }
 
 // -----------------------------------------------------------------------------
@@ -440,8 +529,8 @@ func TestSendErrorCancelsStream(t *testing.T) {
 			// First two streams: server sends one heartbeat then closes (forcing
 			// the client's heartbeat-response Send to fail on the dead stream).
 			if streams.Load() <= 2 {
-				_ = stream.Send(&pb.TunnelServerMessage{
-					Message: &pb.TunnelServerMessage_Heartbeat{
+				_ = stream.Send(&pb.ServerFrame{
+					Msg: &pb.ServerFrame_Heartbeat{
 						Heartbeat: &pb.Heartbeat{TimestampMs: time.Now().UnixMilli()},
 					},
 				})
@@ -468,7 +557,7 @@ func TestSendErrorCancelsStream(t *testing.T) {
 }
 
 // TestInflightCap_RejectsOverflow: with MaxInflightRequests=1 and a slow
-// executor, the 2nd concurrent request should be rejected with 503.
+// backend, the 2nd concurrent call should be rejected with CallCancel(503).
 func TestInflightCap_RejectsOverflow(t *testing.T) {
 	cfg := config.AgentConfig{
 		TunnelCount:         1,
@@ -477,58 +566,42 @@ func TestInflightCap_RejectsOverflow(t *testing.T) {
 		MaxRequestTimeout:   5 * time.Second,
 	}
 	tc, _ := newTestClient(t, cfg, &fakeRegistration{serverURI: "x", tokens: []string{"x"}})
-	tc.executor = &stubExecutor{
+	tc.backend = &stubBackend{
 		statusCode: 200,
 		body:       []byte("ok"),
 		delay:      300 * time.Millisecond,
 	}
 
-	// Drive handleRequest directly with a no-op sendFn so we don't need a server.
-	sent := make(chan *pb.HttpResponse, 4)
-	sendFn := func(msg *pb.TunnelClientMessage) error {
-		if r := msg.GetHttpResponse(); r != nil {
-			sent <- r
-		}
-		return nil
-	}
+	fc := newFrameCollector()
+	sc := newTestStreamCtx(fc.sendFn)
+	table := newCallTable()
 
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		tc.handleRequest(sendFn, &pb.HttpRequest{
-			RequestId: "r1", Method: "GET", Path: "/", IsFinal: true,
-		})
-	}()
+	tc.startCall(sc, table, "r1", reqStart("GET", "/", 0))
+	// End the request body for r1 so the call can execute.
+	tc.handleCallFrame(sc, table, &pb.CallFrame{CallId: "r1", Body: &pb.CallFrame_End{End: &pb.CallEnd{}}})
+
 	// Give r1 a head start to acquire the semaphore.
 	time.Sleep(20 * time.Millisecond)
-	go func() {
-		defer wg.Done()
-		tc.handleRequest(sendFn, &pb.HttpRequest{
-			RequestId: "r2", Method: "GET", Path: "/", IsFinal: true,
-		})
-	}()
+	tc.startCall(sc, table, "r2", reqStart("GET", "/", 0))
 
-	wg.Wait()
-	close(sent)
+	// r2 is rejected immediately (Cancel); r1 completes (End).
+	fc.waitDone(t, 2)
 
-	var rejected, ok bool
-	for r := range sent {
-		switch r.StatusCode {
-		case 503:
-			rejected = true
-			require.True(t, r.IsFailedDispatch)
-		case 200:
-			ok = true
-		}
-	}
-	require.True(t, rejected, "expected one 503 from in-flight cap")
-	require.True(t, ok, "expected one 200 from the in-flight request")
+	r2frames := fc.byCall("r2")
+	require.Len(t, r2frames, 1)
+	cancel := r2frames[0].GetCancel()
+	require.NotNil(t, cancel, "expected CallCancel for r2")
+	require.Equal(t, int32(503), cancel.Code)
+
+	r1frames := fc.byCall("r1")
+	require.NotNil(t, r1frames[0].GetStart(), "r1 should have started a response")
+	require.Equal(t, "200", r1frames[0].GetStart().PseudoHeaders[":status"])
 	require.Equal(t, float64(1), counterValue(t, tc.requestsRejected))
 }
 
 // TestMaxRequestTimeout_AppliesWhenTimeoutMsZero: with TimeoutMs=0 and
-// MaxRequestTimeout=200ms, a 5-second executor should return deadline exceeded.
+// MaxRequestTimeout=200ms, a 5-second backend should return deadline exceeded
+// as a CallCancel(502).
 func TestMaxRequestTimeout_AppliesWhenTimeoutMsZero(t *testing.T) {
 	cfg := config.AgentConfig{
 		TunnelCount:         1,
@@ -537,43 +610,110 @@ func TestMaxRequestTimeout_AppliesWhenTimeoutMsZero(t *testing.T) {
 	}
 	tc, _ := newTestClient(t, cfg, &fakeRegistration{serverURI: "x", tokens: []string{"x"}})
 
-	stub := &stubExecutor{
+	stub := &stubBackend{
 		statusCode: 200,
 		body:       []byte("ok"),
 		delay:      5 * time.Second,
 		respectCtx: true,
 	}
-	tc.executor = stub
+	tc.backend = stub
 
-	var got *pb.HttpResponse
-	done := make(chan struct{})
-	sendFn := func(msg *pb.TunnelClientMessage) error {
-		if r := msg.GetHttpResponse(); r != nil {
-			got = r
-			close(done)
-		}
-		return nil
-	}
+	fc := newFrameCollector()
+	sc := newTestStreamCtx(fc.sendFn)
+	table := newCallTable()
 
 	start := time.Now()
-	go tc.handleRequest(sendFn, &pb.HttpRequest{
-		RequestId: "r1", Method: "GET", Path: "/", TimeoutMs: 0, IsFinal: true,
-	})
+	tc.startCall(sc, table, "r1", reqStart("GET", "/", 0))
+	tc.handleCallFrame(sc, table, &pb.CallFrame{CallId: "r1", Body: &pb.CallFrame_End{End: &pb.CallEnd{}}})
 
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("handleRequest did not complete within 2s — MaxRequestTimeout not applied")
-	}
-
+	fc.waitDone(t, 1)
 	require.WithinDuration(t, start.Add(200*time.Millisecond), time.Now(), 1*time.Second)
-	require.NotNil(t, got)
-	require.Equal(t, int32(502), got.StatusCode)
+
+	frames := fc.byCall("r1")
+	require.Len(t, frames, 1)
+	cancel := frames[0].GetCancel()
+	require.NotNil(t, cancel, "expected CallCancel on timeout")
+	require.Equal(t, int32(502), cancel.Code)
 
 	// Verify the stub saw a context with a short deadline (well under 1s).
 	stub.mu.Lock()
 	defer stub.mu.Unlock()
-	require.Less(t, stub.lastTimeout, 1*time.Second, "executor ctx had deadline %v", stub.lastTimeout)
+	require.Less(t, stub.lastTimeout, 1*time.Second, "backend ctx had deadline %v", stub.lastTimeout)
+}
+
+// TestCall_StreamedRequestBody: request body chunks delivered over multiple
+// Data frames reach the backend intact and in order.
+func TestCall_StreamedRequestBody(t *testing.T) {
+	cfg := config.AgentConfig{TunnelCount: 1, MaxInflightRequests: 4}
+	tc, _ := newTestClient(t, cfg, &fakeRegistration{serverURI: "x", tokens: []string{"x"}})
+
+	var gotBody []byte
+	var mu sync.Mutex
+	tc.backend = backendFunc(func(ctx context.Context, req *BackendRequest) (*BackendResponse, error) {
+		b, err := io.ReadAll(req.Body)
+		if err != nil {
+			return nil, err
+		}
+		mu.Lock()
+		gotBody = b
+		mu.Unlock()
+		return &BackendResponse{
+			StatusCode: 201,
+			Header:     http.Header{},
+			Body:       io.NopCloser(bytes.NewReader(nil)),
+			Trailer:    func() http.Header { return nil },
+		}, nil
+	})
+
+	fc := newFrameCollector()
+	sc := newTestStreamCtx(fc.sendFn)
+	table := newCallTable()
+
+	tc.startCall(sc, table, "c1", reqStart("POST", "/upload", 0))
+	tc.handleCallFrame(sc, table, &pb.CallFrame{CallId: "c1", Body: &pb.CallFrame_Data{Data: &pb.CallData{Payload: []byte("part-1;")}}})
+	tc.handleCallFrame(sc, table, &pb.CallFrame{CallId: "c1", Body: &pb.CallFrame_Data{Data: &pb.CallData{Payload: []byte("part-2")}}})
+	tc.handleCallFrame(sc, table, &pb.CallFrame{CallId: "c1", Body: &pb.CallFrame_End{End: &pb.CallEnd{}}})
+
+	fc.waitDone(t, 1)
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, "part-1;part-2", string(gotBody))
+
+	frames := fc.byCall("c1")
+	require.NotNil(t, frames[0].GetStart())
+	require.Equal(t, "201", frames[0].GetStart().PseudoHeaders[":status"])
+}
+
+// TestCall_ServerCancelAbortsBackend: a CallCancel from the server aborts the
+// in-flight backend request.
+func TestCall_ServerCancelAbortsBackend(t *testing.T) {
+	cfg := config.AgentConfig{TunnelCount: 1, MaxInflightRequests: 4, MaxRequestTimeout: 30 * time.Second}
+	tc, _ := newTestClient(t, cfg, &fakeRegistration{serverURI: "x", tokens: []string{"x"}})
+
+	backendDone := make(chan error, 1)
+	tc.backend = backendFunc(func(ctx context.Context, req *BackendRequest) (*BackendResponse, error) {
+		<-ctx.Done()
+		backendDone <- ctx.Err()
+		return nil, ctx.Err()
+	})
+
+	fc := newFrameCollector()
+	sc := newTestStreamCtx(fc.sendFn)
+	table := newCallTable()
+
+	tc.startCall(sc, table, "c1", reqStart("GET", "/slow", 0))
+	tc.handleCallFrame(sc, table, &pb.CallFrame{CallId: "c1", Body: &pb.CallFrame_End{End: &pb.CallEnd{}}})
+
+	// Cancel from the server side.
+	time.Sleep(50 * time.Millisecond)
+	tc.handleCallFrame(sc, table, &pb.CallFrame{CallId: "c1", Body: &pb.CallFrame_Cancel{Cancel: &pb.CallCancel{Reason: "caller gone"}}})
+
+	select {
+	case err := <-backendDone:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(5 * time.Second):
+		t.Fatal("backend was not cancelled")
+	}
 }
 
 // TestCACertLoadFailure_NoSilentDowngrade: an invalid CA cert path must
@@ -592,33 +732,6 @@ func TestCACertLoadFailure_NoSilentDowngrade(t *testing.T) {
 	require.Contains(t, err.Error(), "read CA cert")
 }
 
-// TestAssemblerCap_EvictsOldest: more than maxPending first-chunks should
-// cause the oldest to be evicted.
-func TestAssemblerCap_EvictsOldest(t *testing.T) {
-	ra := newRequestAssembler(3, zap.NewNop())
-
-	for i := 0; i < 4; i++ {
-		ra.handleChunk(&pb.HttpRequest{
-			RequestId:  fmt.Sprintf("req-%d", i),
-			Method:     "POST",
-			Path:       "/",
-			Body:       []byte("a"),
-			ChunkIndex: 0,
-			IsFinal:    false,
-		})
-	}
-
-	ra.mu.Lock()
-	_, hasReq0 := ra.pending["req-0"]
-	_, hasReq3 := ra.pending["req-3"]
-	count := len(ra.pending)
-	ra.mu.Unlock()
-
-	require.Equal(t, 3, count, "should have evicted to fit cap")
-	require.False(t, hasReq0, "oldest (req-0) should be evicted")
-	require.True(t, hasReq3, "newest (req-3) should remain")
-}
-
 // TestAuthErrorTriggersReregister: server returns codes.Unauthenticated on
 // the first connection; client should re-register and the second attempt
 // should send the rotated token.
@@ -630,7 +743,7 @@ func TestAuthErrorTriggersReregister(t *testing.T) {
 	svc := &fakeTunnelService{behavior: serverBehavior{
 		serverID:            "auth-server",
 		heartbeatIntervalMs: 30000,
-		onStream: nil,
+		onStream:            nil,
 	}}
 	// We need to intercept the ClientHello to capture the token. Override
 	// the default Tunnel by wrapping.
@@ -730,6 +843,9 @@ func TestClose_ShutsDownCleanly(t *testing.T) {
 	}
 }
 
-// Make sure the package compiles even without snykbroker import being only
-// used inside test fixtures.
-var _ = os.Getenv
+// backendFunc adapts a function to the Backend interface.
+type backendFunc func(ctx context.Context, req *BackendRequest) (*BackendResponse, error)
+
+func (f backendFunc) Do(ctx context.Context, req *BackendRequest) (*BackendResponse, error) {
+	return f(ctx, req)
+}
