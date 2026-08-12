@@ -13,6 +13,7 @@ const (
 	DefaultGrpcPort          = 50052
 	DefaultHttpPort          = 8080
 	DefaultHeartbeatInterval = 30 * time.Second
+	DefaultMaxFrameBytes     = 1 << 20 // 1 MiB
 )
 
 type Config struct {
@@ -38,6 +39,9 @@ type Config struct {
 	// ReRegistrationInterval is how often the server re-sends
 	// client-connected notifications to BROKER_SERVER as a TTL refresh.
 	ReRegistrationInterval time.Duration
+	// MaxFrameBytes is the maximum CallData payload size, announced to
+	// clients in ServerHello.
+	MaxFrameBytes int
 }
 
 func (c Config) Print() {
@@ -63,6 +67,15 @@ func NewConfigFromEnv() Config {
 		DispatchTimeout:        60 * time.Second,
 		ServerID:               getServerID(),
 		ReRegistrationInterval: 5 * time.Minute,
+		MaxFrameBytes:          DefaultMaxFrameBytes,
+	}
+
+	if v := os.Getenv("MAX_FRAME_BYTES"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			panic(fmt.Errorf("invalid MAX_FRAME_BYTES: %w", err))
+		}
+		cfg.MaxFrameBytes = n
 	}
 
 	if v := os.Getenv("GRPC_PORT"); v != "" {

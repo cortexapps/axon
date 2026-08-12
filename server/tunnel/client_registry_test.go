@@ -22,7 +22,7 @@ func testIdentity(tenantID string) ClientIdentity {
 func testStream(streamID string) *StreamHandle {
 	return &StreamHandle{
 		StreamID: streamID,
-		Send:     func(msg *pb.TunnelServerMessage) error { return nil },
+		Send:     func(msg *pb.ServerFrame) error { return nil },
 		Cancel:   func() {},
 	}
 }
@@ -114,7 +114,7 @@ func TestUnregisterNonexistent(t *testing.T) {
 	assert.False(t, removed)
 }
 
-func TestPickStreamRoundRobin(t *testing.T) {
+func TestAcquireIdleStream(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	registry := NewClientRegistry(logger)
 
@@ -123,23 +123,59 @@ func TestPickStreamRoundRobin(t *testing.T) {
 	registry.Register(token, identity, testStream("stream-1"))
 	registry.Register(token, identity, testStream("stream-2"))
 
-	// Pick multiple times and verify we get both streams.
-	seen := map[string]bool{}
-	for range 10 {
-		s := registry.PickStream(token)
-		require.NotNil(t, s)
-		seen[s.StreamID] = true
-	}
-	assert.True(t, seen["stream-1"], "should pick stream-1")
-	assert.True(t, seen["stream-2"], "should pick stream-2")
+	// Acquire both; each acquisition marks the stream busy so the second
+	// call must return the other stream.
+	s1, allBusy := registry.AcquireIdleStream(token)
+	require.NotNil(t, s1)
+	assert.False(t, allBusy)
+	s2, allBusy := registry.AcquireIdleStream(token)
+	require.NotNil(t, s2)
+	assert.False(t, allBusy)
+	assert.NotEqual(t, s1.StreamID, s2.StreamID)
+
+	// All busy now.
+	s3, allBusy := registry.AcquireIdleStream(token)
+	assert.Nil(t, s3)
+	assert.True(t, allBusy)
+
+	// Release one and it becomes acquirable again.
+	s1.Release()
+	s4, allBusy := registry.AcquireIdleStream(token)
+	require.NotNil(t, s4)
+	assert.False(t, allBusy)
+	assert.Equal(t, s1.StreamID, s4.StreamID)
 }
 
-func TestPickStreamNoEntry(t *testing.T) {
+func TestAcquireIdleStreamPrefersLastSuccess(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	registry := NewClientRegistry(logger)
 
-	s := registry.PickStream(broker.TokenFromHash("no-such-hash"))
+	token := broker.NewToken("token-abc")
+	identity := testIdentity("tenant-1")
+	sA := testStream("stream-a")
+	sB := testStream("stream-b")
+	registry.Register(token, identity, sA)
+	registry.Register(token, identity, sB)
+
+	// stream-b has the most recent success; it should be picked first.
+	sB.LastSuccessAt.Store(100)
+	got, _ := registry.AcquireIdleStream(token)
+	require.NotNil(t, got)
+	assert.Equal(t, "stream-b", got.StreamID)
+
+	// stream-b is now busy; the next acquire falls back to stream-a.
+	got2, _ := registry.AcquireIdleStream(token)
+	require.NotNil(t, got2)
+	assert.Equal(t, "stream-a", got2.StreamID)
+}
+
+func TestAcquireIdleStreamNoEntry(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+	registry := NewClientRegistry(logger)
+
+	s, allBusy := registry.AcquireIdleStream(broker.TokenFromHash("no-such-hash"))
 	assert.Nil(t, s)
+	assert.False(t, allBusy)
 }
 
 func TestBrokerServerRegistered(t *testing.T) {

@@ -14,13 +14,36 @@ import (
 // StreamHandle represents a single tunnel stream to a client.
 type StreamHandle struct {
 	StreamID string
-	// Send sends a TunnelServerMessage to the client through this stream.
-	Send func(msg *pb.TunnelServerMessage) error
+	// Send sends a ServerFrame to the client through this stream.
+	Send func(msg *pb.ServerFrame) error
 	// Cancel closes this stream.
 	Cancel func()
 	// LastSuccessAt holds the UnixNano timestamp of the most recent successful
-	// response received on this stream. Used by PickStream to prefer healthy streams.
+	// response received on this stream. Used by AcquireIdleStream to prefer
+	// healthy streams.
 	LastSuccessAt atomic.Int64
+
+	// busy is true while a call is in flight on this stream. In the slot-pool
+	// model each stream carries at most one call at a time; the dispatcher
+	// acquires the stream before sending CallStart and releases it when the
+	// call fully terminates.
+	busy atomic.Bool
+}
+
+// TryAcquire marks the stream busy. Returns false if it was already busy.
+func (s *StreamHandle) TryAcquire() bool {
+	return s.busy.CompareAndSwap(false, true)
+}
+
+// Release marks the stream idle again.
+func (s *StreamHandle) Release() {
+	s.busy.Store(false)
+}
+
+// Busy reports whether a call is currently in flight on this stream.
+// Used to relax heartbeat-timeout enforcement while a call is active.
+func (s *StreamHandle) Busy() bool {
+	return s.busy.Load()
 }
 
 // ClientIdentity holds the identity metadata for a connected client.
@@ -33,11 +56,10 @@ type ClientIdentity struct {
 
 // clientEntry represents all connections for a single broker token.
 type clientEntry struct {
-	Identity              ClientIdentity
-	Token                 broker.Token
-	Streams               map[string]*StreamHandle // streamID -> handle
+	Identity               ClientIdentity
+	Token                  broker.Token
+	Streams                map[string]*StreamHandle // streamID -> handle
 	BrokerServerRegistered atomic.Bool
-	roundRobin            atomic.Uint64
 }
 
 // ClientRegistry is a thread-safe registry of connected clients,
@@ -141,17 +163,21 @@ func (r *ClientRegistry) GetIdentity(token broker.Token) *ClientIdentity {
 	return &id
 }
 
-// PickStream returns a stream handle for dispatching, preferring the stream
-// with the most recent successful response. Streams that have never received a
-// successful response fall back to round-robin selection.
-// Returns nil if no streams are available for the token.
-func (r *ClientRegistry) PickStream(token broker.Token) *StreamHandle {
+// AcquireIdleStream returns an idle stream handle for dispatching, marked
+// busy, preferring the idle stream with the most recent successful response.
+// Idle streams that have never recorded a success are tried in round-robin
+// order. Returns (nil, false) when the token has no streams at all, and
+// (nil, true) when streams exist but all are busy.
+//
+// The caller owns the returned stream's busy flag and must call Release()
+// when the call fully terminates.
+func (r *ClientRegistry) AcquireIdleStream(token broker.Token) (handle *StreamHandle, allBusy bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
 	entry, ok := r.entries[token.Hashed()]
 	if !ok || len(entry.Streams) == 0 {
-		return nil
+		return nil, false
 	}
 
 	// Collect stream handles into a slice with deterministic ordering
@@ -164,22 +190,17 @@ func (r *ClientRegistry) PickStream(token broker.Token) *StreamHandle {
 		return streams[i].StreamID < streams[j].StreamID
 	})
 
-	// Prefer the stream with the most recent successful response.
-	var best *StreamHandle
-	var bestAt int64
+	// Prefer idle streams with the most recent successful response.
+	sort.SliceStable(streams, func(i, j int) bool {
+		return streams[i].LastSuccessAt.Load() > streams[j].LastSuccessAt.Load()
+	})
 	for _, s := range streams {
-		if at := s.LastSuccessAt.Load(); at > bestAt {
-			bestAt = at
-			best = s
+		if s.TryAcquire() {
+			return s, false
 		}
 	}
-	if best != nil {
-		return best
-	}
 
-	// No stream has recorded a success yet — fall back to round-robin.
-	idx := entry.roundRobin.Add(1) - 1
-	return streams[idx%uint64(len(streams))]
+	return nil, true
 }
 
 // SetBrokerServerRegistered marks a token as successfully registered with BROKER_SERVER.

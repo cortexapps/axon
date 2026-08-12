@@ -11,7 +11,7 @@ GO_FILES := $(patsubst proto/%.proto,$(GENERATED_PATH)/%.pb.go,$(PROTO_FILES))
 GOPATH ?= $(HOME)/go
 GOBIN ?= $(GOPATH)/bin
 
-TUNNEL_PROTO = ../proto/tunnel/tunnel.proto
+TUNNEL_PROTO = ../proto/tunnel/v2/tunnel.proto
 TUNNEL_GENERATED = $(GENERATED_DIR)/github.com/cortexapps/axon/tunnelpb
 
 proto: setup $(GO_FILES) tunnel-proto version
@@ -19,7 +19,7 @@ proto: setup $(GO_FILES) tunnel-proto version
 tunnel-proto: $(TUNNEL_PROTO)
 	@echo "Generating tunnel protobuf for agent"
 	@mkdir -p $(GENERATED_DIR)
-	@protoc -I=../proto/tunnel \
+	@protoc -I=../proto/tunnel/v2 \
 		--go_out=$(GENERATED_DIR) --go-grpc_out=$(GENERATED_DIR) \
 		--go_opt=Mtunnel.proto=github.com/cortexapps/axon/tunnelpb \
 		--go-grpc_opt=Mtunnel.proto=github.com/cortexapps/axon/tunnelpb \

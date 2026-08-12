@@ -7,22 +7,22 @@ import (
 	"sync/atomic"
 	"time"
 
+	pb "github.com/cortexapps/axon-server/.generated/proto/tunnelpb"
 	"github.com/cortexapps/axon-server/broker"
 	"github.com/cortexapps/axon-server/config"
 	"github.com/cortexapps/axon-server/metrics"
-	pb "github.com/cortexapps/axon-server/.generated/proto/tunnelpb"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
-// ResponseHandler is called when an HttpResponse is received from a client.
-// It's used to deliver responses to pending dispatch requests.
-type ResponseHandler func(response *pb.HttpResponse)
+// FrameHandler is called for every CallFrame received from a client.
+// It's used to deliver response frames to the dispatch layer.
+type FrameHandler func(streamID string, frame *pb.CallFrame)
 
 // StreamCloseHandler is called when a tunnel stream is closed.
-// It's used to fail pending dispatch requests for the closed stream.
+// It's used to fail in-flight calls for the closed stream.
 type StreamCloseHandler func(streamID string)
 
 // Service implements the TunnelService gRPC server.
@@ -34,7 +34,7 @@ type Service struct {
 	registry           *ClientRegistry
 	brokerClient       *broker.Client
 	metrics            *metrics.Metrics
-	responseHandler    ResponseHandler
+	frameHandler       FrameHandler
 	streamCloseHandler StreamCloseHandler
 
 	mu sync.RWMutex
@@ -57,16 +57,16 @@ func NewService(
 	}
 }
 
-// SetResponseHandler sets the callback for delivering HTTP responses
+// SetFrameHandler sets the callback for delivering client call frames
 // to the dispatch layer.
-func (s *Service) SetResponseHandler(handler ResponseHandler) {
+func (s *Service) SetFrameHandler(handler FrameHandler) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.responseHandler = handler
+	s.frameHandler = handler
 }
 
 // SetStreamCloseHandler sets the callback for when a tunnel stream closes.
-// This is used to fail pending dispatch requests for the closed stream.
+// This is used to fail in-flight calls for the closed stream.
 func (s *Service) SetStreamCloseHandler(handler StreamCloseHandler) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -122,7 +122,7 @@ func (s *Service) Tunnel(stream pb.TunnelService_TunnelServer) error {
 	sendMu := &sync.Mutex{}
 	handle := &StreamHandle{
 		StreamID: streamID,
-		Send: func(msg *pb.TunnelServerMessage) error {
+		Send: func(msg *pb.ServerFrame) error {
 			sendMu.Lock()
 			defer sendMu.Unlock()
 			return stream.Send(msg)
@@ -133,12 +133,13 @@ func (s *Service) Tunnel(stream pb.TunnelService_TunnelServer) error {
 	// Send ServerHello before registering so the handshake completes
 	// before the stream becomes dispatchable. Use sendMu for consistency.
 	sendMu.Lock()
-	err = stream.Send(&pb.TunnelServerMessage{
-		Message: &pb.TunnelServerMessage_Hello{
+	err = stream.Send(&pb.ServerFrame{
+		Msg: &pb.ServerFrame_Hello{
 			Hello: &pb.ServerHello{
 				ServerId:            s.config.ServerID,
-				HeartbeatIntervalMs: int32(s.config.HeartbeatInterval.Milliseconds()),
 				StreamId:            streamID,
+				HeartbeatIntervalMs: int32(s.config.HeartbeatInterval.Milliseconds()),
+				MaxFrameBytes:       int32(s.config.MaxFrameBytes),
 			},
 		},
 	})
@@ -169,7 +170,11 @@ func (s *Service) Tunnel(stream pb.TunnelService_TunnelServer) error {
 	var lastHeartbeat atomic.Int64
 	lastHeartbeat.Store(time.Now().UnixNano())
 
-	// Start heartbeat timeout monitor goroutine.
+	// Start heartbeat timeout monitor goroutine. Enforcement is relaxed
+	// while a call is in flight on this stream: the recv loop may be blocked
+	// delivering body bytes to a slow consumer, which starves heartbeat
+	// reads without the connection being dead. Transport-level gRPC
+	// keepalive covers dead TCP during calls.
 	go func() {
 		timeout := 2 * s.config.HeartbeatInterval
 		ticker := time.NewTicker(timeout)
@@ -179,6 +184,11 @@ func (s *Service) Tunnel(stream pb.TunnelService_TunnelServer) error {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+				if handle.Busy() {
+					// A call is active; frame traffic proves liveness.
+					lastHeartbeat.Store(time.Now().UnixNano())
+					continue
+				}
 				last := time.Unix(0, lastHeartbeat.Load())
 				if time.Since(last) > timeout {
 					s.logger.Warn("Heartbeat timeout — closing stream",
@@ -214,20 +224,22 @@ func (s *Service) Tunnel(stream pb.TunnelService_TunnelServer) error {
 			return nil
 		}
 
-		switch m := msg.Message.(type) {
-		case *pb.TunnelClientMessage_Heartbeat:
+		switch m := msg.Msg.(type) {
+		case *pb.ClientFrame_Heartbeat:
 			lastHeartbeat.Store(time.Now().UnixNano())
 			s.metrics.HeartbeatReceived.Inc(1)
 
-		case *pb.TunnelClientMessage_HttpResponse:
+		case *pb.ClientFrame_Call:
+			// Any call frame proves liveness.
+			lastHeartbeat.Store(time.Now().UnixNano())
 			s.mu.RLock()
-			handler := s.responseHandler
+			handler := s.frameHandler
 			s.mu.RUnlock()
 			if handler != nil {
-				handler(m.HttpResponse)
+				handler(streamID, m.Call)
 			}
 
-		case *pb.TunnelClientMessage_Hello:
+		case *pb.ClientFrame_Hello:
 			s.logger.Warn("Received duplicate ClientHello, ignoring",
 				zap.String("streamId", streamID),
 			)
@@ -239,7 +251,7 @@ func (s *Service) Tunnel(stream pb.TunnelService_TunnelServer) error {
 func (s *Service) cleanupStream(token broker.Token, streamID string, stopwatch interface{ Stop() }) {
 	stopwatch.Stop()
 
-	// Fail any pending dispatch requests for this stream.
+	// Fail any in-flight calls for this stream.
 	s.mu.RLock()
 	closeHandler := s.streamCloseHandler
 	s.mu.RUnlock()
@@ -323,8 +335,8 @@ func (s *Service) heartbeatSender(ctx context.Context, stream pb.TunnelService_T
 			return
 		case <-ticker.C:
 			sendMu.Lock()
-			err := stream.Send(&pb.TunnelServerMessage{
-				Message: &pb.TunnelServerMessage_Heartbeat{
+			err := stream.Send(&pb.ServerFrame{
+				Msg: &pb.ServerFrame_Heartbeat{
 					Heartbeat: &pb.Heartbeat{
 						TimestampMs: time.Now().UnixMilli(),
 					},

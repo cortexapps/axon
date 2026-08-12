@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/cortexapps/axon-server/adapters"
 	"github.com/cortexapps/axon-server/broker"
 	"github.com/cortexapps/axon-server/config"
 	"github.com/cortexapps/axon-server/dispatch"
@@ -73,19 +74,20 @@ func main() {
 		logger.Fatal("Failed to listen for gRPC", zap.Error(err))
 	}
 
-	// Initialize dispatch handler and wire response delivery.
-	dispatchHandler := dispatch.NewHandler(cfg, registry, m, logger)
-	tunnelService.SetResponseHandler(dispatchHandler.HandleResponse)
-	tunnelService.SetStreamCloseHandler(dispatchHandler.HandleStreamClose)
+	// Initialize dispatcher and HTTP adapter, and wire frame delivery.
+	dispatcher := dispatch.NewDispatcher(cfg, registry, m, logger)
+	tunnelService.SetFrameHandler(dispatcher.HandleFrame)
+	tunnelService.SetStreamCloseHandler(dispatcher.HandleStreamClose)
+	httpAdapter := adapters.NewHttpAdapter(cfg, registry, dispatcher, m, logger)
 
 	// Start HTTP server for metrics, health, and dispatch.
 	httpMux := http.NewServeMux()
 	httpMux.Handle("/metrics", m.Handler())
-	httpMux.Handle("/broker/", dispatchHandler)
+	httpMux.Handle("/broker/", httpAdapter)
 	httpMux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprintf(w, `{"status":"ok","server_id":%q,"clients":%d,"streams":%d,"inflight":%d,"broker_server_configured":%t}`,
-			cfg.ServerID, registry.Count(), registry.StreamCount(), dispatchHandler.PendingCount(), brokerClient.IsConfigured())
+			cfg.ServerID, registry.Count(), registry.StreamCount(), dispatcher.InflightCount(), brokerClient.IsConfigured())
 	})
 
 	httpServer := &http.Server{

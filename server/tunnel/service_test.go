@@ -64,8 +64,8 @@ func TestTunnel_EmptyBrokerToken_ReturnsUnauthenticated(t *testing.T) {
 	stream, err := client.Tunnel(ctx)
 	require.NoError(t, err)
 
-	require.NoError(t, stream.Send(&pb.TunnelClientMessage{
-		Message: &pb.TunnelClientMessage_Hello{
+	require.NoError(t, stream.Send(&pb.ClientFrame{
+		Msg: &pb.ClientFrame_Hello{
 			Hello: &pb.ClientHello{
 				BrokerToken: "", // empty token
 				TenantId:    "tenant-1",
@@ -90,8 +90,8 @@ func TestTunnel_EmptyTenantID_ReturnsUnauthenticated(t *testing.T) {
 	stream, err := client.Tunnel(ctx)
 	require.NoError(t, err)
 
-	require.NoError(t, stream.Send(&pb.TunnelClientMessage{
-		Message: &pb.TunnelClientMessage_Hello{
+	require.NoError(t, stream.Send(&pb.ClientFrame{
+		Msg: &pb.ClientFrame_Hello{
 			Hello: &pb.ClientHello{
 				BrokerToken: "valid-token",
 				TenantId:    "", // empty tenant
@@ -116,8 +116,8 @@ func TestTunnel_ValidHandshake_Succeeds(t *testing.T) {
 	stream, err := client.Tunnel(ctx)
 	require.NoError(t, err)
 
-	require.NoError(t, stream.Send(&pb.TunnelClientMessage{
-		Message: &pb.TunnelClientMessage_Hello{
+	require.NoError(t, stream.Send(&pb.ClientFrame{
+		Msg: &pb.ClientFrame_Hello{
 			Hello: &pb.ClientHello{
 				BrokerToken: "valid-token",
 				TenantId:    "tenant-1",

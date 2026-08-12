@@ -1,4 +1,4 @@
-PROTO_DIR = ../proto/tunnel
+PROTO_DIR = ../proto/tunnel/v2
 GENERATED_DIR = .generated/proto
 GENERATED_PATH = $(GENERATED_DIR)/tunnel
 
