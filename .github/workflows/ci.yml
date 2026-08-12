@@ -34,6 +34,11 @@ jobs:
       - name: Run Agent tests
         run: make -C agent test
 
+      - name: Run Tunnel Server tests
+        run: |
+          make -C server proto
+          make -C server test
+
       - name: Run Go SDK tests
         run: |
           cd sdks/go
@@ -76,6 +81,12 @@ jobs:
 
       - name: "Run Relay Test: No Proxy"
         run: make -C agent relay-test-no-proxy
+
+      - name: "Run gRPC Relay Test: With Proxy (TLS)"
+        run: make -C agent grpc-relay-test-with-proxy
+
+      - name: "Run gRPC Relay Test: No Proxy"
+        run: make -C agent grpc-relay-test-no-proxy
 
   helm-test:
     runs-on: ubuntu-latest
