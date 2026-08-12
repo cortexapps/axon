@@ -458,10 +458,12 @@ Tunnel bidi stream
 - Demuxer: degenerate in v1 (max one call per slot). Still worth having
   the type — if we ever move to per-stream multiplex the change is
   localized.
-- Router: takes today's `requestexecutor.MatchRule` +
-  `resolveOrigin` + `applyAuth` unchanged. Only its input type changes
-  (was `(method, path, headers, body)`, becomes a `CallStart` +
-  `io.Reader`).
+- Router: matches an incoming `CallStart` against
+  `AcceptFile.PrivateRules()` and applies the rule's origin/header/auth
+  resolution. It is a thin consumer of the shared `acceptfile` package
+  and holds no accept-file semantics of its own — see §9 for the
+  one-definition rule and the conformance suite that enforces it.
+  (PR #85's `requestexecutor` is refactored to meet this bar.)
 - Backend: new interface.
 
 ### 7.2 Backend interface
@@ -541,17 +543,63 @@ that's a smell:
   runnable; the docker layer only stops invoking it when the mode flag
   is `grpc-tunnel`.
 
-## 9. What snyk-broker gains, indirectly
+## 9. Accept-file semantics: one definition, no divergence
 
-Some fixes made while touching shared code should benefit both modes,
-and are worth doing:
+Hard requirement: **accept files mean exactly the same thing in both
+modes, forever.** A feature added to accept files must light up in both
+transports from a single change, and must be provably equivalent.
 
-- Accept-file rule matching lives in `requestexecutor/rule_matcher.go`
-  today (PR #85). If we move the semantics that today live in the
-  reflector's proxy-entry cache into an accept-file-driven rule
-  matcher, both modes can consume it. Cost: touches the reflector.
-  Benefit: one match implementation. **Verdict for this doc: not
-  worth the risk in v1. The executor keeps its own copy.**
+First, an honest statement of where matching happens today, because
+"don't fork the rule matcher" needs precision:
+
+- In snyk-broker mode, **rule matching is done by the Node broker
+  itself**. The agent's Go code never matches a request against a rule;
+  the reflector only resolves origins and injects headers on requests
+  the broker has already accepted.
+- In gRPC mode there is no Node process, so the agent must match rules
+  in Go.
+
+So there are inherently two *implementations* of matching (Node's and
+Go's) for as long as both transports exist — that cannot be unified at
+the code level. What we control is that there is exactly one
+*definition*, and that the implementations are pinned to it:
+
+1. **Single source of truth: the `acceptfile` package.** All accept-file
+   parsing, rendering, rule wrapping, header/auth resolution, env-var
+   and pool expansion live in `agent/server/snykbroker/acceptfile/`,
+   which both transports already consume. The gRPC-mode Router (§7.1)
+   is a thin consumer of `AcceptFile.PrivateRules()` — the same wrappers
+   the snyk-broker path renders from. It contains **no accept-file
+   semantics of its own**: no separate parse, no separate defaulting, no
+   separate expansion rules. PR #85's `requestexecutor/rule_matcher.go`
+   is refactored to meet this bar before merge: anything in it that
+   interprets accept-file content (rather than comparing an incoming
+   request to an already-interpreted rule) moves into `acceptfile`.
+2. **New accept-file features land in `acceptfile` first.** The rule:
+   if a change can be expressed in the shared package (a new field, a
+   new resolver, a new rendering step), it must be. A feature PR that
+   adds accept-file behaviour to only one transport's code is rejected
+   by construction — CI runs the conformance suite (below) on both.
+3. **Conformance suite pins the two implementations together.** A
+   shared fixture set — accept file + request (method, path, headers)
+   → expected outcome (matched rule / rejected, resolved origin,
+   injected headers) — lives next to the `accept_files` fixtures. It
+   runs two ways in CI:
+   - directly against the Go matcher (fast, unit-level);
+   - through the snyk-broker e2e harness (docker-compose, request in
+     one end, observe what reaches the mock upstream).
+   Any divergence — including pre-existing quirks of the Node broker we
+   discover along the way — fails the build and forces a decision:
+   match the broker's behaviour, or document the exception in the
+   fixture with a reason. The suite is the contract; the Node broker's
+   current behaviour is its initial content.
+
+This also bounds the blast radius the coexistence rules (§3) care
+about: the gRPC work may **add** to `acceptfile` (new accessors,
+resolver types), but additions must be exercised by the snyk-broker
+path's existing tests where they affect rendering, and must never
+change the rendered output for existing accept files (golden-file
+tests on `Render()` guard this).
 
 ## 10. Config surface
 
@@ -615,6 +663,14 @@ than inventing new frameworks.
 - New: a "kind hint" test proving `SERVER_STREAM` calls are streamed
   end-to-end without buffering (assert first-byte time on a slow
   producer).
+- New: accept-file conformance suite (§9) — shared fixtures of
+  (accept file, request) → (match/reject, resolved origin, injected
+  headers), run against the Go matcher directly and through the
+  snyk-broker e2e harness. This is the divergence guard for accept-file
+  semantics across transports.
+- New: golden-file tests on `acceptfile.Render()` — any `acceptfile`
+  addition made for gRPC mode must not change rendered output for
+  existing accept files.
 
 ### 12.3 E2E (docker-compose)
 - Existing `agent/test/relay/relay_test.sh`: unchanged. Runs against
@@ -682,11 +738,14 @@ required at the Cortex UI level.
 6. `agent/server/grpctunnel/router.go` + `backend/http.go` — split
    from PR #85's executor — 1d.
 7. Tests (§12.1-§12.3) — 3d.
+7a. Accept-file conformance suite + `Render()` golden files (§9) — 2d.
+    Front-load this: it defines the semantics the Router must match and
+    catches Node-broker quirks before they become bug reports.
 8. Docker-compose + e2e scripts — 1d.
 9. Documentation refresh (`README.relay.md` gets a "transports"
    section) — 0.5d.
 
-Total: ~12 dev-days. Assumes PR #85's cloud infra (docker-compose,
+Total: ~14 dev-days. Assumes PR #85's cloud infra (docker-compose,
 tunnel-server binary, broker-client HTTP shim) is reused wholesale.
 
 ## Appendix A — Why not just fix PR #85 incrementally
