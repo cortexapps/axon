@@ -50,19 +50,33 @@ func waitForTunnelDrain(t *testing.T, rr *RegistrationReflector) {
 	}
 }
 
+// newReflectorWithDrain builds a reflector and registers the tunnel drain in one
+// step. Any test that can establish a tunnel must go through this rather than
+// calling NewRegistrationReflector directly: closing the servers is not enough,
+// because a hijacked WebSocket is not an outstanding request as far as
+// httptest.Server.Close is concerned, so Close returns while the copy
+// goroutines are still running. This asserts they finish; newTestLogger is what
+// makes a log that still slips out afterwards safe.
+//
+// Registered here rather than at the call site so the drain is always the first
+// cleanup registered, and therefore the last to run - after whatever the test
+// defers or registers to close its connections and servers.
+func newReflectorWithDrain(t *testing.T, params RegistrationReflectorParams) *RegistrationReflector {
+	t.Helper()
+	rr := NewRegistrationReflector(params)
+	t.Cleanup(func() { waitForTunnelDrain(t, rr) })
+	return rr
+}
+
 func newTestReflectorEnvWithConfig(t *testing.T, cfg config.AgentConfig) *testReflectorEnv {
 	logger := newTestLogger(t)
-	rr := NewRegistrationReflector(RegistrationReflectorParams{
+	rr := newReflectorWithDrain(t, RegistrationReflectorParams{
 		Logger:   logger,
 		Registry: prometheus.NewRegistry(),
 		Config:   cfg,
 	})
 	router := mux.NewRouter()
 	server := httptest.NewServer(router)
-	// Cleanups run LIFO, so this drain runs last - after Stop and server.Close
-	// have torn the connections down. It asserts that tunnels actually finish;
-	// newTestLogger is what makes a late log safe.
-	t.Cleanup(func() { waitForTunnelDrain(t, rr) })
 	t.Cleanup(server.Close)
 	t.Cleanup(func() { rr.Stop() })
 	return &testReflectorEnv{
@@ -601,7 +615,7 @@ func TestWebSocketProxyThroughHTTPProxy(t *testing.T) {
 		Proxy: http.ProxyURL(proxyURL),
 	}
 
-	rr := NewRegistrationReflector(RegistrationReflectorParams{
+	rr := newReflectorWithDrain(t, RegistrationReflectorParams{
 		Logger:    logger,
 		Registry:  prometheus.NewRegistry(),
 		Transport: transport,
@@ -614,10 +628,6 @@ func TestWebSocketProxyThroughHTTPProxy(t *testing.T) {
 	rr.RegisterRoutes(router)
 	reflectorServer := httptest.NewServer(router)
 	defer reflectorServer.Close()
-
-	// This test builds its own reflector rather than using newTestReflectorEnv,
-	// because it needs a custom Transport, so it must register the drain itself.
-	t.Cleanup(func() { waitForTunnelDrain(t, rr) })
 
 	// Register the target with the reflector
 	proxyURI := rr.ProxyURI(targetServer.URL)

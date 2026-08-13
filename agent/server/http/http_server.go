@@ -294,10 +294,25 @@ func (h *httpServer) Port() int {
 	return h.port
 }
 
+// closeDrainTimeout bounds how long Close waits for in-flight handlers before
+// their connections are dropped.
+var closeDrainTimeout = 5 * time.Second
+
 func (h *httpServer) Close() error {
 	if h.server != nil {
-		h.server.Close()
+		server := h.server
 		h.server = nil
+		// Shutdown, not Close: Close severs the connection but returns while
+		// handler goroutines are still running, so a handler can keep using
+		// resources the caller believes it has finished with - the request
+		// middleware logs after next.ServeHTTP returns. Hijacked connections
+		// (WebSocket tunnels) are not tracked here, so they cannot hold this
+		// open past the timeout.
+		ctx, cancel := context.WithTimeout(context.Background(), closeDrainTimeout)
+		defer cancel()
+		if err := server.Shutdown(ctx); err != nil {
+			server.Close()
+		}
 	}
 	if h.listener != nil {
 		h.port = 0
