@@ -107,16 +107,16 @@ func (h *axonHandler) healthcheck(w http.ResponseWriter, r *http.Request) {
 func (h *axonHandler) info(w http.ResponseWriter, r *http.Request) {
 
 	result := &struct {
-		Integration string   `json:"integration"`
-		Alias       string   `json:"alias"`
-		Handlers    []string `json:"handlers"`
-		InstanceID  string   `json:"instance_id"`
+		Integration  string   `json:"integration"`
+		Alias        string   `json:"alias"`
+		Handlers     []string `json:"handlers"`
+		InstanceID   string   `json:"instance_id"`
 		BuildVersion string   `json:"build_version"`
 	}{
-		InstanceID:  h.config.InstanceId,
-		Integration: h.config.Integration,
-		Alias:       h.config.IntegrationAlias,
-		Handlers:    []string{},
+		InstanceID:   h.config.InstanceId,
+		Integration:  h.config.Integration,
+		Alias:        h.config.IntegrationAlias,
+		Handlers:     []string{},
 		BuildVersion: getBuildVersion(),
 	}
 

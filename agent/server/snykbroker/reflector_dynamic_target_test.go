@@ -60,16 +60,11 @@ func (rb *recordingBackend) snapshot() (int, string, http.Header) {
 	return rb.hits, rb.host, rb.header
 }
 
-// newRoutedReflector builds a reflector whose transport resolves the given
-// synthetic hostnames to local backends.
-//
-// Both origin kinds need this. A wildcard origin must be https and its hosts
-// never exist in DNS; a concrete origin needs a real hostname before the
-// header can agree with it, which an httptest server's 127.0.0.1 cannot
-// provide. DialContext stands in for resolution, and name verification is
-// skipped because the backends hold certificates for 127.0.0.1 rather than
-// for the synthetic names. What these tests exercise is the origin policy and
-// the routing path, not TLS naming.
+// newRoutedReflector resolves synthetic hostnames to local backends. Wildcard
+// hosts never exist in DNS, and a concrete origin needs a real hostname before
+// a target can agree with it, which httptest's 127.0.0.1 cannot provide.
+// Verification is skipped because the backends' certificates do not carry the
+// synthetic names.
 func newRoutedReflector(t *testing.T, backends map[string]*recordingBackend) *RegistrationReflector {
 	t.Helper()
 	transport := &http.Transport{
@@ -140,11 +135,9 @@ func TestParseOriginLeavesConcreteOriginsAlone(t *testing.T) {
 	}
 }
 
-// One label, not one-or-more. A wildcard certificate covers a single label, so
-// a multi-label match would authorize names that certificate verification then
-// refuses. It also keeps a nested family such as "svc.internal.api.example.net"
-// from being admitted by a rule that only meant to authorize the level above.
-// If this test is failing, the fix is not to relax it.
+// A wildcard certificate covers a single label, so a multi-label match would
+// authorize names that verification then refuses. If this fails, the fix is
+// not to relax it.
 func TestWildcardMatchesExactlyOneLabel(t *testing.T) {
 	_, wildcard, err := parseOrigin("https://*.api.example.net")
 	require.NoError(t, err)
@@ -174,8 +167,6 @@ func TestParseTargetHostNormalizesAndRejects(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "alpha.api.example.net", host)
 
-	// The default HTTPS port is the one port the origin policy already implies,
-	// so it is normalized away rather than rejected.
 	host, err = parseTargetHost("alpha.api.example.net:443")
 	require.NoError(t, err)
 	require.Equal(t, "alpha.api.example.net", host)
@@ -210,7 +201,6 @@ func TestParseTargetHostNormalizesAndRejects(t *testing.T) {
 	}
 }
 
-// The spec's routing table, as a unit: fail-closed in both directions.
 func TestResolveTargetHostFailsClosedBothDirections(t *testing.T) {
 	wildcardEntry, err := newProxyEntry("https://*.api.example.net", false, 1234, nil, nil)
 	require.NoError(t, err)
@@ -277,13 +267,10 @@ func TestWildcardRetargetsAcrossHosts(t *testing.T) {
 	require.Equal(t, "a.axon.example.com", hostA)
 	require.Equal(t, "b.axon.example.com", hostB)
 	require.Equal(t, 1, hitsB)
-	// rule headers are still injected on a retargeted request
 	require.Equal(t, "Bearer minted", headerB.Get("Authorization"))
-	// the routing header never reaches the upstream
 	require.Empty(t, headerB.Get(HeaderTargetHost))
 }
 
-// No fallback: a wildcard rule has no destination of its own.
 func TestWildcardWithoutTargetHostIsRejected(t *testing.T) {
 	backend := newRecordingTLSBackend(t, "a")
 	rr := newRoutedReflector(t, map[string]*recordingBackend{"a.axon.example.com": backend})
@@ -330,8 +317,8 @@ func TestWildcardRefusesWebSocketUpgrade(t *testing.T) {
 	require.Equal(t, 0, hits)
 }
 
-// A concrete rule is the common case, and it must strip the header even though
-// it never routes on it - otherwise the value reaches a third-party upstream.
+// A concrete rule never routes on the header but must still strip it, or the
+// value reaches a third-party upstream.
 func TestConcreteOriginStripsTargetHostAndRejectsDisagreement(t *testing.T) {
 	backend := newRecordingTLSBackend(t, "a")
 	rr := newRoutedReflector(t, map[string]*recordingBackend{"a.axon.example.com": backend})
@@ -339,7 +326,6 @@ func TestConcreteOriginStripsTargetHostAndRejectsDisagreement(t *testing.T) {
 	proxyURI := rr.ProxyURI("https://a.axon.example.com")
 	path := proxyPath(t, proxyURI)
 
-	// Restating the declared authority is allowed, and is still stripped.
 	req := httptest.NewRequest("GET", path+"/v1/things", nil)
 	req.Header.Set(HeaderTargetHost, "a.axon.example.com")
 	rec := httptest.NewRecorder()
@@ -349,7 +335,6 @@ func TestConcreteOriginStripsTargetHostAndRejectsDisagreement(t *testing.T) {
 	require.Equal(t, 1, hits)
 	require.Empty(t, header.Get(HeaderTargetHost))
 
-	// Disagreeing is a defect or a probe, never a legitimate request.
 	req = httptest.NewRequest("GET", path+"/v1/things", nil)
 	req.Header.Set(HeaderTargetHost, "alpha.api.example.net")
 	rec = httptest.NewRecorder()
@@ -361,8 +346,6 @@ func TestConcreteOriginStripsTargetHostAndRejectsDisagreement(t *testing.T) {
 	require.Equal(t, 1, hits, "the rejected request must not reach the upstream")
 }
 
-// A rule with no header at all is the overwhelmingly common case and must be
-// entirely unaffected.
 func TestConcreteOriginWithoutTargetHostIsUntouched(t *testing.T) {
 	env := newTestReflectorEnv(t)
 	backend := newRecordingBackend(t, "a")

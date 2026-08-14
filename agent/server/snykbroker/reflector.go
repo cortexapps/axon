@@ -55,9 +55,8 @@ func NewRegistrationReflector(p RegistrationReflectorParams) *RegistrationReflec
 		httpParams.Registry = p.Registry
 	}
 
-	// The reflector injects rule credentials into what it forwards, so it must
-	// never be reachable from off the host. Its only client is the broker
-	// running beside the agent.
+	// Injects rule credentials, so it must not be reachable off-host. Its only
+	// client is the broker running beside the agent.
 	server := cortexHttp.NewHttpServer(httpParams,
 		cortexHttp.WithName("relay-reflector"),
 		cortexHttp.WithLoopbackOnly(),
@@ -348,15 +347,13 @@ func (rr *RegistrationReflector) ServeHTTP(w http.ResponseWriter, r *http.Reques
 		zap.String("newPath", newPath),
 	)
 
-	// Strip before anything can forward, log, or fail: the header is internal
-	// routing metadata and must not survive on any path, including concrete
-	// origins, WebSocket upgrades, and rejections. Del removes every copy.
+	// Strip before anything can forward, log, or fail: internal routing
+	// metadata must not survive on any path, rejections included.
 	requestedTargets := r.Header.Values(HeaderTargetHost)
 	r.Header.Del(HeaderTargetHost)
 
-	// A wildcard rule has no single authority to upgrade against, and the
-	// tunnel carries no per-request routing, so it is refused outright rather
-	// than only when a target was supplied.
+	// A tunnel carries no per-request routing, so a family has no authority to
+	// upgrade against.
 	if entry.wildcard != nil && IsWebSocketUpgrade(r) {
 		rr.logger.Error("WebSocket upgrade is not supported for a wildcard origin",
 			zap.String("targetURI", entry.TargetURI),
@@ -365,8 +362,7 @@ func (rr *RegistrationReflector) ServeHTTP(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// The rejection reason is safe to log; the requested value is not, so it
-	// is never attached.
+	// The reason is safe to log; the requested value is not.
 	targetHost, err := entry.resolveTargetHost(requestedTargets)
 	if err != nil {
 		rr.logger.Error("Rejected destination",
@@ -412,9 +408,8 @@ type proxyEntry struct {
 	headers         acceptfile.ResolverMap
 	responseHeaders map[string]string
 	hashCode        string
-	// wildcard is set when the rule's origin authorizes a hostname family
-	// rather than one host. Such a rule has no destination of its own: the
-	// concrete authority arrives per request and is checked against this.
+	// Set when the origin authorizes a family. Such an entry has no
+	// destination of its own; the authority arrives per request.
 	wildcard *wildcardOrigin
 }
 
@@ -437,8 +432,6 @@ func newProxyEntry(targetURI string, isDefault bool, port int, headers acceptfil
 		return nil, fmt.Errorf("target URI cannot be empty")
 	}
 
-	// Validating here means a malformed wildcard origin fails registration at
-	// startup rather than every request that uses the rule.
 	asUri, wildcard, err := parseOrigin(targetURI)
 	if err != nil {
 		return nil, err
@@ -461,12 +454,8 @@ func newProxyEntry(targetURI string, isDefault bool, port int, headers acceptfil
 		defaultDirector(req)
 		req.Host = asUri.Host
 
-		// Retarget to the validated per-request host, if ServeHTTP set one.
-		// The scheme stays the entry's own (https for real origins).
-		//
-		// A wildcard entry always has one: ServeHTTP rejects the request
-		// before reaching here if the header is absent, so the literal
-		// "*.example.com" in asUri is never dialed.
+		// A wildcard entry always has one, because ServeHTTP rejects the
+		// request otherwise, so the literal "*" in asUri is never dialed.
 		if host, ok := dynamicTargetFromRequest(req); ok {
 			req.URL.Host = host
 			req.Host = host
@@ -497,14 +486,9 @@ func newProxyEntry(targetURI string, isDefault bool, port int, headers acceptfil
 	return pe, nil
 }
 
-// resolveTargetHost decides what a request should dial, from the entry's
-// origin policy and the target-host header.
-//
-// It returns the host to retarget to, or "" to dial the entry's declared
-// origin. Routing is fail-closed in both directions: a wildcard rule never
-// falls back to its declared origin, and a concrete rule never ignores a
-// value that disagrees with it. A mismatch is never a legitimate request,
-// because the caller sets the value from an authority it already selected.
+// resolveTargetHost returns the host to retarget to, or "" to dial the entry's
+// declared origin. Fail-closed both ways: a family never falls back to a
+// declared host, and a concrete origin never ignores a value that disagrees.
 func (pe *proxyEntry) resolveTargetHost(values []string) (string, error) {
 	if len(values) > 1 {
 		return "", fmt.Errorf("duplicate target host")
@@ -529,8 +513,8 @@ func (pe *proxyEntry) resolveTargetHost(values []string) (string, error) {
 		return host, nil
 	}
 
-	// Concrete origin: the value is only ever a redundant restatement of the
-	// declared authority, so anything else is a defect or a probe.
+	// The value only ever restates the declared authority, so anything else is
+	// a defect or a probe.
 	declared, parseErr := url.Parse(pe.TargetURI)
 	if parseErr != nil || !strings.EqualFold(declared.Hostname(), host) {
 		return "", fmt.Errorf("target host disagrees with the declared origin")
@@ -560,8 +544,6 @@ func (pe *proxyEntry) key() string {
 			}
 			key = key + headerKey
 		}
-		// The wildcard is derived from TargetURI, which is already in the key,
-		// so it needs no component of its own.
 		hash := hashString(key)
 		pe.hashCode = fmt.Sprintf("%d", hash)
 	}
@@ -577,9 +559,7 @@ func (pe *proxyEntry) addResponseHeader(name, value string) {
 }
 
 func (pe *proxyEntry) encodeProxyUri(targetURI string, port int, isDefault bool) string {
-	// 127.0.0.1 rather than "localhost", to match what the reflector actually
-	// binds. "localhost" resolves to ::1 as well, and a client that tries that
-	// first finds nothing listening.
+	// Matches the loopback bind; "localhost" also resolves to ::1.
 	baseProxyURI := fmt.Sprintf("http://127.0.0.1:%d", port)
 	if isDefault {
 		// for default proxy, we only change the host and port

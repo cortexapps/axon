@@ -33,9 +33,8 @@ func TestProxyEntryKeyStableAcrossHeaderOrder(t *testing.T) {
 	}
 }
 
-// A wildcard entry carries no key component of its own: the family lives in
-// TargetURI, which is already hashed. This pins that reasoning, so removing
-// the component cannot silently collapse two different families onto one key.
+// A wildcard entry has no key component of its own; the family lives in
+// TargetURI, already hashed. This pins that two families cannot collide.
 func TestProxyEntryKeyDistinguishesWildcardFamilies(t *testing.T) {
 	keyFor := func(t *testing.T, origin string) string {
 		t.Helper()
@@ -63,8 +62,7 @@ func TestProxyEntryKeyDistinguishesWildcardFamilies(t *testing.T) {
 		seen[key] = name
 	}
 
-	// Stable across construction, so re-registering a family reuses its entry
-	// rather than accumulating duplicates.
+	// Stable across construction, so re-registering reuses the entry.
 	for i := 0; i < 20; i++ {
 		require.Equal(t, family, keyFor(t, "https://*.api.example.net"))
 	}

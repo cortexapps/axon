@@ -47,9 +47,6 @@ func (e *renderEnv) render(t *testing.T, content string) error {
 	return err
 }
 
-// The end-to-end proof that an accept file can declare a hostname family: the
-// wildcard rule registers as one, and a concrete rule rendered alongside it in
-// the same pass does not.
 func TestRenderRegistersWildcardOrigin(t *testing.T) {
 	env := newRenderEnv(t, config.RelayReflectorAllTraffic)
 	plain := newRecordingBackend(t, "plain")
@@ -72,8 +69,6 @@ func TestRenderRegistersWildcardOrigin(t *testing.T) {
 	require.Nil(t, plainEntry.wildcard)
 }
 
-// The origin is the whole policy, so a host outside it is refused even though
-// the rule is the one that opted into a family.
 func TestRenderedWildcardEnforcesItsOrigin(t *testing.T) {
 	env := newRenderEnv(t, config.RelayReflectorAllTraffic)
 	other := newRecordingBackend(t, "b")
@@ -96,8 +91,6 @@ func TestRenderedWildcardEnforcesItsOrigin(t *testing.T) {
 	require.Equal(t, 0, hits)
 }
 
-// A malformed policy has to stop the agent at startup rather than register a
-// rule that can never route.
 func TestRenderRejectsMalformedWildcardOrigin(t *testing.T) {
 	for name, origin := range map[string]string{
 		"public suffix": "https://*.com",
@@ -114,10 +107,8 @@ func TestRenderRejectsMalformedWildcardOrigin(t *testing.T) {
 	}
 }
 
-// Hostname authorization is worth exactly what the certificate check behind it
-// is worth. With verification off, anything answering the connection can claim
-// the authorized name, so the agent refuses to start rather than serving a
-// policy that authorizes nothing.
+// With verification off, anything answering the connection can claim the
+// authorized name, so a family authorizes nothing.
 func TestRenderRejectsWildcardOriginWithTLSVerificationDisabled(t *testing.T) {
 	env := newRenderEnv(t, config.RelayReflectorAllTraffic)
 	env.mgr.config.HttpDisableTLS = true
@@ -129,8 +120,8 @@ func TestRenderRejectsWildcardOriginWithTLSVerificationDisabled(t *testing.T) {
 	require.ErrorIs(t, err, ErrWildcardOriginRequiresTLSVerification)
 }
 
-// A concrete origin names one host the operator chose, so disabling
-// verification is their call to make and must not break existing deployments.
+// A concrete origin names one host the operator chose, so that stays their
+// call and must not break existing deployments.
 func TestRenderAllowsConcreteOriginWithTLSVerificationDisabled(t *testing.T) {
 	env := newRenderEnv(t, config.RelayReflectorAllTraffic)
 	env.mgr.config.HttpDisableTLS = true
@@ -141,8 +132,6 @@ func TestRenderAllowsConcreteOriginWithTLSVerificationDisabled(t *testing.T) {
 	]}`, backend.server.URL)))
 }
 
-// Wildcard routing only exists on the reflector path, so declaring it with the
-// reflector off has to fail loudly rather than be quietly dropped.
 func TestRenderRejectsWildcardOriginWithReflectorDisabled(t *testing.T) {
 	env := newRenderEnv(t, config.RelayReflectorDisabled)
 	af, err := acceptfile.NewAcceptFile([]byte(`{"private": [
@@ -155,7 +144,6 @@ func TestRenderRejectsWildcardOriginWithReflectorDisabled(t *testing.T) {
 		func() { _, _ = af.Render(zap.NewNop(), env.mgr.reflectorRenderStep) })
 }
 
-// A concrete rule must be untouched by any of this.
 func TestRenderLeavesConcreteRuleAlone(t *testing.T) {
 	env := newRenderEnv(t, config.RelayReflectorAllTraffic)
 	backend := newRecordingBackend(t, "a")

@@ -59,14 +59,9 @@ func WithPort(port int) ServerOption {
 	}
 }
 
-// WithLoopbackOnly binds the listener to 127.0.0.1 rather than every
-// interface.
-//
-// Required for any server that injects credentials into the requests it
-// forwards: reachable off-host, such a server is an open proxy that mints a
-// real token for whoever asks. The only client is the broker running beside
-// the agent, so the loopback bind costs nothing and is the control itself,
-// not a check a handler has to remember.
+// WithLoopbackOnly binds to 127.0.0.1 rather than every interface. Required
+// for any server that injects credentials: reachable off-host, it is an open
+// proxy that attaches one for whoever asks.
 func WithLoopbackOnly() ServerOption {
 	return func(s *serverOptions) {
 		s.loopbackOnly = true
@@ -282,9 +277,8 @@ func (h *httpServer) Start() (int, error) {
 		panic("Server already started")
 	}
 
-	// An explicit 127.0.0.1 rather than "localhost": the latter resolves to
-	// both ::1 and 127.0.0.1, and a client that reaches for the wrong one
-	// first finds nothing listening.
+	// Explicit 127.0.0.1, not "localhost": that also resolves to ::1, where
+	// nothing is listening.
 	host := ""
 	if h.loopbackOnly {
 		host = "127.0.0.1"
