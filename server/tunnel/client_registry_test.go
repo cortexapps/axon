@@ -208,3 +208,28 @@ func TestForEach(t *testing.T) {
 	assert.Contains(t, entries, "tenant-1")
 	assert.Contains(t, entries, "tenant-2")
 }
+
+func TestRegisterTokenStreamCap(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+	registry := NewClientRegistry(logger)
+	registry.SetMaxStreamsPerToken(2)
+
+	token := broker.NewToken("token-abc")
+	identity := testIdentity("tenant-1")
+
+	require.NoError(t, registry.Register(token, identity, testStream("s1")))
+	require.NoError(t, registry.Register(token, identity, testStream("s2")))
+
+	// Third stream is rejected at the cap.
+	err := registry.Register(token, identity, testStream("s3"))
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrTokenStreamCap)
+
+	// Unregistering frees a slot at the cap.
+	registry.Unregister(token, "s1")
+	require.NoError(t, registry.Register(token, identity, testStream("s3")))
+
+	// Cap of zero means unlimited.
+	registry.SetMaxStreamsPerToken(0)
+	require.NoError(t, registry.Register(token, identity, testStream("s4")))
+}

@@ -11,7 +11,7 @@ import (
 	"github.com/cortexapps/axon-server/config"
 	"github.com/cortexapps/axon-server/metrics"
 	"github.com/stretchr/testify/require"
-	"go.uber.org/zap/zaptest"
+	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -22,7 +22,9 @@ import (
 // returns a client connection. Caller closes via t.Cleanup.
 func startTestService(t *testing.T) pb.TunnelServiceClient {
 	t.Helper()
-	logger := zaptest.NewLogger(t)
+	// Nop logger: the service spawns goroutines (BROKER_SERVER notify) that
+	// may log after the test completes, which zaptest treats as a failure.
+	logger := zap.NewNop()
 
 	cfg := config.Config{
 		ServerID:          "test-server",

@@ -58,7 +58,7 @@ services:
       PORT: 7433
       PLUGIN_DIRS: /agent/plugins
       RELAY_MODE: grpc-tunnel
-      TUNNEL_COUNT: 2
+      AXON_GRPC_TUNNEL_MIN_SLOTS: 2
       BROKER_SERVER_URL: grpc-tunnel-server:50052
       GRPC_INSECURE: "true"
       CORTEX_TENANT_ID: test-tenant

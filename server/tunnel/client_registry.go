@@ -1,6 +1,7 @@
 package tunnel
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"sync"
@@ -62,12 +63,19 @@ type clientEntry struct {
 	BrokerServerRegistered atomic.Bool
 }
 
+// ErrTokenStreamCap is returned by Register when the token already holds
+// the maximum allowed number of streams.
+var ErrTokenStreamCap = errors.New("token is at its stream cap")
+
 // ClientRegistry is a thread-safe registry of connected clients,
 // keyed by hashed broker token.
 type ClientRegistry struct {
 	mu      sync.RWMutex
 	entries map[string]*clientEntry // hashed token -> entry
 	logger  *zap.Logger
+
+	// maxStreamsPerToken caps streams per token; 0 means unlimited.
+	maxStreamsPerToken int
 }
 
 // NewClientRegistry creates a new client registry.
@@ -76,6 +84,13 @@ func NewClientRegistry(logger *zap.Logger) *ClientRegistry {
 		entries: make(map[string]*clientEntry),
 		logger:  logger,
 	}
+}
+
+// SetMaxStreamsPerToken sets the per-token stream cap (0 = unlimited).
+func (r *ClientRegistry) SetMaxStreamsPerToken(n int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.maxStreamsPerToken = n
 }
 
 // Register adds a new stream for a broker token.
@@ -91,6 +106,9 @@ func (r *ClientRegistry) Register(token broker.Token, identity ClientIdentity, s
 		if existing.Identity.TenantID != identity.TenantID {
 			return fmt.Errorf("token collision: different tenant_id for token (existing=%s, new=%s)",
 				existing.Identity.TenantID, identity.TenantID)
+		}
+		if r.maxStreamsPerToken > 0 && len(existing.Streams) >= r.maxStreamsPerToken {
+			return fmt.Errorf("%w (%d)", ErrTokenStreamCap, r.maxStreamsPerToken)
 		}
 		existing.Streams[stream.StreamID] = stream
 		r.logger.Info("Added stream to existing client entry",

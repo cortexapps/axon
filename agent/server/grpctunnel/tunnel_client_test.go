@@ -202,8 +202,14 @@ func newTestClient(t *testing.T, cfg config.AgentConfig, reg snykbroker.Registra
 	registry := prometheus.NewRegistry()
 
 	cfg.GrpcInsecure = true
-	if cfg.TunnelCount == 0 {
-		cfg.TunnelCount = 1
+	if cfg.MinTunnelSlots == 0 {
+		cfg.MinTunnelSlots = 1
+	}
+	if cfg.MaxTunnelSlots == 0 {
+		cfg.MaxTunnelSlots = cfg.MinTunnelSlots
+	}
+	if cfg.SlotIdleTimeout == 0 {
+		cfg.SlotIdleTimeout = time.Hour // no surprise shrink in tests
 	}
 	if cfg.MaxStreamsPerServer == 0 {
 		cfg.MaxStreamsPerServer = 2
@@ -391,7 +397,7 @@ func TestStreamCap_LimitsStreamsPerServer(t *testing.T) {
 	defer stop()
 
 	cfg := config.AgentConfig{
-		TunnelCount:                 3,
+		MinTunnelSlots:              3,
 		MaxStreamsPerServer:         2,
 		RegistrationRefreshInterval: 0,
 	}
@@ -429,7 +435,7 @@ func TestHeartbeatTimeout_TriggersReconnect(t *testing.T) {
 	addr, stop := startFakeServer(t, svc)
 	defer stop()
 
-	cfg := config.AgentConfig{TunnelCount: 1, MaxStreamsPerServer: 2}
+	cfg := config.AgentConfig{MinTunnelSlots: 1, MaxStreamsPerServer: 2}
 	tc, _ := newTestClient(t, cfg, &fakeRegistration{serverURI: addr, tokens: []string{"tok"}})
 	startClientWithEnv(t, tc, addr, "tok")
 	defer tc.Close()
@@ -468,7 +474,7 @@ func TestRecvErrorReconnects(t *testing.T) {
 	addr, stop := startFakeServer(t, svc)
 	defer stop()
 
-	cfg := config.AgentConfig{TunnelCount: 1, MaxStreamsPerServer: 2}
+	cfg := config.AgentConfig{MinTunnelSlots: 1, MaxStreamsPerServer: 2}
 	tc, _ := newTestClient(t, cfg, &fakeRegistration{serverURI: addr, tokens: []string{"tok"}})
 	startClientWithEnv(t, tc, addr, "tok")
 	defer tc.Close()
@@ -488,7 +494,7 @@ func TestInitialConnectRetry_RefusedDial(t *testing.T) {
 	addr := lis.Addr().String()
 	lis.Close()
 
-	cfg := config.AgentConfig{TunnelCount: 1, MaxStreamsPerServer: 2}
+	cfg := config.AgentConfig{MinTunnelSlots: 1, MaxStreamsPerServer: 2}
 	tc, _ := newTestClient(t, cfg, &fakeRegistration{serverURI: addr, tokens: []string{"tok"}})
 	startClientWithEnv(t, tc, addr, "tok")
 	defer tc.Close()
@@ -548,7 +554,7 @@ func TestSendErrorCancelsStream(t *testing.T) {
 	addr, stop := startFakeServer(t, svc)
 	defer stop()
 
-	cfg := config.AgentConfig{TunnelCount: 1, MaxStreamsPerServer: 2}
+	cfg := config.AgentConfig{MinTunnelSlots: 1, MaxStreamsPerServer: 2}
 	tc, _ := newTestClient(t, cfg, &fakeRegistration{serverURI: addr, tokens: []string{"tok"}})
 	startClientWithEnv(t, tc, addr, "tok")
 	defer tc.Close()
@@ -560,7 +566,7 @@ func TestSendErrorCancelsStream(t *testing.T) {
 // backend, the 2nd concurrent call should be rejected with CallCancel(503).
 func TestInflightCap_RejectsOverflow(t *testing.T) {
 	cfg := config.AgentConfig{
-		TunnelCount:         1,
+		MinTunnelSlots:      1,
 		MaxStreamsPerServer: 2,
 		MaxInflightRequests: 1,
 		MaxRequestTimeout:   5 * time.Second,
@@ -604,7 +610,7 @@ func TestInflightCap_RejectsOverflow(t *testing.T) {
 // as a CallCancel(502).
 func TestMaxRequestTimeout_AppliesWhenTimeoutMsZero(t *testing.T) {
 	cfg := config.AgentConfig{
-		TunnelCount:         1,
+		MinTunnelSlots:      1,
 		MaxInflightRequests: 4,
 		MaxRequestTimeout:   200 * time.Millisecond,
 	}
@@ -644,7 +650,7 @@ func TestMaxRequestTimeout_AppliesWhenTimeoutMsZero(t *testing.T) {
 // TestCall_StreamedRequestBody: request body chunks delivered over multiple
 // Data frames reach the backend intact and in order.
 func TestCall_StreamedRequestBody(t *testing.T) {
-	cfg := config.AgentConfig{TunnelCount: 1, MaxInflightRequests: 4}
+	cfg := config.AgentConfig{MinTunnelSlots: 1, MaxInflightRequests: 4}
 	tc, _ := newTestClient(t, cfg, &fakeRegistration{serverURI: "x", tokens: []string{"x"}})
 
 	var gotBody []byte
@@ -687,7 +693,7 @@ func TestCall_StreamedRequestBody(t *testing.T) {
 // TestCall_ServerCancelAbortsBackend: a CallCancel from the server aborts the
 // in-flight backend request.
 func TestCall_ServerCancelAbortsBackend(t *testing.T) {
-	cfg := config.AgentConfig{TunnelCount: 1, MaxInflightRequests: 4, MaxRequestTimeout: 30 * time.Second}
+	cfg := config.AgentConfig{MinTunnelSlots: 1, MaxInflightRequests: 4, MaxRequestTimeout: 30 * time.Second}
 	tc, _ := newTestClient(t, cfg, &fakeRegistration{serverURI: "x", tokens: []string{"x"}})
 
 	backendDone := make(chan error, 1)
@@ -720,7 +726,7 @@ func TestCall_ServerCancelAbortsBackend(t *testing.T) {
 // prevent startup, not silently fall back to insecure.
 func TestCACertLoadFailure_NoSilentDowngrade(t *testing.T) {
 	cfg := config.AgentConfig{
-		TunnelCount:         1,
+		MinTunnelSlots:      1,
 		MaxStreamsPerServer: 2,
 		HttpCaCertFilePath:  filepath.Join(t.TempDir(), "missing-ca.pem"),
 	}
@@ -765,7 +771,7 @@ func TestAuthErrorTriggersReregister(t *testing.T) {
 	addr, stop := startFakeServer(t, wrapped)
 	defer stop()
 
-	cfg := config.AgentConfig{TunnelCount: 1, MaxStreamsPerServer: 2}
+	cfg := config.AgentConfig{MinTunnelSlots: 1, MaxStreamsPerServer: 2}
 	reg := &fakeRegistration{
 		serverURI: addr,
 		tokens:    []string{"new-token-after-401"},
@@ -824,7 +830,7 @@ func TestClose_ShutsDownCleanly(t *testing.T) {
 	addr, stop := startFakeServer(t, svc)
 	defer stop()
 
-	cfg := config.AgentConfig{TunnelCount: 2, MaxStreamsPerServer: 2}
+	cfg := config.AgentConfig{MinTunnelSlots: 2, MaxStreamsPerServer: 2}
 	tc, _ := newTestClient(t, cfg, &fakeRegistration{serverURI: addr, tokens: []string{"t"}})
 	startClientWithEnv(t, tc, addr, "t")
 

@@ -2,7 +2,6 @@ package grpctunnel
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"io"
 	"net/http"
@@ -83,10 +82,4 @@ func (b *HttpBackend) Do(ctx context.Context, req *BackendRequest) (*BackendResp
 		Body:       resp.Body,
 		Trailer:    func() http.Header { return resp.Trailer },
 	}, nil
-}
-
-// basicAuthValue returns the base64 encoding of username:password for a
-// Basic Authorization header.
-func basicAuthValue(username, password string) string {
-	return base64.StdEncoding.EncodeToString([]byte(username + ":" + password))
 }

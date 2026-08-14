@@ -144,6 +144,7 @@ message ServerHello {
   string stream_id            = 2; // per-stream UUID
   int32  heartbeat_interval_ms = 3;
   int32  max_frame_bytes       = 4; // agent caps CallData payload accordingly
+  int32  max_streams           = 5; // per-token stream cap (agent clamps its pool)
 }
 
 message Heartbeat { int64 timestamp_ms = 1; }
@@ -259,38 +260,59 @@ Documenting these here so we don't paint ourselves into a corner:
 - Per-call flow control (send credits) would add a `CallCredit` message.
   Only needed if we abandon slot-pooling (§5); v1 does not.
 
-## 5. Concurrency: slot pool
+## 5. Concurrency: adaptive slot pool (client-side watermark)
 
-The agent opens **N concurrent `Tunnel` RPCs** to the cloud
-(`AXON_GRPC_TUNNEL_SLOTS`, default 32). Each slot carries **at most one
-in-flight call at a time** in v1. The server registers each stream in the
-existing `ClientRegistry` and `PickStream` grabs an idle one per dispatched
-request.
+The agent holds a pool of concurrent `Tunnel` RPCs, each its own
+`grpc.ClientConn` (one TCP+TLS connection per slot), each carrying **at
+most one in-flight call at a time**. The pool is **adaptive**: it idles at
+`AXON_GRPC_TUNNEL_MIN_SLOTS` (default 4) and grows toward
+`AXON_GRPC_TUNNEL_MAX_SLOTS` (default 32) under load, so a fleet of
+mostly-idle agents costs the server a handful of sockets per agent rather
+than 32.
 
-Rationale:
+**Why one connection per slot** (not h2 multiplexing over shared conns):
 
 - gRPC's HTTP/2 window is per-RPC. One RPC per logical call means we get
   the underlying flow control for free — no app-layer credits.
-- No head-of-line blocking between calls: a slow 100 MiB response on one
-  slot doesn't wedge another slot's snappy unary call.
-- Failure isolation: cancelling a slot's context after a heartbeat timeout
-  affects one call, not all in-flight calls.
+- Each slot has its own TCP congestion window: a slow 100 MiB response on
+  one slot can't wedge another slot's snappy unary call at the TCP layer.
+- Failure-domain isolation: one dead TCP path kills one slot.
+- LB spread: each connection can land on a different server instance.
 
-Costs:
+Connection-sharing (slots as h2 streams over K shared conns) remains the
+documented future lever if peak socket counts ever bite; the adaptive pool
+makes idle cost a non-issue without it.
 
-- N is a ceiling on concurrency. Design partners run a few RPS peak, so 32
-  is comfortable. Config is per-agent.
-- More RPCs → slightly more control-plane overhead. Measured in PR #85's
-  E2E as negligible; will re-measure after §6 changes.
+**Why the client controls scaling** (no server negotiation): a slot only
+becomes busy because the server dispatched onto it, so the client observes
+saturation at the same instant the server does — and acts one RTT sooner
+than any advice frame could. With multiple tunnel servers behind an LB,
+server-side advice couldn't steer placement of new connections anyway.
+One brain, no controller fights.
+
+Mechanics:
+
+- **Grow:** on every call admission (and once per second while saturated,
+  via a background re-check), the client keeps a free-capacity watermark —
+  at least 25% of connected streams (minimum one) idle. When breached, the
+  worker target rises by ~half the current pool, clamped to the effective
+  max, at most one step per second.
+- **Shrink:** a per-slot watchdog retires a slot that has carried no call
+  for `AXON_GRPC_TUNNEL_SLOT_IDLE_TIMEOUT` (default 10m) while the pool is
+  above min. Jittered so a burst's worth of slots doesn't retire at once.
+- **Server cap (defensive only):** the server enforces
+  `MAX_STREAMS_PER_TOKEN` (default 64) per broker token, announces it in
+  `ServerHello.max_streams`, and rejects excess streams with
+  `ResourceExhausted`; the client clamps its effective max accordingly.
+  This is protection against a buggy agent, not a control channel.
 
 The wire supports multiplex-per-stream if we later need it (the `call_id`
 is present) — but then per-call flow control becomes our problem. Not
 crossing that bridge until we see the ceiling in practice.
 
 Slot lifecycle mirrors PR #85's `manageStream` loop: connect → handshake
-→ `ServerHello` → mark idle → block on a per-slot "pick me" channel from
-the server side (via a receive on the bidi stream) → run one call →
-release. Retry with jittered backoff on any error. Auth failure triggers
+→ `ServerHello` → run calls as they arrive → retire on shrink or
+reconnect on error with jittered backoff. Auth failure triggers
 re-register through the shared `snykbroker.Registration`.
 
 ## 6. Server side
@@ -700,11 +722,12 @@ required at the Cortex UI level.
 
 ## 14. Risks & open questions
 
-1. **Slot-pool ceiling.** 32 concurrent calls per agent is fine for
-   today's workloads but not proven for future ones (e.g. large
-   GitHub-org syncs firing many concurrent calls). Mitigation: config
-   knob; measure in staging; fall back to per-stream multiplex if we
-   see saturation.
+1. **Slot-pool ceiling.** ~~32 concurrent calls per agent is fine for
+   today's workloads but not proven for future ones.~~ Resolved: the
+   pool is adaptive (§5) — idles at min, grows toward max on a
+   client-side free-capacity watermark, shrinks on idle. The remaining
+   ceiling is `AXON_GRPC_TUNNEL_MAX_SLOTS` × per-token server cap,
+   both config.
 2. **Late trailers vs already-committed response.** If a backend
    returns a status: 200 followed by a `CallCancel`, the HttpAdapter
    has already flushed `WriteHeader(200)`. It logs and drops. This

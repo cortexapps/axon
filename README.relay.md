@@ -108,7 +108,9 @@ gRPC-tunnel-specific settings (all optional):
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
-| `AXON_GRPC_TUNNEL_SLOTS` | `32` | Concurrent tunnel streams per agent |
+| `AXON_GRPC_TUNNEL_MIN_SLOTS` | `4` | Tunnel streams an idle agent keeps open |
+| `AXON_GRPC_TUNNEL_MAX_SLOTS` | `32` | Ceiling the pool grows to under load |
+| `AXON_GRPC_TUNNEL_SLOT_IDLE_TIMEOUT` | `10m` | Idle time before an above-min slot retires |
 | `AXON_GRPC_TUNNEL_INSECURE` | `false` | Skip TLS on the tunnel dial (dev only) |
 | `AXON_GRPC_TUNNEL_MAX_REQUEST_TIMEOUT` | `5m` | Hard ceiling on any single relayed call |
 

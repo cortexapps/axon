@@ -40,6 +40,7 @@ const (
 	keepaliveTimeout          = 10 * time.Second
 	minBackoff                = time.Second
 	maxBackoffDuration        = 30 * time.Second
+	growCooldown              = time.Second
 	forcedReregisterRateLimit = time.Minute
 	failuresBeforeReregister  = 5
 )
@@ -76,10 +77,21 @@ type tunnelClient struct {
 	cancelAll context.CancelFunc
 
 	mu                 sync.Mutex
-	slots              []*tunnelStream
+	streams            map[*tunnelStream]struct{} // connected streams
+	runningWorkers     int                        // live manageStream goroutines
+	slotSeq            int                        // worker id generator (logging)
 	serverStreamCounts map[string]int
 	currentToken       string
 	currentServerAddr  string
+
+	// Watermark pool state. targetSlots is the desired worker count in
+	// [MinTunnelSlots, effectiveMaxSlots]; busySlots counts in-flight calls
+	// across all streams; serverMaxStreams is the ServerHello-announced
+	// per-token cap (0 = none); lastGrowAt rate-limits growth steps.
+	targetSlots      atomic.Int32
+	busySlots        atomic.Int32
+	serverMaxStreams atomic.Int32
+	lastGrowAt       atomic.Int64
 
 	// restartMu serializes Restart() so two concurrent calls do not race the
 	// Close→Start handoff. Held only across the Close+Start; never with mu.
@@ -109,11 +121,17 @@ type tunnelClient struct {
 }
 
 type tunnelStream struct {
-	index    int
+	id       int // worker id, for logging
 	streamID string
 	serverID string
 	conn     *grpc.ClientConn
 	cancel   context.CancelFunc
+
+	// inflight counts calls currently running on this stream (0 or 1 in
+	// the slot-pool model); lastCallAt is the UnixNano timestamp of the
+	// last call start/completion, used for idle-shrink.
+	inflight   atomic.Int32
+	lastCallAt atomic.Int64
 }
 
 // streamCtx bundles the per-stream values needed to run streamLoop after a
@@ -264,15 +282,11 @@ func (tc *tunnelClient) handleSystemCheck(w http.ResponseWriter, req *http.Reque
 		return
 	}
 	tc.mu.Lock()
-	active := 0
-	for _, s := range tc.slots {
-		if s != nil {
-			active++
-		}
-	}
+	active := len(tc.streams)
 	tc.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprintf(w, `{"status":"ok","relay_mode":"grpc-tunnel","streams":%d}`, active)
+	fmt.Fprintf(w, `{"status":"ok","relay_mode":"grpc-tunnel","streams":%d,"busy":%d,"target":%d}`,
+		active, tc.busySlots.Load(), tc.targetSlots.Load())
 }
 
 func (tc *tunnelClient) Start() error {
@@ -280,8 +294,12 @@ func (tc *tunnelClient) Start() error {
 		return fmt.Errorf("already started")
 	}
 	tc.mu.Lock()
-	tc.slots = make([]*tunnelStream, tc.config.TunnelCount)
+	tc.streams = make(map[*tunnelStream]struct{})
+	tc.runningWorkers = 0
 	tc.serverStreamCounts = make(map[string]int)
+	tc.busySlots.Store(0)
+	tc.serverMaxStreams.Store(0)
+	tc.targetSlots.Store(int32(tc.minSlots()))
 	ctx, cancel := context.WithCancel(context.Background())
 	tc.parentCtx = ctx
 	tc.cancelAll = cancel
@@ -317,16 +335,17 @@ func (tc *tunnelClient) startAsync() {
 		return
 	}
 
-	for i := 0; i < tc.config.TunnelCount; i++ {
-		tc.wg.Add(1)
-		go tc.manageStream(i)
-	}
+	tc.ensureWorkers()
 
 	tc.wg.Add(1)
 	go tc.periodicReregister()
 
+	tc.wg.Add(1)
+	go tc.watermarkLoop()
+
 	tc.logger.Info("gRPC tunnel started",
-		zap.Int("tunnelCount", tc.config.TunnelCount),
+		zap.Int("minSlots", tc.minSlots()),
+		zap.Int("maxSlots", tc.config.MaxTunnelSlots),
 		zap.Int("maxStreamsPerServer", tc.config.MaxStreamsPerServer),
 		zap.Int("maxInflightRequests", tc.config.MaxInflightRequests),
 		zap.Duration("maxRequestTimeout", tc.config.MaxRequestTimeout),
@@ -350,31 +369,58 @@ func (tc *tunnelClient) setupRouter() error {
 	return nil
 }
 
-// initialRegister establishes the initial server address + token, either from
-// env vars (BROKER_SERVER_URL + BROKER_TOKEN) or by registering with the Cortex
-// API. Retries with backoff until success or shutdown.
-func (tc *tunnelClient) initialRegister() error {
+// resolveRegistration returns the tunnel token and server address, either
+// from the BROKER_SERVER_URL/BROKER_TOKEN env override (fromEnv=true, no
+// API call) or from a Cortex API registration. Shared by initialRegister
+// and reregister so env-var handling and address precedence live in one
+// place.
+func (tc *tunnelClient) resolveRegistration() (token, serverAddr string, fromEnv bool, err error) {
 	envServerURL := os.Getenv("BROKER_SERVER_URL")
 	envToken := os.Getenv("BROKER_TOKEN")
 
 	if envServerURL != "" && envToken != "" {
-		tc.logger.Info("Using direct connection config (skipping registration)",
-			zap.String("serverUrl", envServerURL),
-		)
-		tc.mu.Lock()
-		tc.currentToken = envToken
-		tc.currentServerAddr = stripScheme(envServerURL)
-		tc.mu.Unlock()
-		return nil
+		return envToken, envServerURL, true, nil
 	}
 
+	regInfo, err := tc.registration.Register(tc.integrationInfo.Integration, tc.integrationInfo.Alias)
+	if err != nil {
+		return "", "", false, err
+	}
+	tc.logger.Info("Registered with Cortex API", zap.String("serverUri", regInfo.ServerUri))
+
+	serverAddr = regInfo.ServerUri
+	if envServerURL != "" {
+		serverAddr = envServerURL
+	}
+	return regInfo.Token, serverAddr, false, nil
+}
+
+// storeRegistration records the resolved token/address and reports whether
+// the token rotated. It also stamps lastRegisterAt for the forced-
+// re-register rate limit.
+func (tc *tunnelClient) storeRegistration(token, serverAddr string) (rotated bool) {
+	tc.mu.Lock()
+	rotated = tc.currentToken != "" && tc.currentToken != token
+	tc.currentToken = token
+	tc.currentServerAddr = stripScheme(serverAddr)
+	tc.mu.Unlock()
+
+	tc.registerMu.Lock()
+	tc.lastRegisterAt = time.Now()
+	tc.registerMu.Unlock()
+	return rotated
+}
+
+// initialRegister establishes the initial server address + token, retrying
+// with backoff until success or shutdown.
+func (tc *tunnelClient) initialRegister() error {
 	backoff := tc.config.FailWaitTime
 	if backoff <= 0 {
 		backoff = time.Second
 	}
 
 	for tc.running.Load() && tc.parentCtx.Err() == nil {
-		regInfo, err := tc.registration.Register(tc.integrationInfo.Integration, tc.integrationInfo.Alias)
+		token, serverAddr, fromEnv, err := tc.resolveRegistration()
 		if err != nil {
 			tc.logger.Error("Registration failed, retrying",
 				zap.Error(err), zap.Duration("backoff", backoff))
@@ -387,22 +433,11 @@ func (tc *tunnelClient) initialRegister() error {
 			continue
 		}
 
-		tc.logger.Info("Registered with Cortex API", zap.String("serverUri", regInfo.ServerUri))
-
-		serverAddr := regInfo.ServerUri
-		if envServerURL != "" {
-			serverAddr = envServerURL
+		if fromEnv {
+			tc.logger.Info("Using direct connection config (skipping registration)",
+				zap.String("serverUrl", serverAddr))
 		}
-
-		tc.mu.Lock()
-		tc.currentToken = regInfo.Token
-		tc.currentServerAddr = stripScheme(serverAddr)
-		tc.mu.Unlock()
-
-		tc.registerMu.Lock()
-		tc.lastRegisterAt = time.Now()
-		tc.registerMu.Unlock()
-
+		tc.storeRegistration(token, serverAddr)
 		return nil
 	}
 	return tc.parentCtx.Err()
@@ -430,43 +465,28 @@ func (tc *tunnelClient) periodicReregister() {
 	}
 }
 
-// reregister calls Cortex Registration.Register() and updates currentToken /
-// currentServerAddr. When force=true, the call is rate-limited so an auth-error
-// storm doesn't hammer Cortex.
+// reregister refreshes the registration and, on token rotation, cycles all
+// streams so they reconnect with the new token. When force=true, the call
+// is rate-limited so an auth-error storm doesn't hammer Cortex.
 func (tc *tunnelClient) reregister(reason string, force bool) {
-	envServerURL := os.Getenv("BROKER_SERVER_URL")
-	envToken := os.Getenv("BROKER_TOKEN")
-	if envServerURL != "" && envToken != "" {
-		// Direct-config mode — nothing to refresh.
-		return
-	}
-
 	tc.registerMu.Lock()
-	defer tc.registerMu.Unlock()
-
-	if force && time.Since(tc.lastRegisterAt) < forcedReregisterRateLimit {
+	rateLimited := force && time.Since(tc.lastRegisterAt) < forcedReregisterRateLimit
+	tc.registerMu.Unlock()
+	if rateLimited {
 		return
 	}
 
-	regInfo, err := tc.registration.Register(tc.integrationInfo.Integration, tc.integrationInfo.Alias)
+	token, serverAddr, fromEnv, err := tc.resolveRegistration()
 	if err != nil {
 		tc.logger.Warn("Re-registration failed", zap.String("reason", reason), zap.Error(err))
 		return
 	}
-	tc.lastRegisterAt = time.Now()
-
-	serverAddr := regInfo.ServerUri
-	if envServerURL != "" {
-		serverAddr = envServerURL
+	if fromEnv {
+		// Direct-config mode — nothing to refresh.
+		return
 	}
 
-	tc.mu.Lock()
-	oldToken := tc.currentToken
-	tc.currentToken = regInfo.Token
-	tc.currentServerAddr = stripScheme(serverAddr)
-	tc.mu.Unlock()
-
-	if oldToken != regInfo.Token {
+	if tc.storeRegistration(token, serverAddr) {
 		tc.tokenRotationsTotal.Inc()
 		tc.logger.Info("Token rotated; cycling streams", zap.String("reason", reason))
 		tc.cycleAllStreams()
@@ -475,11 +495,9 @@ func (tc *tunnelClient) reregister(reason string, force bool) {
 
 func (tc *tunnelClient) cycleAllStreams() {
 	tc.mu.Lock()
-	streams := make([]*tunnelStream, 0, len(tc.slots))
-	for _, s := range tc.slots {
-		if s != nil {
-			streams = append(streams, s)
-		}
+	streams := make([]*tunnelStream, 0, len(tc.streams))
+	for s := range tc.streams {
+		streams = append(streams, s)
 	}
 	tc.mu.Unlock()
 	for _, s := range streams {
@@ -512,48 +530,206 @@ func (tc *tunnelClient) releaseServerSlot(serverID string) {
 	}
 }
 
-func (tc *tunnelClient) setSlot(index int, ts *tunnelStream) {
+func (tc *tunnelClient) addStream(ts *tunnelStream) {
 	tc.mu.Lock()
-	tc.slots[index] = ts
+	tc.streams[ts] = struct{}{}
 	tc.mu.Unlock()
 }
 
-func (tc *tunnelClient) clearSlot(index int, ts *tunnelStream) {
+func (tc *tunnelClient) removeStream(ts *tunnelStream) {
 	tc.mu.Lock()
-	if index < len(tc.slots) && tc.slots[index] == ts {
-		tc.slots[index] = nil
-	}
+	delete(tc.streams, ts)
 	tc.mu.Unlock()
 	tc.releaseServerSlot(ts.serverID)
 	tc.connectionsActive.WithLabelValues(ts.serverID).Dec()
 }
 
-// manageStream owns one tunnel slot and keeps a stream open for its lifetime.
-// Unifies initial-connect, normal recv-loop, and reconnect into a single retry
-// loop so first-connect failures recover the same way as mid-life ones.
-func (tc *tunnelClient) manageStream(index int) {
+// minSlots returns the configured pool floor (at least 1).
+func (tc *tunnelClient) minSlots() int {
+	if tc.config.MinTunnelSlots < 1 {
+		return 1
+	}
+	return tc.config.MinTunnelSlots
+}
+
+// effectiveMaxSlots is the configured ceiling clamped to the
+// server-announced per-token cap, never below the floor.
+func (tc *tunnelClient) effectiveMaxSlots() int {
+	max := tc.config.MaxTunnelSlots
+	if max < 1 {
+		max = 1
+	}
+	if serverMax := int(tc.serverMaxStreams.Load()); serverMax > 0 && serverMax < max {
+		max = serverMax
+	}
+	if min := tc.minSlots(); max < min {
+		max = min
+	}
+	return max
+}
+
+// ensureWorkers spawns manageStream workers until the live worker count
+// meets targetSlots.
+func (tc *tunnelClient) ensureWorkers() {
+	if !tc.running.Load() {
+		return
+	}
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+	target := int(tc.targetSlots.Load())
+	for tc.runningWorkers < target {
+		tc.runningWorkers++
+		tc.slotSeq++
+		id := tc.slotSeq
+		tc.wg.Add(1)
+		go tc.manageStream(id)
+	}
+}
+
+// tryRetireWorker reports whether the calling worker should exit because
+// the live worker count exceeds the target; it deregisters the worker when
+// retiring.
+func (tc *tunnelClient) tryRetireWorker() bool {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+	if tc.runningWorkers > int(tc.targetSlots.Load()) {
+		tc.runningWorkers--
+		return true
+	}
+	return false
+}
+
+// workerExited deregisters a worker that is exiting for reasons other than
+// retirement (shutdown).
+func (tc *tunnelClient) workerExited() {
+	tc.mu.Lock()
+	tc.runningWorkers--
+	tc.mu.Unlock()
+}
+
+// maybeGrow is called when a call is admitted (the moment a slot goes
+// busy). It keeps a free-capacity watermark: when fewer than 25% of
+// connected streams (and fewer than one) are idle, the pool grows by
+// ~half its size toward the effective max, at most once per growCooldown.
+//
+// This is deliberately client-side: a slot only becomes busy because the
+// server dispatched onto it, so the client sees saturation at the same
+// instant the server does — no negotiation round-trip needed.
+func (tc *tunnelClient) maybeGrow() {
+	last := tc.lastGrowAt.Load()
+	now := time.Now().UnixNano()
+	if now-last < int64(growCooldown) {
+		return
+	}
+
+	tc.mu.Lock()
+	active := len(tc.streams)
+	running := tc.runningWorkers
+	tc.mu.Unlock()
+
+	busy := int(tc.busySlots.Load())
+	idle := active - busy
+	watermark := active / 4
+	if watermark < 1 {
+		watermark = 1
+	}
+	if idle >= watermark {
+		return
+	}
+
+	effMax := tc.effectiveMaxSlots()
+	if running >= effMax {
+		return
+	}
+	step := active / 2
+	if step < 1 {
+		step = 1
+	}
+	newTarget := running + step
+	if newTarget > effMax {
+		newTarget = effMax
+	}
+
+	if !tc.lastGrowAt.CompareAndSwap(last, now) {
+		return // another call won the growth race within the cooldown
+	}
+	tc.targetSlots.Store(int32(newTarget))
+	tc.logger.Info("Growing tunnel pool",
+		zap.Int("connected", active),
+		zap.Int("busy", busy),
+		zap.Int("newTarget", newTarget),
+	)
+	tc.ensureWorkers()
+}
+
+// watermarkLoop re-evaluates the free-capacity watermark once per
+// growth-cooldown period. Admission-time checks (maybeGrow in startCall)
+// react instantly to new load, but under sustained saturation with
+// long-running calls no new calls are admitted — this loop keeps growth
+// converging toward max until idle capacity reappears.
+func (tc *tunnelClient) watermarkLoop() {
+	defer tc.wg.Done()
+	ticker := time.NewTicker(growCooldown)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-tc.parentCtx.Done():
+			return
+		case <-ticker.C:
+			tc.maybeGrow()
+		}
+	}
+}
+
+// noteIdleRetire is called by a slot watchdog when its stream has been
+// idle past SlotIdleTimeout. It lowers the target (never below min) so
+// the calling worker retires via tryRetireWorker.
+func (tc *tunnelClient) noteIdleRetire() bool {
+	min := int32(tc.minSlots())
+	for {
+		t := tc.targetSlots.Load()
+		if t <= min {
+			return false
+		}
+		if tc.targetSlots.CompareAndSwap(t, t-1) {
+			return true
+		}
+	}
+}
+
+// manageStream owns one tunnel slot worker: it keeps a stream open,
+// reconnecting on failure, until shutdown or retirement (the watermark
+// pool lowered targetSlots below the live worker count).
+func (tc *tunnelClient) manageStream(id int) {
 	defer tc.wg.Done()
 
 	backoff := minBackoff
 	first := true
 
 	for tc.running.Load() && tc.parentCtx.Err() == nil {
+		if tc.tryRetireWorker() {
+			tc.logger.Debug("Tunnel slot retired", zap.Int("slot", id))
+			return
+		}
+
 		// Apply backoff before retries (not before the first attempt).
 		if !first {
 			tc.reconnectsTotal.WithLabelValues("").Inc()
 			select {
 			case <-time.After(jittered(backoff)):
 			case <-tc.parentCtx.Done():
+				tc.workerExited()
 				return
 			}
 			backoff = nextBackoff(backoff)
 		}
 		first = false
 
-		err := tc.runOneStream(index)
+		err := tc.runOneStream(id)
 		if err == nil || tc.parentCtx.Err() != nil {
 			// Clean shutdown or no error path (shouldn't really happen — runOneStream
 			// returns an error whenever the stream ends).
+			tc.workerExited()
 			return
 		}
 
@@ -565,13 +741,20 @@ func (tc *tunnelClient) manageStream(index int) {
 
 		// Server-cap hit: just back off and try again (LB may give a different instance).
 		if errors.Is(err, errServerCapHit) {
-			tc.logger.Debug("Server cap hit; retrying", zap.Int("index", index))
+			tc.logger.Debug("Server cap hit; retrying", zap.Int("slot", id))
+			continue
+		}
+
+		// Per-token cap: the server refuses more streams for this token.
+		// Clamp the pool so we stop asking, and retire if now above target.
+		if status.Code(err) == codes.ResourceExhausted || (ce != nil && status.Code(ce.cause) == codes.ResourceExhausted) {
+			tc.handleTokenCap(id)
 			continue
 		}
 
 		if status.Code(err) == codes.Unauthenticated || (ce != nil && status.Code(ce.cause) == codes.Unauthenticated) {
 			tc.logger.Warn("Auth failure; forcing re-registration",
-				zap.Int("index", index), zap.Error(err))
+				zap.Int("slot", id), zap.Error(err))
 			tc.reregister("unauthenticated", true)
 			tc.consecFailures.Store(0)
 			// keep backoff short for auth recovery
@@ -581,26 +764,54 @@ func (tc *tunnelClient) manageStream(index int) {
 
 		if tc.consecFailures.Add(1) >= failuresBeforeReregister {
 			tc.logger.Warn("Repeated open failures; forcing re-registration",
-				zap.Int("index", index), zap.Int32("consecutive", tc.consecFailures.Load()))
+				zap.Int("slot", id), zap.Int32("consecutive", tc.consecFailures.Load()))
 			tc.reregister("repeated-failures", true)
 			tc.consecFailures.Store(0)
 		}
 
 		tc.logger.Warn("Tunnel slot stream ended; will retry",
-			zap.Int("index", index), zap.Error(err), zap.Duration("nextBackoff", backoff))
+			zap.Int("slot", id), zap.Error(err), zap.Duration("nextBackoff", backoff))
+	}
+	tc.workerExited()
+}
+
+// handleTokenCap reacts to a ResourceExhausted stream rejection: lower the
+// pool target to the number of currently connected streams (never below
+// min) so workers above it retire instead of hammering the server.
+func (tc *tunnelClient) handleTokenCap(id int) {
+	tc.mu.Lock()
+	connected := len(tc.streams)
+	tc.mu.Unlock()
+
+	min := tc.minSlots()
+	newTarget := connected
+	if newTarget < min {
+		newTarget = min
+	}
+	if int(tc.targetSlots.Load()) > newTarget {
+		tc.targetSlots.Store(int32(newTarget))
+		tc.logger.Info("Server per-token stream cap hit; clamping pool",
+			zap.Int("slot", id), zap.Int("newTarget", newTarget))
+	}
+	// Remember the cap so future growth respects it even before the next
+	// ServerHello announcement.
+	if cur := tc.serverMaxStreams.Load(); cur == 0 || int(cur) > newTarget {
+		tc.serverMaxStreams.Store(int32(newTarget))
 	}
 }
 
 // runOneStream opens a fresh ClientConn, handshakes, and runs streamLoop until
 // the stream ends. Returns the terminating error (or nil on clean shutdown).
-func (tc *tunnelClient) runOneStream(index int) error {
-	sc, err := tc.openSlot(index)
+func (tc *tunnelClient) runOneStream(id int) error {
+	sc, err := tc.openSlot(id)
 	if err != nil {
 		return err
 	}
-	tc.setSlot(index, sc.ts)
+	tc.addStream(sc.ts)
+	watchdogDone := make(chan struct{})
 	defer func() {
-		tc.clearSlot(index, sc.ts)
+		close(watchdogDone)
+		tc.removeStream(sc.ts)
 		sc.ts.cancel()
 		if sc.ts.conn != nil {
 			sc.ts.conn.Close()
@@ -610,12 +821,79 @@ func (tc *tunnelClient) runOneStream(index int) error {
 	// Success — reset the global failure counter.
 	tc.consecFailures.Store(0)
 
+	go tc.idleWatchdog(sc.ts, watchdogDone)
+
 	return tc.streamLoop(sc)
+}
+
+// idleWatchdog retires a slot whose stream has carried no call for
+// SlotIdleTimeout while the pool is above its floor, and also enforces a
+// lowered target promptly (a healthy stream otherwise only re-checks
+// retirement after it ends). Jittered so slots don't all retire at once
+// after a burst.
+func (tc *tunnelClient) idleWatchdog(ts *tunnelStream, done <-chan struct{}) {
+	idleTimeout := tc.config.SlotIdleTimeout
+	if idleTimeout <= 0 {
+		idleTimeout = 10 * time.Minute
+	}
+	interval := idleTimeout / 4
+	if interval > 30*time.Second {
+		interval = 30 * time.Second
+	}
+	if interval < 50*time.Millisecond {
+		interval = 50 * time.Millisecond
+	}
+
+	ticker := time.NewTicker(jittered(interval))
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-done:
+			return
+		case <-tc.parentCtx.Done():
+			return
+		case <-ticker.C:
+			if ts.inflight.Load() > 0 {
+				continue
+			}
+
+			// Target already below the live worker count (watermark shrink
+			// or token-cap clamp): cancel so the worker loop re-checks
+			// retirement without waiting for the stream to die naturally.
+			tc.mu.Lock()
+			excess := tc.runningWorkers > int(tc.targetSlots.Load())
+			tc.mu.Unlock()
+			if excess {
+				ts.cancel()
+				return
+			}
+
+			idleFor := time.Since(time.Unix(0, ts.lastCallAt.Load()))
+			if idleFor < idleTimeout {
+				continue
+			}
+			if !tc.noteIdleRetire() {
+				continue // already at the floor
+			}
+			// Small race: the server may dispatch onto this stream between
+			// the inflight check and cancel; the dispatcher fails that call
+			// over to its caller. Idle-retired slots are the least likely
+			// dispatch targets (AcquireIdleStream prefers recent success),
+			// so this window is acceptably rare.
+			tc.logger.Info("Retiring idle tunnel slot",
+				zap.Int("slot", ts.id),
+				zap.Duration("idleFor", idleFor),
+			)
+			ts.cancel()
+			return
+		}
+	}
 }
 
 // openSlot dials, performs the gRPC handshake, and acquires a server-id slot.
 // Returns errServerCapHit if the slot cap is exceeded for the server we landed on.
-func (tc *tunnelClient) openSlot(index int) (*streamCtx, error) {
+func (tc *tunnelClient) openSlot(id int) (*streamCtx, error) {
 	token, serverAddr := tc.getCurrentConfig()
 	if token == "" || serverAddr == "" {
 		return nil, newConnectErr("config", errors.New("no registration token/address"))
@@ -682,10 +960,14 @@ func (tc *tunnelClient) openSlot(index int) (*streamCtx, error) {
 		return nil, newConnectErr("recv_hello", errors.New("expected ServerHello"))
 	}
 
+	if serverHello.MaxStreams > 0 {
+		tc.serverMaxStreams.Store(serverHello.MaxStreams)
+	}
+
 	if !tc.acquireServerSlot(serverHello.ServerId) {
 		tc.logger.Info("Server stream cap reached; will retry to land on a different instance",
 			zap.String("serverId", serverHello.ServerId),
-			zap.Int("index", index),
+			zap.Int("slot", id),
 			zap.Int("cap", tc.config.MaxStreamsPerServer),
 		)
 		cancel()
@@ -694,19 +976,20 @@ func (tc *tunnelClient) openSlot(index int) (*streamCtx, error) {
 	}
 
 	ts := &tunnelStream{
-		index:    index,
+		id:       id,
 		streamID: serverHello.StreamId,
 		serverID: serverHello.ServerId,
 		conn:     conn,
 		cancel:   cancel,
 	}
+	ts.lastCallAt.Store(time.Now().UnixNano())
 
 	tc.connectionsActive.WithLabelValues(ts.serverID).Inc()
 	tc.logger.Info("Tunnel stream established",
 		zap.String("streamId", ts.streamID),
 		zap.String("serverId", ts.serverID),
 		zap.Int32("heartbeatIntervalMs", serverHello.HeartbeatIntervalMs),
-		zap.Int("index", index),
+		zap.Int("slot", id),
 	)
 
 	return &streamCtx{
@@ -816,11 +1099,9 @@ func (tc *tunnelClient) Close() error {
 
 	tc.mu.Lock()
 	cancel := tc.cancelAll
-	streams := make([]*tunnelStream, 0, len(tc.slots))
-	for _, s := range tc.slots {
-		if s != nil {
-			streams = append(streams, s)
-		}
+	streams := make([]*tunnelStream, 0, len(tc.streams))
+	for s := range tc.streams {
+		streams = append(streams, s)
 	}
 	tc.cancelAll = nil
 	tc.mu.Unlock()
@@ -835,7 +1116,8 @@ func (tc *tunnelClient) Close() error {
 	tc.wg.Wait()
 
 	tc.mu.Lock()
-	tc.slots = nil
+	tc.streams = nil
+	tc.runningWorkers = 0
 	tc.serverStreamCounts = make(map[string]int)
 	tc.mu.Unlock()
 

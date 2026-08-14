@@ -10,10 +10,11 @@ import (
 )
 
 const (
-	DefaultGrpcPort          = 50052
-	DefaultHttpPort          = 8080
-	DefaultHeartbeatInterval = 30 * time.Second
-	DefaultMaxFrameBytes     = 1 << 20 // 1 MiB
+	DefaultGrpcPort           = 50052
+	DefaultHttpPort           = 8080
+	DefaultHeartbeatInterval  = 30 * time.Second
+	DefaultMaxFrameBytes      = 1 << 20 // 1 MiB
+	DefaultMaxStreamsPerToken = 64
 )
 
 type Config struct {
@@ -42,6 +43,11 @@ type Config struct {
 	// MaxFrameBytes is the maximum CallData payload size, announced to
 	// clients in ServerHello.
 	MaxFrameBytes int
+	// MaxStreamsPerToken caps concurrent tunnel streams per broker token
+	// (defensive: a runaway agent can't stampede). Announced to clients in
+	// ServerHello.max_streams; the (N+1)th stream is rejected with
+	// ResourceExhausted. 0 means unlimited.
+	MaxStreamsPerToken int
 }
 
 func (c Config) Print() {
@@ -68,6 +74,7 @@ func NewConfigFromEnv() Config {
 		ServerID:               getServerID(),
 		ReRegistrationInterval: 5 * time.Minute,
 		MaxFrameBytes:          DefaultMaxFrameBytes,
+		MaxStreamsPerToken:     DefaultMaxStreamsPerToken,
 	}
 
 	if v := os.Getenv("MAX_FRAME_BYTES"); v != "" {
@@ -76,6 +83,14 @@ func NewConfigFromEnv() Config {
 			panic(fmt.Errorf("invalid MAX_FRAME_BYTES: %w", err))
 		}
 		cfg.MaxFrameBytes = n
+	}
+
+	if v := os.Getenv("MAX_STREAMS_PER_TOKEN"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			panic(fmt.Errorf("invalid MAX_STREAMS_PER_TOKEN: %w", err))
+		}
+		cfg.MaxStreamsPerToken = n
 	}
 
 	if v := os.Getenv("GRPC_PORT"); v != "" {

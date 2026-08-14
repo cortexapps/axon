@@ -78,6 +78,10 @@ message ServerHello {
   // Maximum CallData payload size the server accepts. The client caps its
   // outgoing frames accordingly. 0 means the default (1 MiB).
   int32 max_frame_bytes = 4;
+  // Maximum concurrent streams the server allows per broker token,
+  // across all of the token's agents. The client clamps its slot-pool
+  // maximum accordingly. 0 means no announced cap.
+  int32 max_streams = 5;
 }
 
 // Heartbeat is sent by both sides to verify tunnel liveness while a stream

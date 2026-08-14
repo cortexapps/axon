@@ -181,11 +181,22 @@ func (tc *tunnelClient) startCall(sc *streamCtx, table *callTable, callID string
 		return
 	}
 
+	// Slot busy accounting drives the watermark pool: mark the slot busy
+	// for the call's duration, and check whether the pool should grow now
+	// that one more slot is occupied.
+	sc.ts.inflight.Add(1)
+	sc.ts.lastCallAt.Store(time.Now().UnixNano())
+	tc.busySlots.Add(1)
+	tc.maybeGrow()
+
 	go func() {
 		defer func() {
 			table.remove(callID)
 			cancel()
 			release()
+			tc.busySlots.Add(-1)
+			sc.ts.inflight.Add(-1)
+			sc.ts.lastCallAt.Store(time.Now().UnixNano())
 		}()
 		tc.runCall(ctx, sc, callID, start, bodyR)
 	}()

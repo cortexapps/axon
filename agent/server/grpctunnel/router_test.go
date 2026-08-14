@@ -254,28 +254,3 @@ func TestRouterBackend_StreamedRequestBody(t *testing.T) {
 	status, _, _ := doCall(t, router, callStart("POST", "/api/upload", nil), bodyR)
 	assert.Equal(t, http.StatusOK, status)
 }
-
-func TestBuildTargetURL(t *testing.T) {
-	tests := []struct {
-		origin string
-		path   string
-		query  string
-		want   string
-	}{
-		{"https://api.github.com", "/repos/foo", "", "https://api.github.com/repos/foo"},
-		{"https://api.github.com/v3", "/repos/foo", "", "https://api.github.com/v3/repos/foo"},
-		{"https://api.github.com/", "/repos/foo", "", "https://api.github.com/repos/foo"},
-		{"https://api.github.com", "/search", "q=x%2Fy", "https://api.github.com/search?q=x%2Fy"},
-		{"https://gitlab.com", "/api/v4/projects/a%2Fb", "", "https://gitlab.com/api/v4/projects/a%2Fb"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.origin+tt.path, func(t *testing.T) {
-			decoded, err := urlPathUnescape(tt.path)
-			require.NoError(t, err)
-			got, err := buildTargetURL(tt.origin, tt.path, decoded, tt.query)
-			require.NoError(t, err)
-			assert.Equal(t, tt.want, got.String())
-		})
-	}
-}

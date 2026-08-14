@@ -124,7 +124,7 @@
                 "BROKER_TOKEN": "4f49654b-000-0000-000-9deef1d9f2f6",
                 "CORTEX_TENANT_ID": "1",
                 "GRPC_INSECURE": "true",
-                "TUNNEL_COUNT": "1",
+                "AXON_GRPC_TUNNEL_MIN_SLOTS": "1",
                 "CORTEX_API_TOKEN": "abc-123"
             }
         },

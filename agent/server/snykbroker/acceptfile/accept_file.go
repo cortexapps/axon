@@ -377,4 +377,3 @@ func (a *AcceptFile) GetPrivateRules() []Rule {
 	}
 	return rules
 }
-

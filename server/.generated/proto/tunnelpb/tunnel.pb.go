@@ -399,6 +399,10 @@ type ServerHello struct {
 	// Maximum CallData payload size the server accepts. The client caps its
 	// outgoing frames accordingly. 0 means the default (1 MiB).
 	MaxFrameBytes int32 `protobuf:"varint,4,opt,name=max_frame_bytes,json=maxFrameBytes,proto3" json:"max_frame_bytes,omitempty"`
+	// Maximum concurrent streams the server allows per broker token,
+	// across all of the token's agents. The client clamps its slot-pool
+	// maximum accordingly. 0 means no announced cap.
+	MaxStreams    int32 `protobuf:"varint,5,opt,name=max_streams,json=maxStreams,proto3" json:"max_streams,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -457,6 +461,13 @@ func (x *ServerHello) GetHeartbeatIntervalMs() int32 {
 func (x *ServerHello) GetMaxFrameBytes() int32 {
 	if x != nil {
 		return x.MaxFrameBytes
+	}
+	return 0
+}
+
+func (x *ServerHello) GetMaxStreams() int32 {
+	if x != nil {
+		return x.MaxStreams
 	}
 	return 0
 }
@@ -775,8 +786,8 @@ func (x *CallData) GetPayload() []byte {
 	return nil
 }
 
-// CallEnd terminates a call direction normally. Exactly one terminal frame
-// (End or Cancel) is sent per call per direction.
+// CallEnd terminates a call direction normally. At most one End is sent
+// per call per direction.
 type CallEnd struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// HTTP trailers or gRPC status trailers (grpc-status, grpc-message,
@@ -824,11 +835,18 @@ func (x *CallEnd) GetTrailers() map[string]string {
 	return nil
 }
 
-// CallCancel aborts a call. When the agent sends it before its response
-// CallStart, code carries an HTTP status hint the server-side HTTP adapter
-// uses for the error response (e.g. 404 no matching accept-file rule,
-// 502 upstream unreachable, 503 agent at in-flight cap). 0 means
-// unspecified (the adapter picks).
+// CallCancel aborts a call. Unlike CallEnd it is a call-level control
+// frame, not a direction terminal: either side may send it at any point
+// in the call's life, including after its own CallEnd (e.g. the server
+// cancels a live response when its caller walks away). Receivers treat it
+// idempotently: stop producing frames for the call and release its
+// resources.
+//
+// When the agent sends it before its response CallStart, code carries an
+// HTTP status hint the server-side HTTP adapter uses for the error
+// response (e.g. 404 no matching accept-file rule, 502 upstream
+// unreachable, 503 agent at in-flight cap). 0 means unspecified (the
+// adapter picks).
 type CallCancel struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Reason        string                 `protobuf:"bytes,1,opt,name=reason,proto3" json:"reason,omitempty"`
@@ -908,12 +926,14 @@ const file_tunnel_proto_rawDesc = "" +
 	"\bmetadata\x18\b \x03(\v20.cortex.axon.tunnel.v2.ClientHello.MetadataEntryR\bmetadata\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xa3\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xc4\x01\n" +
 	"\vServerHello\x12\x1b\n" +
 	"\tserver_id\x18\x01 \x01(\tR\bserverId\x12\x1b\n" +
 	"\tstream_id\x18\x02 \x01(\tR\bstreamId\x122\n" +
 	"\x15heartbeat_interval_ms\x18\x03 \x01(\x05R\x13heartbeatIntervalMs\x12&\n" +
-	"\x0fmax_frame_bytes\x18\x04 \x01(\x05R\rmaxFrameBytes\".\n" +
+	"\x0fmax_frame_bytes\x18\x04 \x01(\x05R\rmaxFrameBytes\x12\x1f\n" +
+	"\vmax_streams\x18\x05 \x01(\x05R\n" +
+	"maxStreams\".\n" +
 	"\tHeartbeat\x12!\n" +
 	"\ftimestamp_ms\x18\x01 \x01(\x03R\vtimestampMs\"\x8e\x02\n" +
 	"\tCallFrame\x12\x17\n" +

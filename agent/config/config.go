@@ -97,8 +97,16 @@ type AgentConfig struct {
 
 	// RelayMode selects the tunnel implementation: "snyk-broker" or "grpc-tunnel".
 	RelayMode string
-	// TunnelCount is the number of parallel gRPC tunnel streams to open (grpc-tunnel mode only).
-	TunnelCount int
+	// MinTunnelSlots is the number of tunnel streams an idle agent keeps
+	// open (grpc-tunnel mode only). The pool grows toward MaxTunnelSlots
+	// under load (watermark model) and shrinks back to this floor.
+	MinTunnelSlots int
+	// MaxTunnelSlots is the ceiling on concurrent tunnel streams. Clamped
+	// at runtime to the server-announced per-token cap.
+	MaxTunnelSlots int
+	// SlotIdleTimeout is how long a slot above MinTunnelSlots must sit
+	// without carrying a call before it retires.
+	SlotIdleTimeout time.Duration
 	// MaxStreamsPerServer caps how many streams may land on the same server_id.
 	// Default 2; 0 means unlimited. Replaces strict server-id dedup so a small
 	// server pool still gets independent-TCP redundancy.
@@ -365,13 +373,34 @@ func NewAgentEnvConfig() AgentConfig {
 		cfg.RelayMode = relayMode
 	}
 
-	cfg.TunnelCount = 32
-	if tunnelCount := envFirst("AXON_GRPC_TUNNEL_SLOTS", "TUNNEL_COUNT"); tunnelCount != "" {
-		tc, err := strconv.Atoi(tunnelCount)
+	cfg.MinTunnelSlots = 4
+	if v := os.Getenv("AXON_GRPC_TUNNEL_MIN_SLOTS"); v != "" {
+		n, err := strconv.Atoi(v)
 		if err != nil {
 			panic(err)
 		}
-		cfg.TunnelCount = tc
+		cfg.MinTunnelSlots = n
+	}
+
+	cfg.MaxTunnelSlots = 32
+	if v := os.Getenv("AXON_GRPC_TUNNEL_MAX_SLOTS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			panic(err)
+		}
+		cfg.MaxTunnelSlots = n
+	}
+	if cfg.MaxTunnelSlots < cfg.MinTunnelSlots {
+		cfg.MaxTunnelSlots = cfg.MinTunnelSlots
+	}
+
+	cfg.SlotIdleTimeout = 10 * time.Minute
+	if v := os.Getenv("AXON_GRPC_TUNNEL_SLOT_IDLE_TIMEOUT"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			panic(err)
+		}
+		cfg.SlotIdleTimeout = d
 	}
 
 	if grpcInsecure := envFirst("AXON_GRPC_TUNNEL_INSECURE", "GRPC_INSECURE"); grpcInsecure == "true" {

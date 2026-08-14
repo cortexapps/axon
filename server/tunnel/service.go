@@ -2,6 +2,7 @@ package tunnel
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -48,6 +49,7 @@ func NewService(
 	brokerClient *broker.Client,
 	m *metrics.Metrics,
 ) *Service {
+	registry.SetMaxStreamsPerToken(cfg.MaxStreamsPerToken)
 	return &Service{
 		config:       cfg,
 		logger:       logger,
@@ -140,6 +142,7 @@ func (s *Service) Tunnel(stream pb.TunnelService_TunnelServer) error {
 				StreamId:            streamID,
 				HeartbeatIntervalMs: int32(s.config.HeartbeatInterval.Milliseconds()),
 				MaxFrameBytes:       int32(s.config.MaxFrameBytes),
+				MaxStreams:          int32(s.config.MaxStreamsPerToken),
 			},
 		},
 	})
@@ -150,6 +153,13 @@ func (s *Service) Tunnel(stream pb.TunnelService_TunnelServer) error {
 
 	// Register in client registry (now safe — handshake is done).
 	if err := s.registry.Register(token, identity, handle); err != nil {
+		if errors.Is(err, ErrTokenStreamCap) {
+			s.logger.Warn("Rejecting stream: token at stream cap",
+				zap.String("tenantId", identity.TenantID),
+				zap.Int("cap", s.config.MaxStreamsPerToken),
+			)
+			return status.Error(codes.ResourceExhausted, err.Error())
+		}
 		s.logger.Error("Failed to register client", zap.Error(err))
 		return err
 	}
