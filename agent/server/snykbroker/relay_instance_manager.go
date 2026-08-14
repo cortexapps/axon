@@ -691,7 +691,7 @@ func (r *relayInstanceManager) setHttpProxyEnvVars(brokerEnv map[string]string) 
 	if proxyStrictMode := os.Getenv("PROXY_STRICT_MODE"); proxyStrictMode == "true" {
 		brokerEnv["HTTP_PROXY"] = "http://not-a-real-proxy:1234"
 		brokerEnv["HTTPS_PROXY"] = "http://not-a-real-proxy:1234"
-		brokerEnv["NO_PROXY"] = "localhost"
+		brokerEnv["NO_PROXY"] = "localhost,127.0.0.1"
 		r.logger.Warn("PROXY_STRICT_MODE is enabled, setting HTTP_PROXY and HTTPS_PROXY to a dummy value")
 		return
 	}
