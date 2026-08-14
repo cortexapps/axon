@@ -733,6 +733,14 @@ func (tc *tunnelClient) manageStream(id int) {
 			return
 		}
 
+		// A stream cancelled for retirement (idle watchdog or watermark
+		// shrink) ends with a Canceled error; retire quietly instead of
+		// logging a reconnect warning.
+		if tc.tryRetireWorker() {
+			tc.logger.Debug("Tunnel slot retired", zap.Int("slot", id))
+			return
+		}
+
 		// Classify error and react.
 		var ce *connectError
 		if errors.As(err, &ce) {
@@ -842,6 +850,17 @@ func (tc *tunnelClient) idleWatchdog(ts *tunnelStream, done <-chan struct{}) {
 	}
 	if interval < 50*time.Millisecond {
 		interval = 50 * time.Millisecond
+	}
+
+	// Random initial phase so slots created in the same growth burst don't
+	// all evaluate the idle threshold in the same instant and retire as a
+	// thundering herd.
+	select {
+	case <-done:
+		return
+	case <-tc.parentCtx.Done():
+		return
+	case <-time.After(time.Duration(rand.Int64N(int64(interval)))):
 	}
 
 	ticker := time.NewTicker(jittered(interval))

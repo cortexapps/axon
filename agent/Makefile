@@ -113,3 +113,7 @@ run: proto
 
 
 .PHONY: setup test build 
+
+load-test:
+	cd test/load && ./load_test.sh
+.PHONY: load-test
