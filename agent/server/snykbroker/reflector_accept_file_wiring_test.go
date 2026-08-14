@@ -11,7 +11,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
-	"go.uber.org/zap/zaptest"
 )
 
 // renderEnv is the reflector render step in isolation: a manager with only the
@@ -23,12 +22,12 @@ type renderEnv struct {
 }
 
 func newRenderEnv(t *testing.T, mode config.RelayReflectorMode) *renderEnv {
-	logger := zaptest.NewLogger(t)
+	logger := newTestLogger(t)
 	cfg := config.AgentConfig{
 		HttpRelayReflectorMode:    mode,
 		ReflectorWebSocketUpgrade: true,
 	}
-	rr := NewRegistrationReflector(RegistrationReflectorParams{
+	rr := newReflectorWithDrain(t, RegistrationReflectorParams{
 		Logger:   logger,
 		Registry: prometheus.NewRegistry(),
 		Config:   cfg,
@@ -40,105 +39,107 @@ func newRenderEnv(t *testing.T, mode config.RelayReflectorMode) *renderEnv {
 	}
 }
 
-func (e *renderEnv) render(t *testing.T, content string) {
+func (e *renderEnv) render(t *testing.T, content string) error {
 	t.Helper()
 	af, err := acceptfile.NewAcceptFile([]byte(content), e.mgr.config, e.mgr.logger)
 	require.NoError(t, err)
 	_, err = af.Render(zap.NewNop(), e.mgr.reflectorRenderStep)
-	require.NoError(t, err)
+	return err
 }
 
-// The end-to-end proof that an accept file can switch retargeting on: the
-// declared rule retargets, and a rule alongside it that declares nothing does
-// not, from the same render pass.
-func TestRenderOptsRuleIntoDynamicTargets(t *testing.T) {
+// The end-to-end proof that an accept file can declare a hostname family: the
+// wildcard rule registers as one, and a concrete rule rendered alongside it in
+// the same pass does not.
+func TestRenderRegistersWildcardOrigin(t *testing.T) {
 	env := newRenderEnv(t, config.RelayReflectorAllTraffic)
-	optedIn := newRecordingBackend(t, "opted-in")
 	plain := newRecordingBackend(t, "plain")
-	retarget := newRecordingBackend(t, "retargeted")
 
-	env.render(t, fmt.Sprintf(`{"private": [
-		{"method": "any", "origin": "%s", "path": "/*", "dynamicTargetHosts": ["127.0.0.1"]},
+	require.NoError(t, env.render(t, fmt.Sprintf(`{"private": [
+		{"method": "any", "origin": "https://*.googleapis.com", "path": "/*"},
 		{"method": "any", "origin": "%s", "path": "/*"}
-	]}`, optedIn.server.URL, plain.server.URL))
+	]}`, plain.server.URL)))
 
-	optedInURI, err := env.reflector.getUriForTarget(optedIn.server.URL)
+	wildcardURI, err := env.reflector.getUriForTarget("https://*.googleapis.com")
 	require.NoError(t, err)
+	wildcardEntry, _, err := env.reflector.parseTargetUri(proxyPath(t, wildcardURI))
+	require.NoError(t, err)
+	require.NotNil(t, wildcardEntry.wildcard)
+
 	plainURI, err := env.reflector.getUriForTarget(plain.server.URL)
 	require.NoError(t, err)
-
-	// the opted-in rule honors the header
-	req := httptest.NewRequest("GET", proxyPath(t, optedInURI)+"/v1/things", nil)
-	req.Header.Set(HeaderRelayTargetHost, retarget.hostPort(t))
-	rec := httptest.NewRecorder()
-	env.reflector.ServeHTTP(rec, req)
-	require.Equal(t, http.StatusOK, rec.Code)
-	require.Equal(t, "retargeted", rec.Body.String())
-
-	// the rule that declared nothing ignores it and passes it through
-	req = httptest.NewRequest("GET", proxyPath(t, plainURI)+"/v1/things", nil)
-	req.Header.Set(HeaderRelayTargetHost, retarget.hostPort(t))
-	rec = httptest.NewRecorder()
-	env.reflector.ServeHTTP(rec, req)
-	require.Equal(t, http.StatusOK, rec.Code)
-	require.Equal(t, "plain", rec.Body.String())
-
-	hits, _, header := plain.snapshot()
-	require.Equal(t, 1, hits)
-	require.Equal(t, retarget.hostPort(t), header.Get(HeaderRelayTargetHost))
+	plainEntry, _, err := env.reflector.parseTargetUri(proxyPath(t, plainURI))
+	require.NoError(t, err)
+	require.Nil(t, plainEntry.wildcard)
 }
 
-// The allowlist must come from the accept file, not from anywhere permissive
-// by default.
-func TestRenderDynamicTargetsEnforcesDeclaredAllowlist(t *testing.T) {
+// The origin is the whole policy, so a host outside it is refused even though
+// the rule is the one that opted into a family.
+func TestRenderedWildcardEnforcesItsOrigin(t *testing.T) {
 	env := newRenderEnv(t, config.RelayReflectorAllTraffic)
-	backend := newRecordingBackend(t, "a")
 	other := newRecordingBackend(t, "b")
 
-	env.render(t, fmt.Sprintf(`{"private": [
-		{"method": "any", "origin": "%s", "path": "/*", "dynamicTargetHosts": ["*.googleapis.com"]}
-	]}`, backend.server.URL))
+	require.NoError(t, env.render(t, `{"private": [
+		{"method": "any", "origin": "https://*.googleapis.com", "path": "/*"}
+	]}`))
 
-	uri, err := env.reflector.getUriForTarget(backend.server.URL)
+	uri, err := env.reflector.getUriForTarget("https://*.googleapis.com")
 	require.NoError(t, err)
 
 	req := httptest.NewRequest("GET", proxyPath(t, uri)+"/v1/things", nil)
-	req.Header.Set(HeaderRelayTargetHost, other.hostPort(t))
+	req.Header.Set(HeaderTargetHost, other.hostPort(t))
 	rec := httptest.NewRecorder()
 	env.reflector.ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusForbidden, rec.Code)
+	require.Contains(t, rec.Body.String(), ErrClassDestinationRejected)
 	hits, _, _ := other.snapshot()
 	require.Equal(t, 0, hits)
 }
 
-// Retargeting only exists on the reflector path, so declaring it with the
+// A malformed policy has to stop the agent at startup rather than register a
+// rule that can never route.
+func TestRenderRejectsMalformedWildcardOrigin(t *testing.T) {
+	for name, origin := range map[string]string{
+		"public suffix": "https://*.com",
+		"plaintext":     "http://*.googleapis.com",
+		"partial label": "https://a*.googleapis.com",
+	} {
+		t.Run(name, func(t *testing.T) {
+			env := newRenderEnv(t, config.RelayReflectorAllTraffic)
+			err := env.render(t, fmt.Sprintf(`{"private": [
+				{"method": "any", "origin": %q, "path": "/*"}
+			]}`, origin))
+			require.Error(t, err)
+		})
+	}
+}
+
+// Wildcard routing only exists on the reflector path, so declaring it with the
 // reflector off has to fail loudly rather than be quietly dropped.
-func TestRenderRejectsDynamicTargetsWithReflectorDisabled(t *testing.T) {
+func TestRenderRejectsWildcardOriginWithReflectorDisabled(t *testing.T) {
 	env := newRenderEnv(t, config.RelayReflectorDisabled)
 	af, err := acceptfile.NewAcceptFile([]byte(`{"private": [
-		{"method": "any", "origin": "https://a.googleapis.com", "path": "/*",
-		 "dynamicTargetHosts": ["*.googleapis.com"]}
+		{"method": "any", "origin": "https://*.googleapis.com", "path": "/*"}
 	]}`), env.mgr.config, env.mgr.logger)
 	require.NoError(t, err)
 
 	require.PanicsWithValue(t,
-		"ENABLE_RELAY_REFLECTOR must be set to 'all' or 'traffic' to use dynamicTargetHosts in accept files",
+		"ENABLE_RELAY_REFLECTOR must be set to 'all' or 'traffic' to use a wildcard origin in accept files",
 		func() { _, _ = af.Render(zap.NewNop(), env.mgr.reflectorRenderStep) })
 }
 
-// A rule without the key must be untouched by any of this.
-func TestRenderLeavesPlainRuleWithoutOptIn(t *testing.T) {
+// A concrete rule must be untouched by any of this.
+func TestRenderLeavesConcreteRuleAlone(t *testing.T) {
 	env := newRenderEnv(t, config.RelayReflectorAllTraffic)
 	backend := newRecordingBackend(t, "a")
 
-	env.render(t, fmt.Sprintf(`{"private": [
+	require.NoError(t, env.render(t, fmt.Sprintf(`{"private": [
 		{"method": "any", "origin": "%s", "path": "/*"}
-	]}`, backend.server.URL))
+	]}`, backend.server.URL)))
 
 	uri, err := env.reflector.getUriForTarget(backend.server.URL)
 	require.NoError(t, err)
 	entry, _, err := env.reflector.parseTargetUri(proxyPath(t, uri))
 	require.NoError(t, err)
-	require.False(t, entry.allowsDynamicTargets())
+	require.Nil(t, entry.wildcard)
 }

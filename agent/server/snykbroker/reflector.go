@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"hash/fnv"
-	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -21,11 +20,6 @@ import (
 	"go.uber.org/fx"
 	"go.uber.org/zap"
 )
-
-// HeaderRelayTargetHost carries a per-request destination host for proxy
-// entries that opt in via dynamic target hosts. It is validated against the
-// entry's allowlist and stripped before the request is forwarded upstream.
-const HeaderRelayTargetHost = "X-Cortex-Relay-Target-Host"
 
 type RegistrationReflector struct {
 	logger    *zap.Logger
@@ -143,7 +137,7 @@ func (rr *RegistrationReflector) IsWSTunnelConnected() bool {
 	return rr.wsProxy != nil && rr.wsProxy.IsConnected()
 }
 
-func (rr *RegistrationReflector) getProxy(targetURI string, isDefault bool, headers acceptfile.ResolverMap, dynamicTargetHosts ...string) (*proxyEntry, error) {
+func (rr *RegistrationReflector) getProxy(targetURI string, isDefault bool, headers acceptfile.ResolverMap) (*proxyEntry, error) {
 
 	if targetURI == "" {
 		return nil, fmt.Errorf("target URI cannot be empty")
@@ -154,7 +148,7 @@ func (rr *RegistrationReflector) getProxy(targetURI string, isDefault bool, head
 		panic(fmt.Sprintf("failed to start registration reflector: %v", err))
 	}
 
-	newEntry, err := newProxyEntry(targetURI, isDefault, rr.server.Port(), headers, rr.transport, dynamicTargetHosts...)
+	newEntry, err := newProxyEntry(targetURI, isDefault, rr.server.Port(), headers, rr.transport)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create new proxy entry: %w", err)
 	}
@@ -191,7 +185,6 @@ func (rr *RegistrationReflector) getProxy(targetURI string, isDefault bool, head
 			zap.Bool("isDefault", entry.isDefault),
 			zap.String("key", key),
 			zap.Any("headers", headers),
-			zap.Strings("dynamicTargetHosts", dynamicTargetHosts),
 		)
 		return &entry, nil
 	}
@@ -240,20 +233,8 @@ func (rr *RegistrationReflector) parseTargetUri(proxyPath string) (*proxyEntry, 
 type ProxyOption func(*proxyOption)
 
 type proxyOption struct {
-	isDefault          bool
-	headerResolvers    acceptfile.ResolverMap
-	dynamicTargetHosts []string
-}
-
-// WithDynamicTargetHosts opts the proxy entry into per-request host
-// retargeting via the X-Cortex-Relay-Target-Host header. Each pattern is
-// either an exact host ("bigquery.googleapis.com") or a wildcard
-// ("*.googleapis.com", matching one or more leading labels). Entries without
-// patterns ignore the header entirely.
-func WithDynamicTargetHosts(hosts ...string) ProxyOption {
-	return func(option *proxyOption) {
-		option.dynamicTargetHosts = append(option.dynamicTargetHosts, hosts...)
-	}
+	isDefault       bool
+	headerResolvers acceptfile.ResolverMap
 }
 
 func WithDefault(value bool) ProxyOption {
@@ -303,7 +284,7 @@ func (rr *RegistrationReflector) ProxyURI(target string, options ...ProxyOption)
 		opt(opts)
 	}
 
-	proxy, err := rr.getProxy(target, opts.isDefault, opts.headerResolvers, opts.dynamicTargetHosts...)
+	proxy, err := rr.getProxy(target, opts.isDefault, opts.headerResolvers)
 	if err != nil {
 		rr.logger.Error("Failed to get proxy URI", zap.Error(err))
 		return target
@@ -361,26 +342,36 @@ func (rr *RegistrationReflector) ServeHTTP(w http.ResponseWriter, r *http.Reques
 		zap.String("newPath", newPath),
 	)
 
-	// Per-request retargeting: only entries that opted in via dynamic target
-	// hosts honor the header; everything else passes it through untouched.
-	if requestedHost := r.Header.Get(HeaderRelayTargetHost); requestedHost != "" && entry.allowsDynamicTargets() {
-		targetHost, ok := entry.resolveDynamicHost(requestedHost)
-		if !ok {
-			rr.logger.Error("Rejected dynamic target host",
-				zap.String("requestedHost", requestedHost),
-				zap.String("targetURI", entry.TargetURI),
-			)
-			http.Error(w, "target host not allowed", http.StatusForbidden)
-			return
-		}
-		if IsWebSocketUpgrade(r) {
-			rr.logger.Error("Dynamic target host is not supported for WebSocket upgrades",
-				zap.String("requestedHost", requestedHost),
-			)
-			http.Error(w, "dynamic target host not supported for websocket upgrade", http.StatusBadRequest)
-			return
-		}
-		r.Header.Del(HeaderRelayTargetHost)
+	// Strip before anything can forward, log, or fail: the header is internal
+	// routing metadata and must not survive on any path, including concrete
+	// origins, WebSocket upgrades, and rejections. Del removes every copy.
+	requestedTargets := r.Header.Values(HeaderTargetHost)
+	r.Header.Del(HeaderTargetHost)
+
+	// A wildcard rule has no single authority to upgrade against, and the
+	// tunnel carries no per-request routing, so it is refused outright rather
+	// than only when a target was supplied.
+	if entry.wildcard != nil && IsWebSocketUpgrade(r) {
+		rr.logger.Error("WebSocket upgrade is not supported for a wildcard origin",
+			zap.String("targetURI", entry.TargetURI),
+		)
+		http.Error(w, ErrClassDestinationRejected, http.StatusForbidden)
+		return
+	}
+
+	// The rejection reason is safe to log; the requested value is not, so it
+	// is never attached.
+	targetHost, err := entry.resolveTargetHost(requestedTargets)
+	if err != nil {
+		rr.logger.Error("Rejected destination",
+			zap.String("targetURI", entry.TargetURI),
+			zap.String("class", ErrClassDestinationRejected),
+			zap.Error(err),
+		)
+		http.Error(w, ErrClassDestinationRejected, http.StatusForbidden)
+		return
+	}
+	if targetHost != "" {
 		r = withDynamicTarget(r, targetHost)
 	}
 
@@ -408,14 +399,17 @@ func hashString(s string) uint32 {
 }
 
 type proxyEntry struct {
-	isDefault          bool
-	TargetURI          string // Exported for clean access
-	proxyURI           string
-	handler            http.Handler
-	headers            acceptfile.ResolverMap
-	responseHeaders    map[string]string
-	hashCode           string
-	dynamicTargetHosts []string
+	isDefault       bool
+	TargetURI       string // Exported for clean access
+	proxyURI        string
+	handler         http.Handler
+	headers         acceptfile.ResolverMap
+	responseHeaders map[string]string
+	hashCode        string
+	// wildcard is set when the rule's origin authorizes a hostname family
+	// rather than one host. Such a rule has no destination of its own: the
+	// concrete authority arrives per request and is checked against this.
+	wildcard *wildcardOrigin
 }
 
 // dynamicTargetContextKey carries the validated per-request target host from
@@ -432,26 +426,27 @@ func dynamicTargetFromRequest(req *http.Request) (string, bool) {
 	return host, ok && host != ""
 }
 
-func newProxyEntry(targetURI string, isDefault bool, port int, headers acceptfile.ResolverMap, transport *http.Transport, dynamicTargetHosts ...string) (*proxyEntry, error) {
+func newProxyEntry(targetURI string, isDefault bool, port int, headers acceptfile.ResolverMap, transport *http.Transport) (*proxyEntry, error) {
 	if targetURI == "" {
 		return nil, fmt.Errorf("target URI cannot be empty")
 	}
 
-	// Parse the target URI
-	asUri, err := url.Parse(targetURI)
+	// Validating here means a malformed wildcard origin fails registration at
+	// startup rather than every request that uses the rule.
+	asUri, wildcard, err := parseOrigin(targetURI)
 	if err != nil {
-		return nil, fmt.Errorf("invalid target URI: %w", err)
+		return nil, err
 	}
 
 	// Create the reverse proxy
 	proxy := httputil.NewSingleHostReverseProxy(asUri)
 
 	pe := &proxyEntry{
-		isDefault:          isDefault,
-		TargetURI:          targetURI,
-		handler:            proxy,
-		headers:            headers,
-		dynamicTargetHosts: dynamicTargetHosts,
+		isDefault: isDefault,
+		TargetURI: targetURI,
+		handler:   proxy,
+		headers:   headers,
+		wildcard:  wildcard,
 	}
 
 	// Set up the director to handle host and headers
@@ -462,6 +457,10 @@ func newProxyEntry(targetURI string, isDefault bool, port int, headers acceptfil
 
 		// Retarget to the validated per-request host, if ServeHTTP set one.
 		// The scheme stays the entry's own (https for real origins).
+		//
+		// A wildcard entry always has one: ServeHTTP rejects the request
+		// before reaching here if the header is absent, so the literal
+		// "*.example.com" in asUri is never dialed.
 		if host, ok := dynamicTargetFromRequest(req); ok {
 			req.URL.Host = host
 			req.Host = host
@@ -492,46 +491,45 @@ func newProxyEntry(targetURI string, isDefault bool, port int, headers acceptfil
 	return pe, nil
 }
 
-func (pe *proxyEntry) allowsDynamicTargets() bool {
-	return len(pe.dynamicTargetHosts) > 0
-}
+// resolveTargetHost decides what a request should dial, from the entry's
+// origin policy and the target-host header.
+//
+// It returns the host to retarget to, or "" to dial the entry's declared
+// origin. Routing is fail-closed in both directions: a wildcard rule never
+// falls back to its declared origin, and a concrete rule never ignores a
+// value that disagrees with it. A mismatch is never a legitimate request,
+// because the caller sets the value from an authority it already selected.
+func (pe *proxyEntry) resolveTargetHost(values []string) (string, error) {
+	if len(values) > 1 {
+		return "", fmt.Errorf("duplicate target host")
+	}
 
-// resolveDynamicHost validates a requested host (optionally host:port)
-// against the entry's allowlist patterns and returns the value to dial.
-// Wildcard patterns ("*.googleapis.com") match one or more leading labels
-// on a dot boundary; all other patterns match exactly.
-func (pe *proxyEntry) resolveDynamicHost(requested string) (string, bool) {
-	hostPort := strings.ToLower(strings.TrimSpace(requested))
-	host := hostPort
-	if strings.Contains(hostPort, ":") {
-		h, p, err := net.SplitHostPort(hostPort)
-		if err != nil || h == "" || p == "" {
-			return "", false
+	if len(values) == 0 {
+		if pe.wildcard != nil {
+			return "", fmt.Errorf("wildcard origin requires a target host")
 		}
-		for _, c := range p {
-			if c < '0' || c > '9' {
-				return "", false
-			}
+		return "", nil
+	}
+
+	host, err := parseTargetHost(values[0])
+	if err != nil {
+		return "", err
+	}
+
+	if pe.wildcard != nil {
+		if !pe.wildcard.matches(host) {
+			return "", fmt.Errorf("target host is outside the origin policy")
 		}
-		host = h
+		return host, nil
 	}
-	// require a bare hostname: anything URL-ish is rejected outright
-	if host == "" || strings.ContainsAny(host, "/@?#%\\ \t") {
-		return "", false
+
+	// Concrete origin: the value is only ever a redundant restatement of the
+	// declared authority, so anything else is a defect or a probe.
+	declared, parseErr := url.Parse(pe.TargetURI)
+	if parseErr != nil || !strings.EqualFold(declared.Hostname(), host) {
+		return "", fmt.Errorf("target host disagrees with the declared origin")
 	}
-	for _, pattern := range pe.dynamicTargetHosts {
-		pattern = strings.ToLower(pattern)
-		if strings.HasPrefix(pattern, "*.") {
-			// keep the dot in the suffix so the match is label-aligned
-			suffix := pattern[1:]
-			if strings.HasSuffix(host, suffix) && len(host) > len(suffix) {
-				return hostPort, true
-			}
-		} else if host == pattern {
-			return hostPort, true
-		}
-	}
-	return "", false
+	return "", nil
 }
 
 func (pe *proxyEntry) key() string {
@@ -556,11 +554,8 @@ func (pe *proxyEntry) key() string {
 			}
 			key = key + headerKey
 		}
-		if pe.allowsDynamicTargets() {
-			hosts := append([]string(nil), pe.dynamicTargetHosts...)
-			sort.Strings(hosts)
-			key += "|dynamicTargets=" + strings.Join(hosts, ",")
-		}
+		// The wildcard is derived from TargetURI, which is already in the key,
+		// so it needs no component of its own.
 		hash := hashString(key)
 		pe.hashCode = fmt.Sprintf("%d", hash)
 	}

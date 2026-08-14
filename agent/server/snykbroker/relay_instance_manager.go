@@ -464,8 +464,8 @@ func (r *relayInstanceManager) reflectorRenderStep(renderContext acceptfile.Rend
 			if len(route.Headers()) > 0 {
 				panic("ENABLE_RELAY_REFLECTOR must be set to 'all' or 'traffic' to use custom headers in accept files")
 			}
-			if len(route.DynamicTargetHosts()) > 0 {
-				panic("ENABLE_RELAY_REFLECTOR must be set to 'all' or 'traffic' to use dynamicTargetHosts in accept files")
+			if strings.Contains(route.Origin(), "*") {
+				panic("ENABLE_RELAY_REFLECTOR must be set to 'all' or 'traffic' to use a wildcard origin in accept files")
 			}
 		}
 		return nil
@@ -476,10 +476,14 @@ func (r *relayInstanceManager) reflectorRenderStep(renderContext acceptfile.Rend
 	}
 
 	for _, route := range renderContext.AcceptFile.PrivateRules() {
+		// ProxyURI cannot report failure, and a malformed wildcard origin must
+		// stop the agent rather than register a rule that can never route.
+		if _, _, err := parseOrigin(route.Origin()); err != nil {
+			return fmt.Errorf("accept file rule has an invalid origin: %w", err)
+		}
 		routeUri := r.reflector.ProxyURI(
 			route.Origin(),
 			WithHeadersResolver(route.Headers()),
-			WithDynamicTargetHosts(route.DynamicTargetHosts()...),
 		)
 		route.SetOrigin(routeUri)
 	}
