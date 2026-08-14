@@ -34,7 +34,7 @@ services:
       STALE_AFTER: ${STALE_AFTER:-45s}
     command: sh -c "cd /src && go run dispatcher-mock.go"
     ports:
-      - "${DISPATCHER_PORT:-58900}:8080"
+      - "${DISPATCHER_PORT:-18900}:8080"
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:8080/healthz"]
       interval: 2s

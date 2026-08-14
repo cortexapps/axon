@@ -16,7 +16,7 @@ set -u
 #
 # Knobs (env):
 #   SERVERS=3 AGENTS_PER_TOKEN=2 LOADGENS=2 WORKERS=16 DURATION=3m
-#   CHAOS=1 CHAOS_INTERVAL=20 MIN_SUCCESS_PCT=99 DISPATCHER_PORT=58900
+#   CHAOS=1 CHAOS_INTERVAL=20 MIN_SUCCESS_PCT=99 DISPATCHER_PORT=18900
 
 SERVERS=${SERVERS:-3}
 AGENTS_PER_TOKEN=${AGENTS_PER_TOKEN:-2}
@@ -24,7 +24,11 @@ LOADGENS=${LOADGENS:-2}
 export DURATION=${DURATION:-3m}
 export WORKERS=${WORKERS:-16}
 export MIN_SUCCESS_PCT=${MIN_SUCCESS_PCT:-99}
-export DISPATCHER_PORT=${DISPATCHER_PORT:-58900}
+# Keep this BELOW the ephemeral port range (49152-65535 on macOS/Linux):
+# the harness opens many outbound connections during a run, and one of
+# them transiently claiming the dispatcher's port as a source port makes
+# the next `compose up` fail with "address already in use".
+export DISPATCHER_PORT=${DISPATCHER_PORT:-18900}
 CHAOS=${CHAOS:-1}
 CHAOS_INTERVAL=${CHAOS_INTERVAL:-20}
 
@@ -46,7 +50,17 @@ function cleanup {
 trap cleanup EXIT
 
 function token_hash {
-    echo -n "$1" | sha256sum | awk '{print $1}'
+    # sha256sum isn't present on stock macOS; shasum is.
+    if command -v sha256sum >/dev/null 2>&1; then
+        echo -n "$1" | sha256sum | awk '{print $1}'
+    else
+        echo -n "$1" | shasum -a 256 | awk '{print $1}'
+    fi
+}
+
+function pick_random_line {
+    # `shuf | head -1` equivalent that doesn't need GNU coreutils.
+    awk -v seed="$RANDOM" 'BEGIN{srand(seed)} {a[NR]=$0} END{if(NR) print a[int(rand()*NR)+1]}'
 }
 
 function routable {
@@ -56,6 +70,13 @@ function routable {
     count=$(curl -sf "$DISPATCHER/servers/$hash" | grep -o '"[^"]*"' | grep -vc servers)
     [ "${count:-0}" -gt 0 ]
 }
+
+if lsof -nP -iTCP:"$DISPATCHER_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+    echo "FAIL: DISPATCHER_PORT $DISPATCHER_PORT is already in use:"
+    lsof -nP -iTCP:"$DISPATCHER_PORT" -sTCP:LISTEN
+    echo "Set DISPATCHER_PORT to a free port below 49152 and retry."
+    exit 1
+fi
 
 echo "=== Starting stack: servers=$SERVERS agents/token=$AGENTS_PER_TOKEN loadgens=$LOADGENS duration=$DURATION chaos=$CHAOS ==="
 $COMPOSE up -d --build \
@@ -126,7 +147,7 @@ if [ "$CHAOS" = "1" ]; then
                 2) SVC="agent-c" ;;
             esac
         fi
-        VICTIM=$($COMPOSE ps -q "$SVC" | shuf | head -1)
+        VICTIM=$($COMPOSE ps -q "$SVC" | pick_random_line)
         [ -z "$VICTIM" ] && { sleep "$CHAOS_INTERVAL"; continue; }
         NAME=$(docker inspect -f '{{.Name}}' "$VICTIM")
         if [ $((i % 4)) -lt 2 ]; then
@@ -146,7 +167,9 @@ fi
 
 echo "=== Load running for $DURATION (chaos: $CHAOS, see chaos.log) ==="
 FAILED=0
-for c in $($COMPOSE ps -q loadgen); do
+# -a: a generator that already exited (e.g. failed fast) must still be
+# waited on, or its non-zero exit silently disappears and we "pass".
+for c in $($COMPOSE ps -aq loadgen); do
     CODE=$(docker wait "$c")
     NAME=$(docker inspect -f '{{.Name}}' "$c")
     echo "loadgen $NAME exited with $CODE"
@@ -175,7 +198,14 @@ for f in reports/loadgen-*.json; do
     cat "$f"
     echo
 done
-echo "=== Chaos events: $(wc -l < chaos.log 2>/dev/null || echo 0) (chaos.log) ==="
+CHAOS_EVENTS=$(wc -l < chaos.log 2>/dev/null | tr -d ' ' || echo 0)
+echo "=== Chaos events: ${CHAOS_EVENTS:-0} (chaos.log) ==="
+if [ "$CHAOS" = "1" ] && [ "${CHAOS_EVENTS:-0}" = "0" ]; then
+    # Chaos silently doing nothing turns this into a plain load test that
+    # always passes; treat it as a harness failure, not a green run.
+    echo "FAIL: chaos was enabled but no chaos events fired"
+    FAILED=1
+fi
 echo "=== Pool samples in samples.log ==="
 
 if [ "$FAILED" != "0" ]; then
