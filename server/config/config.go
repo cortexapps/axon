@@ -25,9 +25,6 @@ type Config struct {
 	// BrokerServerURL is the base URL of the BROKER_SERVER HTTP API
 	// for client-connected/deleted and server-connected/deleted notifications.
 	BrokerServerURL string
-	// JWTPublicKeyPath is the path to a PEM-encoded public key for
-	// validating JWT tokens in ClientHello. Empty disables JWT validation.
-	JWTPublicKeyPath string
 	// HeartbeatInterval is how often the server sends heartbeat messages.
 	// Clients must respond within 2x this interval.
 	HeartbeatInterval time.Duration
@@ -58,11 +55,6 @@ func (c Config) Print() {
 	fmt.Printf("\tServer ID: %s\n", c.ServerID)
 	fmt.Printf("\tHeartbeat Interval: %v\n", c.HeartbeatInterval)
 	fmt.Printf("\tDispatch Timeout: %v\n", c.DispatchTimeout)
-	if c.JWTPublicKeyPath != "" {
-		fmt.Printf("\tJWT Public Key: %s\n", c.JWTPublicKeyPath)
-	} else {
-		fmt.Println("\tJWT Validation: Disabled")
-	}
 }
 
 func NewConfigFromEnv() Config {
@@ -110,7 +102,6 @@ func NewConfigFromEnv() Config {
 	}
 
 	cfg.BrokerServerURL = os.Getenv("BROKER_SERVER_URL")
-	cfg.JWTPublicKeyPath = os.Getenv("JWT_PUBLIC_KEY_PATH")
 
 	if v := os.Getenv("HEARTBEAT_INTERVAL"); v != "" {
 		d, err := time.ParseDuration(v)

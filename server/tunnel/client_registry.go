@@ -47,7 +47,10 @@ func (s *StreamHandle) Busy() bool {
 	return s.busy.Load()
 }
 
-// ClientIdentity holds the identity metadata for a connected client.
+// ClientIdentity holds client-supplied identity metadata for a connected
+// client. Informational only — it feeds logs, metrics, and BROKER_SERVER
+// notifications, never authorization or routing decisions; the broker
+// token is the sole credential and dispatch key.
 type ClientIdentity struct {
 	TenantID    string
 	Integration string
@@ -93,19 +96,24 @@ func (r *ClientRegistry) SetMaxStreamsPerToken(n int) {
 	r.maxStreamsPerToken = n
 }
 
-// Register adds a new stream for a broker token.
-// If the token already exists, it validates the identity matches (same tenant)
-// and adds the stream. Returns an error on identity collision.
+// Register adds a new stream for a broker token, enforcing the per-token
+// stream cap. Identity is client-supplied and informational: a tenant
+// mismatch across streams of the same token is logged as likely agent
+// misconfiguration but never rejects the stream — the token, not the
+// claimed identity, is the credential (the first-seen identity remains
+// the entry's display identity).
 func (r *ClientRegistry) Register(token broker.Token, identity ClientIdentity, stream *StreamHandle) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	key := token.Hashed()
 	if existing, ok := r.entries[key]; ok {
-		// Same tenant is allowed (reconnect or new instance)
 		if existing.Identity.TenantID != identity.TenantID {
-			return fmt.Errorf("token collision: different tenant_id for token (existing=%s, new=%s)",
-				existing.Identity.TenantID, identity.TenantID)
+			r.logger.Warn("Streams on the same token claim different tenant_ids; likely agent misconfiguration (identity is informational only)",
+				zap.String("existingTenantId", existing.Identity.TenantID),
+				zap.String("newTenantId", identity.TenantID),
+				zap.String("streamId", stream.StreamID),
+			)
 		}
 		if r.maxStreamsPerToken > 0 && len(existing.Streams) >= r.maxStreamsPerToken {
 			return fmt.Errorf("%w (%d)", ErrTokenStreamCap, r.maxStreamsPerToken)

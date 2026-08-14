@@ -88,14 +88,19 @@ func (s *Service) Tunnel(stream pb.TunnelService_TunnelServer) error {
 		return fmt.Errorf("first message must be ClientHello")
 	}
 
-	// Validate required fields. Return Unauthenticated so the client can
-	// distinguish auth failures from transient network errors and trigger an
-	// immediate re-registration with the Cortex API.
+	// Trust model: possession of the broker token is the credential — the
+	// token's meaning (tenant, integration, alias) was fixed server-side by
+	// the authenticated Cortex registration flow, and the dispatcher
+	// addresses this server by token only. Everything else in ClientHello
+	// is client-supplied, informational metadata: it feeds logs, metrics,
+	// and the BROKER_SERVER notify payload, and MUST NOT feed
+	// authorization, routing, or stream-acceptance decisions.
+	//
+	// Unauthenticated (vs a plain error) lets the client distinguish auth
+	// failures from transient network errors and trigger an immediate
+	// re-registration with the Cortex API.
 	if hello.BrokerToken == "" {
 		return status.Error(codes.Unauthenticated, "broker_token is required")
-	}
-	if hello.TenantId == "" {
-		return status.Error(codes.Unauthenticated, "tenant_id is required")
 	}
 
 	streamID := uuid.New().String()

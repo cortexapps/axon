@@ -339,6 +339,21 @@ Cortex backend ─ any ─────▶ …Adapter ────┘
 - `BrokerServerClient` (`server/broker/…`) — unchanged. Same
   connect/disconnect notifications to the same Cortex-cloud dispatcher URL.
 
+### 6.1.1 Identity & trust
+
+Possession of the broker token is the sole credential on the tunnel. The
+token's meaning — which (tenant, integration, alias) it belongs to — is
+fixed **inside Cortex** when the authenticated registration flow mints it,
+and the Cortex dispatcher addresses tunnel servers by token only. The
+identity fields in `ClientHello` (tenant_id, integration, alias,
+instance_id) are client-supplied and informational: they feed logs,
+metrics tags, and the BROKER_SERVER notify payload, and MUST NOT feed
+authorization, routing, or stream-acceptance decisions. Concretely: the
+handshake requires only `broker_token`; the registry keys entries and
+enforces the per-token stream cap by hashed token; a tenant mismatch
+across streams of one token is logged as likely misconfiguration but
+never rejects a stream.
+
 ### 6.2 Dispatcher interface
 
 ```go

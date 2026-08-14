@@ -68,7 +68,7 @@ func TestRegisterMultipleStreams(t *testing.T) {
 	assert.Equal(t, 2, registry.StreamCount())
 }
 
-func TestRegisterTokenCollision(t *testing.T) {
+func TestRegisterTenantMismatchIsInformational(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	registry := NewClientRegistry(logger)
 
@@ -77,10 +77,17 @@ func TestRegisterTokenCollision(t *testing.T) {
 	err := registry.Register(token, testIdentity("tenant-1"), testStream("stream-1"))
 	require.NoError(t, err)
 
-	// Different tenant with same token hash — rejected.
+	// A different claimed tenant on the same token is accepted: identity is
+	// client-supplied, informational metadata — the token is the credential.
+	// (It logs a warning; likely agent misconfiguration.)
 	err = registry.Register(token, testIdentity("tenant-2"), testStream("stream-2"))
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "token collision")
+	require.NoError(t, err)
+	assert.Equal(t, 2, registry.StreamCount())
+
+	// First-seen identity remains the entry's display identity.
+	got := registry.GetIdentity(token)
+	require.NotNil(t, got)
+	assert.Equal(t, "tenant-1", got.TenantID)
 }
 
 func TestUnregisterStream(t *testing.T) {

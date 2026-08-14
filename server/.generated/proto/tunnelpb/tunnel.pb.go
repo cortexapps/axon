@@ -272,26 +272,33 @@ func (*ServerFrame_Heartbeat) isServerFrame_Msg() {}
 func (*ServerFrame_Call) isServerFrame_Msg() {}
 
 // ClientHello is the first message sent by the client after opening a
-// stream. It carries identity information and the Cortex-API-issued broker
-// token.
+// stream.
+//
+// Trust model: possession of broker_token is the credential. The token's
+// meaning — which (tenant, integration, alias) it belongs to — was fixed
+// server-side inside Cortex when the authenticated registration flow
+// minted it, and the Cortex dispatcher addresses tunnel servers by token
+// only. Every other field below is client-supplied, informational
+// metadata for logging and metrics; servers MUST NOT use it for
+// authorization, routing, or stream-acceptance decisions.
 type ClientHello struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Cortex-API-issued token, used for dispatch routing. Same token the
-	// snyk-broker transport uses.
+	// snyk-broker transport uses. The sole credential on this handshake.
 	BrokerToken string `protobuf:"bytes,1,opt,name=broker_token,json=brokerToken,proto3" json:"broker_token,omitempty"`
-	// Client software version.
+	// Client software version. Informational.
 	ClientVersion string `protobuf:"bytes,2,opt,name=client_version,json=clientVersion,proto3" json:"client_version,omitempty"`
-	// Tenant identifier from Cortex API registration.
+	// Tenant identifier as configured on the agent. Informational —
+	// logging/metrics only; the authoritative tenant is bound to
+	// broker_token server-side.
 	TenantId string `protobuf:"bytes,3,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
-	// Integration type, e.g. "github", "jira".
+	// Integration type, e.g. "github", "jira". Informational.
 	Integration string `protobuf:"bytes,4,opt,name=integration,proto3" json:"integration,omitempty"`
-	// Integration alias name.
+	// Integration alias name. Informational.
 	Alias string `protobuf:"bytes,5,opt,name=alias,proto3" json:"alias,omitempty"`
-	// Unique agent instance ID (from config.InstanceId).
+	// Unique agent instance ID (from config.InstanceId). Informational.
 	InstanceId string `protobuf:"bytes,6,opt,name=instance_id,json=instanceId,proto3" json:"instance_id,omitempty"`
-	// Cortex API token for optional server-side JWT validation.
-	CortexApiToken string `protobuf:"bytes,7,opt,name=cortex_api_token,json=cortexApiToken,proto3" json:"cortex_api_token,omitempty"`
-	// Arbitrary metadata.
+	// Arbitrary metadata. Informational.
 	Metadata      map[string]string `protobuf:"bytes,8,rep,name=metadata,proto3" json:"metadata,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -365,13 +372,6 @@ func (x *ClientHello) GetAlias() string {
 func (x *ClientHello) GetInstanceId() string {
 	if x != nil {
 		return x.InstanceId
-	}
-	return ""
-}
-
-func (x *ClientHello) GetCortexApiToken() string {
-	if x != nil {
-		return x.CortexApiToken
 	}
 	return ""
 }
@@ -913,7 +913,7 @@ const file_tunnel_proto_rawDesc = "" +
 	"\x05hello\x18\x01 \x01(\v2\".cortex.axon.tunnel.v2.ServerHelloH\x00R\x05hello\x12@\n" +
 	"\theartbeat\x18\x02 \x01(\v2 .cortex.axon.tunnel.v2.HeartbeatH\x00R\theartbeat\x126\n" +
 	"\x04call\x18\x03 \x01(\v2 .cortex.axon.tunnel.v2.CallFrameH\x00R\x04callB\x05\n" +
-	"\x03msg\"\x82\x03\n" +
+	"\x03msg\"\xde\x02\n" +
 	"\vClientHello\x12!\n" +
 	"\fbroker_token\x18\x01 \x01(\tR\vbrokerToken\x12%\n" +
 	"\x0eclient_version\x18\x02 \x01(\tR\rclientVersion\x12\x1b\n" +
@@ -921,12 +921,11 @@ const file_tunnel_proto_rawDesc = "" +
 	"\vintegration\x18\x04 \x01(\tR\vintegration\x12\x14\n" +
 	"\x05alias\x18\x05 \x01(\tR\x05alias\x12\x1f\n" +
 	"\vinstance_id\x18\x06 \x01(\tR\n" +
-	"instanceId\x12(\n" +
-	"\x10cortex_api_token\x18\a \x01(\tR\x0ecortexApiToken\x12L\n" +
+	"instanceId\x12L\n" +
 	"\bmetadata\x18\b \x03(\v20.cortex.axon.tunnel.v2.ClientHello.MetadataEntryR\bmetadata\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xc4\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01J\x04\b\a\x10\b\"\xc4\x01\n" +
 	"\vServerHello\x12\x1b\n" +
 	"\tserver_id\x18\x01 \x01(\tR\bserverId\x12\x1b\n" +
 	"\tstream_id\x18\x02 \x01(\tR\bstreamId\x122\n" +

@@ -926,13 +926,14 @@ func (tc *tunnelClient) openSlot(id int) (*streamCtx, error) {
 	hello := &pb.ClientFrame{
 		Msg: &pb.ClientFrame_Hello{
 			Hello: &pb.ClientHello{
-				BrokerToken:    token,
-				ClientVersion:  common.ClientVersion,
-				TenantId:       os.Getenv("CORTEX_TENANT_ID"),
-				Integration:    tc.integrationInfo.Integration.String(),
-				Alias:          tc.integrationInfo.Alias,
-				InstanceId:     tc.config.InstanceId,
-				CortexApiToken: tc.config.CortexApiToken,
+				BrokerToken: token,
+				// Everything below is informational (logs/metrics on the
+				// server); the broker token alone is the credential.
+				ClientVersion: common.ClientVersion,
+				TenantId:      os.Getenv("CORTEX_TENANT_ID"),
+				Integration:   tc.integrationInfo.Integration.String(),
+				Alias:         tc.integrationInfo.Alias,
+				InstanceId:    tc.config.InstanceId,
 			},
 		},
 	}
