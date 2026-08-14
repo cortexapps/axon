@@ -17,11 +17,10 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.uber.org/zap/zaptest"
 )
 
 func TestNewWebSocketProxy(t *testing.T) {
-	logger := zaptest.NewLogger(t)
+	logger := newTestLogger(t)
 
 	t.Run("with transport", func(t *testing.T) {
 		transport := &http.Transport{}
@@ -115,13 +114,13 @@ func TestIsWebSocketUpgrade(t *testing.T) {
 }
 
 func TestWebSocketProxyResolveTargetAddr(t *testing.T) {
-	logger := zaptest.NewLogger(t)
+	logger := newTestLogger(t)
 	wsProxy := NewWebSocketProxy(logger, nil)
 
 	tests := []struct {
-		name     string
+		name      string
 		targetURI string
-		wantAddr string
+		wantAddr  string
 	}{
 		{
 			name:      "http with explicit port",
@@ -167,7 +166,7 @@ func TestWebSocketProxyResolveTargetAddr(t *testing.T) {
 }
 
 func TestWebSocketProxyGetTLSConfig(t *testing.T) {
-	logger := zaptest.NewLogger(t)
+	logger := newTestLogger(t)
 
 	t.Run("no TLS required", func(t *testing.T) {
 		wsProxy := NewWebSocketProxy(logger, nil)
@@ -211,7 +210,7 @@ func TestWebSocketProxyGetTLSConfig(t *testing.T) {
 }
 
 func TestWebSocketProxyGetProxyURL(t *testing.T) {
-	logger := zaptest.NewLogger(t)
+	logger := newTestLogger(t)
 
 	t.Run("transport with proxy function", func(t *testing.T) {
 		proxyURL, _ := url.Parse("http://proxy.example.com:8080")
@@ -255,7 +254,7 @@ func TestWebSocketProxyGetProxyURL(t *testing.T) {
 }
 
 func TestWebSocketProxyDialDirect(t *testing.T) {
-	logger := zaptest.NewLogger(t)
+	logger := newTestLogger(t)
 
 	t.Run("successful connection", func(t *testing.T) {
 		// Create a simple TCP server
@@ -290,7 +289,7 @@ func TestWebSocketProxyDialDirect(t *testing.T) {
 }
 
 func TestWebSocketProxyDialThroughProxy(t *testing.T) {
-	logger := zaptest.NewLogger(t)
+	logger := newTestLogger(t)
 
 	t.Run("successful CONNECT through proxy", func(t *testing.T) {
 		// Create target server
@@ -405,7 +404,7 @@ func TestWebSocketProxyDialThroughProxy(t *testing.T) {
 }
 
 func TestWebSocketProxyCallbacks(t *testing.T) {
-	logger := zaptest.NewLogger(t)
+	logger := newTestLogger(t)
 
 	// Create a simple WebSocket echo server
 	var upgrader = websocket.Upgrader{
@@ -481,7 +480,7 @@ func TestWebSocketProxyCallbacks(t *testing.T) {
 }
 
 func TestWebSocketProxyIsConnected(t *testing.T) {
-	logger := zaptest.NewLogger(t)
+	logger := newTestLogger(t)
 
 	wsProxy := NewWebSocketProxy(logger, nil)
 	assert.False(t, wsProxy.IsConnected(), "should not be connected initially")
@@ -617,7 +616,7 @@ func TestWebSocketProxyFullFlowThroughHTTPProxy(t *testing.T) {
 	defer proxyServer.Close()
 
 	// Create WebSocketProxy with the proxy configured via transport
-	logger := zaptest.NewLogger(t)
+	logger := newTestLogger(t)
 	proxyURL, _ := url.Parse(proxyServer.URL)
 	transport := &http.Transport{
 		Proxy: http.ProxyURL(proxyURL),
@@ -730,7 +729,7 @@ func TestWebSocketProxyFullFlowThroughHTTPProxyWithTLS(t *testing.T) {
 
 	// Create WebSocketProxy with the proxy configured via transport
 	// Use InsecureSkipVerify since the target uses a self-signed test certificate
-	logger := zaptest.NewLogger(t)
+	logger := newTestLogger(t)
 	proxyURL, _ := url.Parse(proxyServer.URL)
 	transport := &http.Transport{
 		Proxy: http.ProxyURL(proxyURL),
