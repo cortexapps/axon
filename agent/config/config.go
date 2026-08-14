@@ -66,6 +66,26 @@ const (
 	RelayModeGrpcTunnel RelayMode = "grpc-tunnel"
 )
 
+// TunnelConnMode selects how tunnel streams map onto TCP connections.
+type TunnelConnMode string
+
+const (
+	// TunnelConnModePool is the adaptive watermark pool: one connection per
+	// stream, count varying between MinTunnelSlots and MaxTunnelSlots.
+	TunnelConnModePool TunnelConnMode = "pool"
+	// TunnelConnModeConns keeps a fixed TunnelConns connections, one stream each.
+	TunnelConnModeConns TunnelConnMode = "conns"
+	// TunnelConnModeMux keeps a fixed TunnelConns connections and multiplexes
+	// TunnelStreamsPerConn streams over each.
+	TunnelConnModeMux TunnelConnMode = "mux"
+)
+
+// IsFixed reports whether the mode uses a fixed number of streams — i.e. one
+// that neither grows on demand nor retires on idle.
+func (m TunnelConnMode) IsFixed() bool {
+	return m == TunnelConnModeConns || m == TunnelConnModeMux
+}
+
 type AgentConfig struct {
 	GrpcPort              int
 	CortexApiBaseUrl      string
@@ -109,8 +129,24 @@ type AgentConfig struct {
 	SlotIdleTimeout time.Duration
 	// MaxStreamsPerServer caps how many streams may land on the same server_id.
 	// Default 2; 0 means unlimited. Replaces strict server-id dedup so a small
-	// server pool still gets independent-TCP redundancy.
+	// server pool still gets independent-TCP redundancy. In "mux" conn mode the
+	// cap counts connections rather than streams, since streams share them.
 	MaxStreamsPerServer int
+	// TunnelConnMode selects how tunnel streams map onto TCP connections:
+	//
+	//	pool  (default) adaptive watermark pool, one connection per stream
+	//	conns fixed TunnelConns connections, one stream each
+	//	mux   fixed TunnelConns connections, TunnelStreamsPerConn streams
+	//	      multiplexed over each by HTTP/2
+	//
+	// "conns" and "mux" are fixed-size: they neither grow under load nor
+	// retire on idle, which is what makes them comparable under load test.
+	TunnelConnMode TunnelConnMode
+	// TunnelConns is the connection count for the "conns" and "mux" modes.
+	TunnelConns int
+	// TunnelStreamsPerConn is how many streams share each connection in "mux"
+	// mode. Ignored by the other modes.
+	TunnelStreamsPerConn int
 	// MaxInflightRequests caps concurrent in-flight requests dispatched into the
 	// agent across all streams. Requests over the cap queue until capacity
 	// frees or their deadline expires (then fail with a 503-coded cancel).
@@ -417,6 +453,41 @@ func NewAgentEnvConfig() AgentConfig {
 			panic(err)
 		}
 		cfg.MaxStreamsPerServer = v
+	}
+
+	cfg.TunnelConnMode = TunnelConnModePool
+	if v := os.Getenv("AXON_GRPC_TUNNEL_CONN_MODE"); v != "" {
+		mode := TunnelConnMode(v)
+		switch mode {
+		case TunnelConnModePool, TunnelConnModeConns, TunnelConnModeMux:
+			cfg.TunnelConnMode = mode
+		default:
+			panic(fmt.Sprintf("invalid AXON_GRPC_TUNNEL_CONN_MODE %q (want pool, conns or mux)", v))
+		}
+	}
+
+	cfg.TunnelConns = 8
+	if v := os.Getenv("AXON_GRPC_TUNNEL_CONNS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			panic(err)
+		}
+		if n < 1 {
+			panic("AXON_GRPC_TUNNEL_CONNS must be >= 1")
+		}
+		cfg.TunnelConns = n
+	}
+
+	cfg.TunnelStreamsPerConn = 8
+	if v := os.Getenv("AXON_GRPC_TUNNEL_STREAMS_PER_CONN"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			panic(err)
+		}
+		if n < 1 {
+			panic("AXON_GRPC_TUNNEL_STREAMS_PER_CONN must be >= 1")
+		}
+		cfg.TunnelStreamsPerConn = n
 	}
 
 	cfg.MaxInflightRequests = 256

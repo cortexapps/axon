@@ -1,0 +1,12 @@
+--- 23:58:43
+{"1a923842b9c5":"{\"status\":\"ok\",\"server_id\":\"1a923842b9c5\",\"clients\":2,\"streams\":3,\"inflight\":0,\"broker_server_configured\":true}","4a6c2acf34f0":"{\"status\":\"ok\",\"server_id\":\"4a6c2acf34f0\",\"clients\":1,\"streams\":1,\"inflight\":0,\"broker_server_configured\":true}","4cbd9a42785d":"{\"status\":\"ok\",\"server_id\":\"4cbd9a42785d\",\"clients\":0,\"streams\":0,\"inflight\":0,\"broker_server_configured\":true}","4cd855932056":"{\"status\":\"ok\",\"server_id\":\"4cd855932056\",\"clients\":1,\"streams\":3,\"inflight\":0,\"broker_server_configured\":true}","75aa9ee45e83":"{\"status\":\"ok\",\"server_id\":\"75aa9ee45e83\",\"clients\":2,\"streams\":5,\"inflight\":0,\"broker_server_configured\":true}"}
+
+{"status":"ok","relay_mode":"grpc-tunnel","streams":2,"busy":0,"target":2}
+--- 23:58:53
+{"1a923842b9c5":"{\"status\":\"ok\",\"server_id\":\"1a923842b9c5\",\"clients\":3,\"streams\":7,\"inflight\":2,\"broker_server_configured\":true}","4a6c2acf34f0":"{\"status\":\"ok\",\"server_id\":\"4a6c2acf34f0\",\"clients\":3,\"streams\":9,\"inflight\":4,\"broker_server_configured\":true}","4cbd9a42785d":"{\"status\":\"ok\",\"server_id\":\"4cbd9a42785d\",\"clients\":2,\"streams\":3,\"inflight\":3,\"broker_server_configured\":true}","4cd855932056":"{\"status\":\"ok\",\"server_id\":\"4cd855932056\",\"clients\":2,\"streams\":5,\"inflight\":2,\"broker_server_configured\":true}","75aa9ee45e83":"{\"status\":\"ok\",\"server_id\":\"75aa9ee45e83\",\"clients\":3,\"streams\":10,\"inflight\":3,\"broker_server_configured\":true}"}
+
+{"status":"ok","relay_mode":"grpc-tunnel","streams":6,"busy":2,"target":6}
+--- 23:59:04
+{"1a923842b9c5":"{\"status\":\"ok\",\"server_id\":\"1a923842b9c5\",\"clients\":3,\"streams\":6,\"inflight\":2,\"broker_server_configured\":true}","4a6c2acf34f0":"{\"status\":\"ok\",\"server_id\":\"4a6c2acf34f0\",\"clients\":3,\"streams\":9,\"inflight\":5,\"broker_server_configured\":true}","4cbd9a42785d":"{\"status\":\"ok\",\"server_id\":\"4cbd9a42785d\",\"clients\":3,\"streams\":5,\"inflight\":2,\"broker_server_configured\":true}","4cd855932056":"{\"status\":\"ok\",\"server_id\":\"4cd855932056\",\"clients\":3,\"streams\":6,\"inflight\":1,\"broker_server_configured\":true}","75aa9ee45e83":"{\"status\":\"ok\",\"server_id\":\"75aa9ee45e83\",\"clients\":2,\"streams\":10,\"inflight\":1,\"broker_server_configured\":true}"}
+
+{"status":"ok","relay_mode":"grpc-tunnel","streams":6,"busy":2,"target":6}

@@ -32,6 +32,13 @@ export DISPATCHER_PORT=${DISPATCHER_PORT:-18900}
 CHAOS=${CHAOS:-1}
 CHAOS_INTERVAL=${CHAOS_INTERVAL:-20}
 
+# Agent connection model under test. Exported so compose picks them up.
+export CONN_MODE=${CONN_MODE:-pool}
+export CONNS=${CONNS:-8}
+export STREAMS_PER_CONN=${STREAMS_PER_CONN:-8}
+# Tag report/log filenames so comparison runs don't overwrite each other.
+RUN_TAG=${RUN_TAG:-$CONN_MODE}
+
 COMPOSE="docker compose -f docker-compose.load.yml"
 DISPATCHER="http://localhost:${DISPATCHER_PORT}"
 TOKENS=(tok-a tok-b tok-c)
@@ -79,6 +86,7 @@ if lsof -nP -iTCP:"$DISPATCHER_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
 fi
 
 echo "=== Starting stack: servers=$SERVERS agents/token=$AGENTS_PER_TOKEN loadgens=$LOADGENS duration=$DURATION chaos=$CHAOS ==="
+echo "=== Connection model: mode=$CONN_MODE conns=$CONNS streamsPerConn=$STREAMS_PER_CONN (tag: $RUN_TAG) ==="
 $COMPOSE up -d --build \
     --scale grpc-tunnel-server="$SERVERS" \
     --scale agent-a="$AGENTS_PER_TOKEN" \
@@ -207,6 +215,12 @@ if [ "$CHAOS" = "1" ] && [ "${CHAOS_EVENTS:-0}" = "0" ]; then
     FAILED=1
 fi
 echo "=== Pool samples in samples.log ==="
+
+# Keep each model's artifacts so comparison runs can be diffed afterwards.
+mkdir -p "reports/$RUN_TAG"
+cp -f reports/loadgen-*.json "reports/$RUN_TAG/" 2>/dev/null
+cp -f chaos.log samples.log "reports/$RUN_TAG/" 2>/dev/null
+echo "=== Artifacts archived to reports/$RUN_TAG/ ==="
 
 if [ "$FAILED" != "0" ]; then
     echo "LOAD TEST FAILED"

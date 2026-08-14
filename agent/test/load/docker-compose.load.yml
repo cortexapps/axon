@@ -78,6 +78,11 @@ services:
       AXON_GRPC_TUNNEL_MIN_SLOTS: ${MIN_SLOTS:-2}
       AXON_GRPC_TUNNEL_MAX_SLOTS: ${MAX_SLOTS:-16}
       AXON_GRPC_TUNNEL_SLOT_IDLE_TIMEOUT: ${SLOT_IDLE_TIMEOUT:-60s}
+      # Connection model under test: pool (adaptive, default), conns (fixed
+      # N connections, one stream each) or mux (N connections, M streams each).
+      AXON_GRPC_TUNNEL_CONN_MODE: ${CONN_MODE:-pool}
+      AXON_GRPC_TUNNEL_CONNS: ${CONNS:-8}
+      AXON_GRPC_TUNNEL_STREAMS_PER_CONN: ${STREAMS_PER_CONN:-8}
       MAX_STREAMS_PER_SERVER: ${MAX_STREAMS_PER_SERVER:-2}
       CORTEX_API_TOKEN: fake-token
       CORTEX_API_BASE_URL: http://unused.invalid

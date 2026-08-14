@@ -106,6 +106,10 @@ type tunnelClient struct {
 	// inflightSem caps concurrent in-flight requests. nil means unbounded.
 	inflightSem chan struct{}
 
+	// conns holds the connections shared between stream workers in "mux"
+	// mode. Unused by the other modes, where a stream owns its connection.
+	conns *connGroup
+
 	wg sync.WaitGroup
 
 	// Metrics
@@ -126,6 +130,10 @@ type tunnelStream struct {
 	serverID string
 	conn     *grpc.ClientConn
 	cancel   context.CancelFunc
+
+	// connIdx is the shared-connection index this stream rides on in "mux"
+	// mode, or -1 when the stream owns its connection outright.
+	connIdx int
 
 	// inflight counts calls currently running on this stream (0 or 1 in
 	// the slot-pool model); lastCallAt is the UnixNano timestamp of the
@@ -297,6 +305,7 @@ func (tc *tunnelClient) Start() error {
 	tc.streams = make(map[*tunnelStream]struct{})
 	tc.runningWorkers = 0
 	tc.serverStreamCounts = make(map[string]int)
+	tc.conns = newConnGroup()
 	tc.busySlots.Store(0)
 	tc.serverMaxStreams.Store(0)
 	tc.targetSlots.Store(int32(tc.minSlots()))
@@ -344,6 +353,10 @@ func (tc *tunnelClient) startAsync() {
 	go tc.watermarkLoop()
 
 	tc.logger.Info("gRPC tunnel started",
+		zap.String("connMode", string(tc.config.TunnelConnMode)),
+		zap.Int("conns", tc.config.TunnelConns),
+		zap.Int("streamsPerConn", tc.config.TunnelStreamsPerConn),
+		zap.Int("fixedSlots", tc.fixedSlots()),
 		zap.Int("minSlots", tc.minSlots()),
 		zap.Int("maxSlots", tc.config.MaxTunnelSlots),
 		zap.Int("maxStreamsPerServer", tc.config.MaxStreamsPerServer),
@@ -540,12 +553,56 @@ func (tc *tunnelClient) removeStream(ts *tunnelStream) {
 	tc.mu.Lock()
 	delete(tc.streams, ts)
 	tc.mu.Unlock()
-	tc.releaseServerSlot(ts.serverID)
+	// On a shared connection the server-id slot belongs to the connection,
+	// not the stream; connGroup.release gives it back when the last stream
+	// on that connection goes away.
+	if ts.connIdx < 0 {
+		tc.releaseServerSlot(ts.serverID)
+	}
 	tc.connectionsActive.WithLabelValues(ts.serverID).Dec()
 }
 
-// minSlots returns the configured pool floor (at least 1).
+// fixedSlots returns the stream-worker count for the fixed-size connection
+// modes, or 0 for the adaptive pool. "conns" runs one stream per connection;
+// "mux" multiplexes StreamsPerConn streams over each connection.
+func (tc *tunnelClient) fixedSlots() int {
+	conns := tc.config.TunnelConns
+	if conns < 1 {
+		conns = 1
+	}
+	switch tc.config.TunnelConnMode {
+	case config.TunnelConnModeConns:
+		return conns
+	case config.TunnelConnModeMux:
+		per := tc.config.TunnelStreamsPerConn
+		if per < 1 {
+			per = 1
+		}
+		return conns * per
+	default:
+		return 0
+	}
+}
+
+// connIndex maps a stream worker to the connection it rides on. Only "mux"
+// shares connections; the other modes give every worker its own.
+func (tc *tunnelClient) connIndex(id int) int {
+	conns := tc.config.TunnelConns
+	if conns < 1 {
+		conns = 1
+	}
+	// Worker ids start at 1 and are stable for a worker's lifetime, so this
+	// spreads workers evenly and keeps each one on the same connection
+	// across reconnects.
+	return (id - 1) % conns
+}
+
+// minSlots returns the configured pool floor (at least 1). The fixed modes
+// pin the floor to their full stream count so nothing retires beneath it.
 func (tc *tunnelClient) minSlots() int {
+	if n := tc.fixedSlots(); n > 0 {
+		return n
+	}
 	if tc.config.MinTunnelSlots < 1 {
 		return 1
 	}
@@ -616,6 +673,11 @@ func (tc *tunnelClient) workerExited() {
 // server dispatched onto it, so the client sees saturation at the same
 // instant the server does — no negotiation round-trip needed.
 func (tc *tunnelClient) maybeGrow() {
+	// Fixed-size modes hold their stream count by definition.
+	if tc.config.TunnelConnMode.IsFixed() {
+		return
+	}
+
 	last := tc.lastGrowAt.Load()
 	now := time.Now().UnixNano()
 	if now-last < int64(growCooldown) {
@@ -685,6 +747,12 @@ func (tc *tunnelClient) watermarkLoop() {
 // idle past SlotIdleTimeout. It lowers the target (never below min) so
 // the calling worker retires via tryRetireWorker.
 func (tc *tunnelClient) noteIdleRetire() bool {
+	// Fixed-size modes keep their streams open through idle periods; that
+	// steady footprint is the point of the model.
+	if tc.config.TunnelConnMode.IsFixed() {
+		return false
+	}
+
 	min := int32(tc.minSlots())
 	for {
 		t := tc.targetSlots.Load()
@@ -821,7 +889,12 @@ func (tc *tunnelClient) runOneStream(id int) error {
 		close(watchdogDone)
 		tc.removeStream(sc.ts)
 		sc.ts.cancel()
-		if sc.ts.conn != nil {
+		if sc.ts.connIdx >= 0 {
+			// Shared: closes only once the last stream on it lets go.
+			if sid := tc.conns.release(sc.ts.connIdx); sid != "" {
+				tc.releaseServerSlot(sid)
+			}
+		} else if sc.ts.conn != nil {
 			sc.ts.conn.Close()
 		}
 	}()
@@ -923,9 +996,35 @@ func (tc *tunnelClient) openSlot(id int) (*streamCtx, error) {
 		return nil, newConnectErr("dial_opts", err)
 	}
 
-	conn, err := grpc.NewClient(dialAddr, dialOpts...)
-	if err != nil {
-		return nil, newConnectErr("dial", err)
+	// In "mux" mode several stream workers share one connection, so dial
+	// through the group; otherwise this worker owns its connection.
+	connIdx := -1
+	var conn *grpc.ClientConn
+	dial := func() (*grpc.ClientConn, error) { return grpc.NewClient(dialAddr, dialOpts...) }
+	if tc.config.TunnelConnMode == config.TunnelConnModeMux {
+		connIdx = tc.connIndex(id)
+		entry, aerr := tc.conns.acquire(connIdx, dial)
+		if aerr != nil {
+			return nil, newConnectErr("dial", aerr)
+		}
+		conn = entry.conn
+	} else {
+		conn, err = dial()
+		if err != nil {
+			return nil, newConnectErr("dial", err)
+		}
+	}
+
+	// closeConn undoes the acquisition above: a dedicated connection closes
+	// outright, a shared one only when its last stream lets go.
+	closeConn := func() {
+		if connIdx < 0 {
+			conn.Close()
+			return
+		}
+		if sid := tc.conns.release(connIdx); sid != "" {
+			tc.releaseServerSlot(sid)
+		}
 	}
 
 	streamCtxParent, cancel := context.WithCancel(tc.parentCtx)
@@ -938,7 +1037,7 @@ func (tc *tunnelClient) openSlot(id int) (*streamCtx, error) {
 	if err != nil {
 		handshakeTimer.Stop()
 		cancel()
-		conn.Close()
+		closeConn()
 		return nil, newConnectErr("open_stream", err)
 	}
 
@@ -960,7 +1059,7 @@ func (tc *tunnelClient) openSlot(id int) (*streamCtx, error) {
 	if err := stream.Send(hello); err != nil {
 		handshakeTimer.Stop()
 		cancel()
-		conn.Close()
+		closeConn()
 		return nil, newConnectErr("send_hello", err)
 	}
 
@@ -968,7 +1067,7 @@ func (tc *tunnelClient) openSlot(id int) (*streamCtx, error) {
 	if err != nil {
 		handshakeTimer.Stop()
 		cancel()
-		conn.Close()
+		closeConn()
 		return nil, newConnectErr("recv_hello", err)
 	}
 	handshakeTimer.Stop()
@@ -976,7 +1075,7 @@ func (tc *tunnelClient) openSlot(id int) (*streamCtx, error) {
 	serverHello := msg.GetHello()
 	if serverHello == nil {
 		cancel()
-		conn.Close()
+		closeConn()
 		return nil, newConnectErr("recv_hello", errors.New("expected ServerHello"))
 	}
 
@@ -984,15 +1083,28 @@ func (tc *tunnelClient) openSlot(id int) (*streamCtx, error) {
 		tc.serverMaxStreams.Store(serverHello.MaxStreams)
 	}
 
-	if !tc.acquireServerSlot(serverHello.ServerId) {
-		tc.logger.Info("Server stream cap reached; will retry to land on a different instance",
-			zap.String("serverId", serverHello.ServerId),
-			zap.Int("slot", id),
-			zap.Int("cap", tc.config.MaxStreamsPerServer),
-		)
-		cancel()
-		conn.Close()
-		return nil, errServerCapHit
+	// The per-server cap counts connections, not streams: on a shared
+	// connection only the first stream takes a slot, since every stream on it
+	// talks to the same backend. That keeps MaxStreamsPerServer meaning "how
+	// many connections may land on one server instance" in every mode.
+	takeSlot := true
+	if connIdx >= 0 {
+		takeSlot = tc.conns.noteServerID(connIdx, serverHello.ServerId)
+	}
+	if takeSlot {
+		if !tc.acquireServerSlot(serverHello.ServerId) {
+			tc.logger.Info("Server stream cap reached; will retry to land on a different instance",
+				zap.String("serverId", serverHello.ServerId),
+				zap.Int("slot", id),
+				zap.Int("cap", tc.config.MaxStreamsPerServer),
+			)
+			cancel()
+			closeConn()
+			return nil, errServerCapHit
+		}
+		if connIdx >= 0 {
+			tc.conns.setSlotHeld(connIdx, true)
+		}
 	}
 
 	ts := &tunnelStream{
@@ -1001,6 +1113,7 @@ func (tc *tunnelClient) openSlot(id int) (*streamCtx, error) {
 		serverID: serverHello.ServerId,
 		conn:     conn,
 		cancel:   cancel,
+		connIdx:  connIdx,
 	}
 	ts.lastCallAt.Store(time.Now().UnixNano())
 
@@ -1134,6 +1247,12 @@ func (tc *tunnelClient) Close() error {
 	}
 
 	tc.wg.Wait()
+
+	// Workers release their own connections as they exit; this sweeps up any
+	// that outlived them (e.g. a dial that finished after cancellation).
+	if tc.conns != nil {
+		tc.conns.closeAll()
+	}
 
 	tc.mu.Lock()
 	tc.streams = nil

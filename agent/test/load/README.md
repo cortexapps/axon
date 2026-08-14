@@ -53,6 +53,38 @@ workflow via `make -C agent load-test` if desired.
 | `CHAOS_INTERVAL` | 20 | seconds between chaos events |
 | `MIN_SUCCESS_PCT` | 99 | availability floor per load generator |
 | `MAX_BODY_BYTES` / `MAX_RESP_BYTES` | 2MiB / 4MiB | payload ceilings (exercise chunking) |
+| `CONN_MODE` | pool | agent connection model: `pool`, `conns` or `mux` |
+| `CONNS` | 8 | connection count for `conns` / `mux` |
+| `STREAMS_PER_CONN` | 8 | streams multiplexed per connection (`mux` only) |
+| `RUN_TAG` | `$CONN_MODE` | subdirectory under `reports/` for this run's artifacts |
+
+## Comparing connection models
+
+`compare_conn_models.sh` runs the harness once per connection model at
+identical topology, load and chaos rate, then prints a side-by-side table:
+
+```bash
+./compare_conn_models.sh                      # pool, conns, mux
+MODELS="pool mux" DURATION=10m ./compare_conn_models.sh
+```
+
+Each model is sized to the **same concurrent stream count** (`STREAMS`,
+default 16), so the comparison isolates connection count rather than
+concurrency:
+
+| Model | Connections | Streams/conn | Shape |
+|-------|-------------|--------------|-------|
+| `pool` | grows 2→16 | 1 | adaptive watermark (default) |
+| `conns` | 16 | 1 | fixed fan-out, one connection per stream |
+| `mux` | 2 | 8 | few connections, HTTP/2 multiplexing (snyk-broker's shape) |
+
+Note `MAX_STREAMS_PER_SERVER` counts *connections*, not streams — in `mux`
+mode the streams sharing a connection all land on the same backend, so only
+the first takes a server slot. The comparison raises it to 4 so it never
+binds before the model's own connection count does.
+
+Per-model artifacts land in `reports/<model>/`; re-summarize any time with
+`python3 summarize_models.py pool conns mux`.
 
 ## Reading the results
 
