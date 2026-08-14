@@ -68,7 +68,22 @@ func (rb *recordingBackend) snapshot() (int, string, http.Header) {
 // synthetic names.
 func newRoutedReflector(t *testing.T, backends map[string]*recordingBackend) *RegistrationReflector {
 	t.Helper()
-	transport := &http.Transport{
+	transport := routedTransport(t, backends)
+	rr := newReflectorWithDrain(t, RegistrationReflectorParams{
+		Logger:    newTestLogger(t),
+		Registry:  prometheus.NewRegistry(),
+		Transport: transport,
+		Config:    config.AgentConfig{ReflectorWebSocketUpgrade: true},
+	})
+	t.Cleanup(func() { rr.Stop() })
+	return rr
+}
+
+// routedTransport is the DNS stand-in on its own, for tests that also need to
+// reach a backend without going through the reflector.
+func routedTransport(t *testing.T, backends map[string]*recordingBackend) *http.Transport {
+	t.Helper()
+	return &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			host, _, err := net.SplitHostPort(addr)
 			if err != nil {
@@ -82,14 +97,6 @@ func newRoutedReflector(t *testing.T, backends map[string]*recordingBackend) *Re
 		},
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 	}
-	rr := newReflectorWithDrain(t, RegistrationReflectorParams{
-		Logger:    newTestLogger(t),
-		Registry:  prometheus.NewRegistry(),
-		Transport: transport,
-		Config:    config.AgentConfig{ReflectorWebSocketUpgrade: true},
-	})
-	t.Cleanup(func() { rr.Stop() })
-	return rr
 }
 
 func TestParseOriginAcceptsWildcardFamilies(t *testing.T) {

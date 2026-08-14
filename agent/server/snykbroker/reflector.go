@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
-	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -185,7 +184,9 @@ func (rr *RegistrationReflector) getProxy(targetURI string, isDefault bool, head
 			zap.String("proxyURI", entry.proxyURI),
 			zap.Bool("isDefault", entry.isDefault),
 			zap.String("key", key),
-			zap.Any("headers", headers),
+			// Names only. A rule header value is a credential, and the
+			// resolver carries the accept-file value verbatim.
+			zap.Strings("headerNames", headers.Names()),
 		)
 		return &entry, nil
 	}
@@ -532,14 +533,9 @@ func (pe *proxyEntry) key() string {
 
 		if len(pe.headers) > 0 {
 			// Create a unique key that includes headers to allow different header sets for the same URI.
-			// Sorted so the hash is stable across map iteration order.
-			names := make([]string, 0, len(pe.headers))
-			for k := range pe.headers {
-				names = append(names, k)
-			}
-			sort.Strings(names)
+			// Names() sorts, so the hash is stable across map iteration order.
 			headerKey := ""
-			for _, k := range names {
+			for _, k := range pe.headers.Names() {
 				headerKey += fmt.Sprintf("|%s=%s", k, pe.headers.ResolverKey(k))
 			}
 			key = key + headerKey
