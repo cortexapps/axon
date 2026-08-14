@@ -35,9 +35,10 @@ type RegisterableHandler interface {
 type ServerOption func(*serverOptions)
 
 type serverOptions struct {
-	name     string
-	registry *prometheus.Registry
-	port     int
+	name         string
+	registry     *prometheus.Registry
+	port         int
+	loopbackOnly bool
 }
 
 func WithName(name string) ServerOption {
@@ -55,6 +56,20 @@ func WithRegistry(registry *prometheus.Registry) ServerOption {
 func WithPort(port int) ServerOption {
 	return func(s *serverOptions) {
 		s.port = port
+	}
+}
+
+// WithLoopbackOnly binds the listener to 127.0.0.1 rather than every
+// interface.
+//
+// Required for any server that injects credentials into the requests it
+// forwards: reachable off-host, such a server is an open proxy that mints a
+// real token for whoever asks. The only client is the broker running beside
+// the agent, so the loopback bind costs nothing and is the control itself,
+// not a check a handler has to remember.
+func WithLoopbackOnly() ServerOption {
+	return func(s *serverOptions) {
+		s.loopbackOnly = true
 	}
 }
 
@@ -120,7 +135,8 @@ func NewHttpServer(p HttpServerParams, opts ...ServerOption) Server {
 			},
 			[]string{"method", "path", "status"},
 		),
-		config: p.Config,
+		config:       p.Config,
+		loopbackOnly: serverOpts.loopbackOnly,
 	}
 
 	server.mux.Use(server.requestMiddleware)
@@ -165,6 +181,7 @@ type httpServer struct {
 	requestCounter *prometheus.CounterVec
 	requestLatency *prometheus.HistogramVec
 	config         config.AgentConfig
+	loopbackOnly   bool
 }
 
 func (h *httpServer) RegisterHandler(handler RegisterableHandler) {
@@ -265,7 +282,14 @@ func (h *httpServer) Start() (int, error) {
 		panic("Server already started")
 	}
 
-	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", h.port))
+	// An explicit 127.0.0.1 rather than "localhost": the latter resolves to
+	// both ::1 and 127.0.0.1, and a client that reaches for the wrong one
+	// first finds nothing listening.
+	host := ""
+	if h.loopbackOnly {
+		host = "127.0.0.1"
+	}
+	ln, err := net.Listen("tcp", fmt.Sprintf("%s:%d", host, h.port))
 	if err != nil {
 		panic(err)
 	}

@@ -55,7 +55,13 @@ func NewRegistrationReflector(p RegistrationReflectorParams) *RegistrationReflec
 		httpParams.Registry = p.Registry
 	}
 
-	server := cortexHttp.NewHttpServer(httpParams, cortexHttp.WithName("relay-reflector"))
+	// The reflector injects rule credentials into what it forwards, so it must
+	// never be reachable from off the host. Its only client is the broker
+	// running beside the agent.
+	server := cortexHttp.NewHttpServer(httpParams,
+		cortexHttp.WithName("relay-reflector"),
+		cortexHttp.WithLoopbackOnly(),
+	)
 
 	rr := &RegistrationReflector{
 		transport: p.Transport,
@@ -571,7 +577,10 @@ func (pe *proxyEntry) addResponseHeader(name, value string) {
 }
 
 func (pe *proxyEntry) encodeProxyUri(targetURI string, port int, isDefault bool) string {
-	baseProxyURI := fmt.Sprintf("http://localhost:%d", port)
+	// 127.0.0.1 rather than "localhost", to match what the reflector actually
+	// binds. "localhost" resolves to ::1 as well, and a client that tries that
+	// first finds nothing listening.
+	baseProxyURI := fmt.Sprintf("http://127.0.0.1:%d", port)
 	if isDefault {
 		// for default proxy, we only change the host and port
 		// to be our proxy
