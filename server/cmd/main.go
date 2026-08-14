@@ -10,13 +10,13 @@ import (
 	"syscall"
 	"time"
 
+	pb "github.com/cortexapps/axon-server/.generated/proto/tunnelpb"
 	"github.com/cortexapps/axon-server/adapters"
 	"github.com/cortexapps/axon-server/broker"
 	"github.com/cortexapps/axon-server/config"
 	"github.com/cortexapps/axon-server/dispatch"
 	"github.com/cortexapps/axon-server/metrics"
 	"github.com/cortexapps/axon-server/tunnel"
-	pb "github.com/cortexapps/axon-server/.generated/proto/tunnelpb"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"google.golang.org/grpc"
@@ -95,16 +95,18 @@ func main() {
 		Handler: httpMux,
 	}
 
-	// Notify BROKER_SERVER that this server instance has started.
+	// Notify BROKER_SERVER that this server instance has started. The
+	// client retries transient failures internally; the outer loop adds
+	// unbounded persistence for longer outages.
 	if brokerClient.IsConfigured() {
 		go func() {
-			backoff := time.Second
+			backoff := 5 * time.Second
 			for {
-				if err := brokerClient.ServerStarting(cfg.ServerID); err != nil {
-					logger.Warn("BROKER_SERVER server-starting failed, retrying",
+				if err := brokerClient.ServerStarting(context.Background(), cfg.ServerID); err != nil {
+					logger.Warn("BROKER_SERVER server-starting exhausted retries, will try again",
 						zap.Error(err), zap.Duration("backoff", backoff))
 					time.Sleep(backoff)
-					backoff = min(backoff*2, 30*time.Second)
+					backoff = min(backoff*2, time.Minute)
 					continue
 				}
 				logger.Info("BROKER_SERVER server-starting succeeded")
@@ -127,7 +129,7 @@ func main() {
 					return
 				case <-ticker.C:
 					registry.ForEach(func(token broker.Token, identity tunnel.ClientIdentity) {
-						if err := brokerClient.ClientConnected(token, identity.InstanceID, nil); err != nil {
+						if err := brokerClient.ClientConnected(ctx, token, identity.InstanceID, nil); err != nil {
 							logger.Warn("Periodic re-registration failed",
 								zap.String("tenantId", identity.TenantID),
 								zap.Error(err))
@@ -163,7 +165,7 @@ func main() {
 
 	// Notify BROKER_SERVER of shutdown before draining (best-effort).
 	if brokerClient.IsConfigured() {
-		if err := brokerClient.ServerStopping(); err != nil {
+		if err := brokerClient.ServerStopping(shutdownCtx); err != nil {
 			logger.Warn("BROKER_SERVER server-stopping failed", zap.Error(err))
 		} else {
 			logger.Info("BROKER_SERVER server-stopping succeeded")

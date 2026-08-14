@@ -2,14 +2,24 @@ package broker
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"math/rand/v2"
 	"net/http"
 	"net/url"
 	"time"
 
 	"go.uber.org/zap"
+)
+
+const (
+	defaultMaxAttempts  = 4
+	defaultRetryBackoff = 500 * time.Millisecond
+	maxRetryBackoff     = 5 * time.Second
 )
 
 const dispatcherAPIVersion = "2022-12-02~experimental"
@@ -26,6 +36,10 @@ type Client struct {
 	serverID   string
 	httpClient *http.Client
 	logger     *zap.Logger
+
+	// Retry policy for transient failures (network errors, 429, 5xx).
+	maxAttempts  int
+	retryBackoff time.Duration
 }
 
 // NewClient creates a new BROKER_SERVER client.
@@ -37,8 +51,44 @@ func NewClient(baseURL string, serverID string, logger *zap.Logger) *Client {
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 		},
-		logger: logger,
+		logger:       logger,
+		maxAttempts:  defaultMaxAttempts,
+		retryBackoff: defaultRetryBackoff,
 	}
+}
+
+// SetRetryPolicy overrides the transient-failure retry policy (mainly for
+// tests). maxAttempts includes the first try; backoff doubles per retry up
+// to maxRetryBackoff.
+func (c *Client) SetRetryPolicy(maxAttempts int, backoff time.Duration) {
+	if maxAttempts > 0 {
+		c.maxAttempts = maxAttempts
+	}
+	if backoff > 0 {
+		c.retryBackoff = backoff
+	}
+}
+
+// statusError marks a non-success HTTP response so isRetryable can
+// distinguish transient (429, 5xx) from permanent (other 4xx) failures.
+type statusError struct {
+	method, path string
+	code         int
+}
+
+func (e *statusError) Error() string {
+	return fmt.Sprintf("broker-server %s %s: status %d", e.method, e.path, e.code)
+}
+
+// isRetryable reports whether an attempt failure is worth retrying:
+// network-level errors and 429/5xx responses are transient; other HTTP
+// statuses are permanent.
+func isRetryable(err error) bool {
+	var se *statusError
+	if errors.As(err, &se) {
+		return se.code == http.StatusTooManyRequests || se.code >= 500
+	}
+	return true // network-level failure
 }
 
 // IsConfigured returns true if a BROKER_SERVER URL is set.
@@ -95,7 +145,7 @@ type jsonAPIData struct {
 
 // ClientConnected notifies the BROKER_SERVER that a client has connected.
 // POST /internal/brokerservers/{serverId}/connections/{hashedToken}?broker_client_id=...&request_type=client-connected&version=...
-func (c *Client) ClientConnected(token Token, clientID string, metadata map[string]string) error {
+func (c *Client) ClientConnected(ctx context.Context, token Token, clientID string, metadata map[string]string) error {
 	if !c.IsConfigured() {
 		return nil
 	}
@@ -123,12 +173,12 @@ func (c *Client) ClientConnected(token Token, clientID string, metadata map[stri
 		}
 	}
 
-	return c.doRequest(http.MethodPost, path, params, body)
+	return c.doRequest(ctx, http.MethodPost, path, params, body)
 }
 
 // ClientDisconnected notifies the BROKER_SERVER that a client has disconnected.
 // DELETE /internal/brokerservers/{serverId}/connections/{hashedToken}?broker_client_id=...&version=...
-func (c *Client) ClientDisconnected(token Token, clientID string) error {
+func (c *Client) ClientDisconnected(ctx context.Context, token Token, clientID string) error {
 	if !c.IsConfigured() {
 		return nil
 	}
@@ -140,12 +190,12 @@ func (c *Client) ClientDisconnected(token Token, clientID string) error {
 		params.Set("broker_client_id", clientID)
 	}
 
-	return c.doRequest(http.MethodDelete, path, params, nil)
+	return c.doRequest(ctx, http.MethodDelete, path, params, nil)
 }
 
 // ServerStarting notifies the BROKER_SERVER that this server instance has started.
 // POST /internal/brokerservers/{serverId}?version=...
-func (c *Client) ServerStarting(hostname string) error {
+func (c *Client) ServerStarting(ctx context.Context, hostname string) error {
 	if !c.IsConfigured() {
 		return nil
 	}
@@ -160,22 +210,29 @@ func (c *Client) ServerStarting(hostname string) error {
 		},
 	}
 
-	return c.doRequest(http.MethodPost, path, nil, body)
+	return c.doRequest(ctx, http.MethodPost, path, nil, body)
 }
 
 // ServerStopping notifies the BROKER_SERVER that this server instance is shutting down.
 // DELETE /internal/brokerservers/{serverId}?version=...
-func (c *Client) ServerStopping() error {
+func (c *Client) ServerStopping(ctx context.Context) error {
 	if !c.IsConfigured() {
 		return nil
 	}
 
 	path := fmt.Sprintf("/internal/brokerservers/%s", c.serverID)
-	return c.doRequest(http.MethodDelete, path, nil, nil)
+	return c.doRequest(ctx, http.MethodDelete, path, nil, nil)
 }
 
-// doRequest sends a request to the dispatcher API with the required version param and content type.
-func (c *Client) doRequest(method, path string, params url.Values, body any) error {
+// doRequest sends a request to the dispatcher API with the required version
+// param and content type, retrying transient failures (network errors, 429,
+// 5xx) with jittered exponential backoff, bounded by ctx and the client's
+// retry policy. Permanent failures (other 4xx) return immediately.
+func (c *Client) doRequest(ctx context.Context, method, path string, params url.Values, body any) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	u, err := url.Parse(c.baseURL + path)
 	if err != nil {
 		return fmt.Errorf("parse URL: %w", err)
@@ -193,21 +250,56 @@ func (c *Client) doRequest(method, path string, params url.Values, body any) err
 	q.Set("version", dispatcherAPIVersion)
 	u.RawQuery = q.Encode()
 
-	var reqBody *bytes.Reader
+	// Marshal once; each attempt gets a fresh reader.
+	var jsonBody []byte
 	if body != nil {
-		jsonBody, err := json.Marshal(body)
+		jsonBody, err = json.Marshal(body)
 		if err != nil {
 			return fmt.Errorf("marshal request body: %w", err)
 		}
-		reqBody = bytes.NewReader(jsonBody)
 	}
 
-	var httpReq *http.Request
-	if reqBody != nil {
-		httpReq, err = http.NewRequest(method, u.String(), reqBody)
-	} else {
-		httpReq, err = http.NewRequest(method, u.String(), nil)
+	backoff := c.retryBackoff
+	var lastErr error
+	for attempt := 1; attempt <= c.maxAttempts; attempt++ {
+		if attempt > 1 {
+			// Jittered backoff so a fleet of servers doesn't retry in sync.
+			jitter := time.Duration(rand.Int64N(int64(backoff) / 2))
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("broker-server %s %s: %w (last error: %w)", method, path, ctx.Err(), lastErr)
+			case <-time.After(backoff/2 + jitter):
+			}
+			if backoff *= 2; backoff > maxRetryBackoff {
+				backoff = maxRetryBackoff
+			}
+		}
+
+		lastErr = c.attempt(ctx, method, u.String(), path, jsonBody)
+		if lastErr == nil {
+			return nil
+		}
+		if !isRetryable(lastErr) {
+			return lastErr
+		}
+		c.logger.Warn("BROKER_SERVER request failed; will retry",
+			zap.String("method", method),
+			zap.String("path", path),
+			zap.Int("attempt", attempt),
+			zap.Int("maxAttempts", c.maxAttempts),
+			zap.Error(lastErr),
+		)
 	}
+	return fmt.Errorf("broker-server %s %s failed after %d attempts: %w", method, path, c.maxAttempts, lastErr)
+}
+
+// attempt performs a single request.
+func (c *Client) attempt(ctx context.Context, method, fullURL, path string, jsonBody []byte) error {
+	var reader io.Reader
+	if jsonBody != nil {
+		reader = bytes.NewReader(jsonBody)
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, method, fullURL, reader)
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}
@@ -217,23 +309,12 @@ func (c *Client) doRequest(method, path string, params url.Values, body any) err
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
-		c.logger.Warn("BROKER_SERVER request failed",
-			zap.String("method", method),
-			zap.String("path", path),
-			zap.Error(err),
-		)
 		return fmt.Errorf("broker-server %s %s: %w", method, path, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 300 {
-		c.logger.Warn("BROKER_SERVER returned non-success status",
-			zap.String("method", method),
-			zap.String("path", path),
-			zap.Int("status", resp.StatusCode),
-		)
-		return fmt.Errorf("broker-server %s %s: status %d", method, path, resp.StatusCode)
+		return &statusError{method: method, path: path, code: resp.StatusCode}
 	}
-
 	return nil
 }

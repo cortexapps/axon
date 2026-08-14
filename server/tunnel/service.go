@@ -289,13 +289,16 @@ func (s *Service) cleanupStream(token broker.Token, streamID string, stopwatch i
 	}
 }
 
-// notifyClientConnected sends client-connected to BROKER_SERVER with infinite retry.
+// notifyClientConnected sends client-connected to BROKER_SERVER. The
+// client retries transient failures internally; this outer loop adds
+// unbounded persistence — registration must eventually land as long as
+// the stream lives — with a longer backoff between client-level rounds.
 func (s *Service) notifyClientConnected(ctx context.Context, token broker.Token, clientID, clientVersion string) {
-	backoff := time.Second
-	maxBackoff := 30 * time.Second
+	backoff := 5 * time.Second
+	maxBackoff := time.Minute
 
 	for {
-		err := s.brokerClient.ClientConnected(token, clientID, map[string]string{
+		err := s.brokerClient.ClientConnected(ctx, token, clientID, map[string]string{
 			"broker_client_version": clientVersion,
 		})
 		if err == nil {
@@ -306,7 +309,7 @@ func (s *Service) notifyClientConnected(ctx context.Context, token broker.Token,
 			return
 		}
 
-		s.logger.Warn("BROKER_SERVER client-connected failed, retrying",
+		s.logger.Warn("BROKER_SERVER client-connected exhausted retries, will try again",
 			zap.Error(err),
 			zap.Duration("backoff", backoff),
 		)
@@ -321,20 +324,14 @@ func (s *Service) notifyClientConnected(ctx context.Context, token broker.Token,
 	}
 }
 
-// notifyClientDisconnected sends client-disconnected to BROKER_SERVER with limited retry.
+// notifyClientDisconnected sends client-disconnected to BROKER_SERVER.
+// Transient-failure retry lives in the client; this is bounded (the
+// stream is already gone, so best-effort within a timeout).
 func (s *Service) notifyClientDisconnected(token broker.Token, clientID string) {
-	backoff := time.Second
-	for attempt := range 3 {
-		err := s.brokerClient.ClientDisconnected(token, clientID)
-		if err == nil {
-			return
-		}
-		s.logger.Warn("BROKER_SERVER client-disconnected failed",
-			zap.Error(err),
-			zap.Int("attempt", attempt+1),
-		)
-		time.Sleep(backoff)
-		backoff *= 2
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := s.brokerClient.ClientDisconnected(ctx, token, clientID); err != nil {
+		s.logger.Warn("BROKER_SERVER client-disconnected failed", zap.Error(err))
 	}
 }
 
