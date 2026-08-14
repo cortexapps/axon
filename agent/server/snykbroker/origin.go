@@ -1,6 +1,7 @@
 package snykbroker
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -25,20 +26,37 @@ const HeaderTargetHost = "x-cortex-target-host"
 // behind it.
 const ErrClassDestinationRejected = "AXON_DESTINATION_REJECTED"
 
+// ErrWildcardOriginRequiresTLSVerification is the named startup failure for a
+// wildcard origin configured while certificate verification is off.
+//
+// Hostname authorization is only worth what the certificate check behind it is
+// worth. With verification disabled, anything that can answer the connection
+// can claim the authorized name, so the origin policy authorizes nothing. A
+// concrete origin has the same weakness but names one host the operator chose;
+// a family does not, so this refuses to start rather than rejecting per
+// request.
+var ErrWildcardOriginRequiresTLSVerification = errors.New(
+	"a wildcard origin requires TLS verification, but it is disabled")
+
 // wildcardOrigin is an origin whose leftmost DNS label is a wildcard, such as
-// "https://*.googleapis.com". It authorizes a hostname family and a scheme;
+// "https://*.example.com". It authorizes a hostname family and a scheme;
 // the concrete authority arrives per request.
 type wildcardOrigin struct {
 	// suffix is the part after the "*", with the dot kept so matching is
-	// label-aligned: ".googleapis.com".
+	// label-aligned: ".example.com".
 	suffix string
 }
 
 // matches reports whether host sits exactly one label under the wildcard.
 //
-// One label, not one-or-more: every authority Cortex dials is a single label
-// under googleapis.com, and multi-label matching would silently admit the
-// "<service>.mtls.googleapis.com" family, which is a deliberate non-target.
+// One label, not one-or-more. This is not extra strictness for its own sake: a
+// wildcard certificate covers a single label, so a multi-label match would
+// authorize names that certificate verification then refuses - a policy
+// promising reach it cannot deliver. It also keeps a nested family such as
+// "<service>.internal.example.com" from being admitted by a rule that only
+// meant to authorize the level above it.
+//
+// Do not relax this to a plain suffix test.
 func (w wildcardOrigin) matches(host string) bool {
 	if !strings.HasSuffix(host, w.suffix) {
 		return false
@@ -86,9 +104,9 @@ func parseOrigin(origin string) (*url.URL, *wildcardOrigin, error) {
 	// registrable label beneath it.
 	//
 	// Only the ICANN division counts. The list's private section contains
-	// registrable domains that operators added for cookie scoping -
-	// googleapis.com among them - and treating those as public would reject
-	// the very families this exists to express.
+	// registrable domains that operators added for cookie scoping, and several
+	// of the families this exists to express are among them, so treating the
+	// private section as public would reject them.
 	if publicSuffix, icann := publicsuffix.PublicSuffix(suffix); icann && publicSuffix == suffix {
 		return nil, nil, fmt.Errorf("wildcard origin %q must contain a registrable domain", origin)
 	}
@@ -111,6 +129,16 @@ func parseTargetHost(value string) (string, error) {
 	}
 	if strings.TrimSpace(value) != value || strings.ContainsAny(value, " \t\r\n") {
 		return "", fmt.Errorf("target host contains whitespace")
+	}
+
+	// Only the default HTTPS port is tolerated, and it is normalized away. Any
+	// other port would dial somewhere the origin policy never authorized,
+	// since the policy names a host family and a scheme but no port.
+	if hostOnly, port, err := net.SplitHostPort(value); err == nil {
+		if port != "443" {
+			return "", fmt.Errorf("target host declares a non-default port")
+		}
+		value = hostOnly
 	}
 
 	host := strings.ToLower(value)

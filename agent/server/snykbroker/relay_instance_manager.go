@@ -478,8 +478,14 @@ func (r *relayInstanceManager) reflectorRenderStep(renderContext acceptfile.Rend
 	for _, route := range renderContext.AcceptFile.PrivateRules() {
 		// ProxyURI cannot report failure, and a malformed wildcard origin must
 		// stop the agent rather than register a rule that can never route.
-		if _, _, err := parseOrigin(route.Origin()); err != nil {
+		// Origin() expands the environment first, so an expanded value cannot
+		// skip these checks.
+		_, wildcard, err := parseOrigin(route.Origin())
+		if err != nil {
 			return fmt.Errorf("accept file rule has an invalid origin: %w", err)
+		}
+		if wildcard != nil && r.config.HttpDisableTLS {
+			return fmt.Errorf("%w: %s", ErrWildcardOriginRequiresTLSVerification, route.Origin())
 		}
 		routeUri := r.reflector.ProxyURI(
 			route.Origin(),

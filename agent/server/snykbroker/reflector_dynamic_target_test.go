@@ -98,8 +98,8 @@ func newRoutedReflector(t *testing.T, backends map[string]*recordingBackend) *Re
 
 func TestParseOriginAcceptsWildcardFamilies(t *testing.T) {
 	for _, origin := range []string{
-		"https://*.googleapis.com",
-		"https://*.mtls.googleapis.com",
+		"https://*.api.example.net",
+		"https://*.internal.api.example.net",
 		"https://*.axon.example.com",
 	} {
 		_, wildcard, err := parseOrigin(origin)
@@ -110,12 +110,12 @@ func TestParseOriginAcceptsWildcardFamilies(t *testing.T) {
 
 func TestParseOriginRejectsUnusableWildcards(t *testing.T) {
 	cases := map[string]string{
-		"plaintext":            "http://*.googleapis.com",
-		"explicit port":        "https://*.googleapis.com:8443",
+		"plaintext":            "http://*.api.example.net",
+		"explicit port":        "https://*.api.example.net:8443",
 		"bare wildcard":        "https://*",
-		"partial label":        "https://a*.googleapis.com",
-		"non-leftmost":         "https://foo.*.googleapis.com",
-		"two wildcards":        "https://*.*.googleapis.com",
+		"partial label":        "https://a*.api.example.net",
+		"non-leftmost":         "https://foo.*.api.example.net",
+		"two wildcards":        "https://*.*.api.example.net",
 		"public suffix":        "https://*.com",
 		"multipart public sfx": "https://*.co.uk",
 		"empty suffix":         "https://*.",
@@ -130,7 +130,7 @@ func TestParseOriginRejectsUnusableWildcards(t *testing.T) {
 
 func TestParseOriginLeavesConcreteOriginsAlone(t *testing.T) {
 	for _, origin := range []string{
-		"https://bigquery.googleapis.com",
+		"https://beta.api.example.net",
 		"http://127.0.0.1:8080",
 	} {
 		asURL, wildcard, err := parseOrigin(origin)
@@ -140,26 +140,29 @@ func TestParseOriginLeavesConcreteOriginsAlone(t *testing.T) {
 	}
 }
 
-// The wildcard covers one label, so the deliberately-excluded
-// "<service>.mtls.googleapis.com" family cannot slip in under "*.googleapis.com".
+// One label, not one-or-more. A wildcard certificate covers a single label, so
+// a multi-label match would authorize names that certificate verification then
+// refuses. It also keeps a nested family such as "svc.internal.api.example.net"
+// from being admitted by a rule that only meant to authorize the level above.
+// If this test is failing, the fix is not to relax it.
 func TestWildcardMatchesExactlyOneLabel(t *testing.T) {
-	_, wildcard, err := parseOrigin("https://*.googleapis.com")
+	_, wildcard, err := parseOrigin("https://*.api.example.net")
 	require.NoError(t, err)
 
 	for _, host := range []string{
-		"compute.googleapis.com",
-		"us-central1-aiplatform.googleapis.com",
+		"alpha.api.example.net",
+		"eu-west1-compute.api.example.net",
 	} {
 		require.True(t, wildcard.matches(host), "host=%q", host)
 	}
 
 	for _, host := range []string{
-		"a.b.googleapis.com",
-		"bigquery.mtls.googleapis.com",
-		"googleapis.com",
-		"evilgoogleapis.com",
-		"notgoogleapis.com",
-		"compute.googleapis.com.evil.com",
+		"a.b.api.example.net",
+		"svc.internal.api.example.net",
+		"api.example.net",
+		"evilapi.example.net",
+		"notapi.example.net",
+		"alpha.api.example.net.evil.com",
 		"evil.com",
 	} {
 		require.False(t, wildcard.matches(host), "host=%q", host)
@@ -167,30 +170,37 @@ func TestWildcardMatchesExactlyOneLabel(t *testing.T) {
 }
 
 func TestParseTargetHostNormalizesAndRejects(t *testing.T) {
-	host, err := parseTargetHost("COMPUTE.GoogleAPIs.com")
+	host, err := parseTargetHost("ALPHA.API.Example.NET")
 	require.NoError(t, err)
-	require.Equal(t, "compute.googleapis.com", host)
+	require.Equal(t, "alpha.api.example.net", host)
+
+	// The default HTTPS port is the one port the origin policy already implies,
+	// so it is normalized away rather than rejected.
+	host, err = parseTargetHost("alpha.api.example.net:443")
+	require.NoError(t, err)
+	require.Equal(t, "alpha.api.example.net", host)
 
 	cases := map[string]string{
-		"empty":            "",
-		"comma joined":     "a.googleapis.com,b.googleapis.com",
-		"leading space":    " compute.googleapis.com",
-		"inner space":      "compute googleapis.com",
-		"tab":              "compute.googleapis.com\t",
-		"port":             "compute.googleapis.com:8443",
-		"url":              "https://compute.googleapis.com",
-		"path":             "compute.googleapis.com/v1",
-		"user info":        "user@compute.googleapis.com",
-		"wildcard":         "*.googleapis.com",
-		"ipv4":             "127.0.0.1",
-		"ipv6":             "::1",
-		"unicode":          "compute.googleapıs.com",
-		"trailing dot":     "compute.googleapis.com.",
-		"leading dot":      ".googleapis.com",
-		"empty inner":      "compute..googleapis.com",
-		"hyphen bounded":   "-compute.googleapis.com",
-		"underscore":       "compute_x.googleapis.com",
-		"percent encoding": "compute%2egoogleapis.com",
+		"empty":             "",
+		"comma joined":      "alpha.api.example.net,beta.api.example.net",
+		"leading space":     " alpha.api.example.net",
+		"inner space":       "alpha api.example.net",
+		"tab":               "alpha.api.example.net\t",
+		"port":              "alpha.api.example.net:8443",
+		"url":               "https://alpha.api.example.net",
+		"path":              "alpha.api.example.net/v1",
+		"user info":         "user@alpha.api.example.net",
+		"wildcard":          "*.api.example.net",
+		"ipv4":              "127.0.0.1",
+		"ipv6":              "::1",
+		"unicode":           "alpha.api.exampleı.net",
+		"trailing dot":      "alpha.api.example.net.",
+		"leading dot":       ".api.example.net",
+		"empty inner":       "alpha..api.example.net",
+		"hyphen bounded":    "-alpha.api.example.net",
+		"hyphen only label": "-.api.example.net",
+		"underscore":        "alpha_x.api.example.net",
+		"percent encoding":  "alpha%2eapi.example.net",
 	}
 	for name, value := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -202,9 +212,9 @@ func TestParseTargetHostNormalizesAndRejects(t *testing.T) {
 
 // The spec's routing table, as a unit: fail-closed in both directions.
 func TestResolveTargetHostFailsClosedBothDirections(t *testing.T) {
-	wildcardEntry, err := newProxyEntry("https://*.googleapis.com", false, 1234, nil, nil)
+	wildcardEntry, err := newProxyEntry("https://*.api.example.net", false, 1234, nil, nil)
 	require.NoError(t, err)
-	concreteEntry, err := newProxyEntry("https://bigquery.googleapis.com", false, 1234, nil, nil)
+	concreteEntry, err := newProxyEntry("https://beta.api.example.net", false, 1234, nil, nil)
 	require.NoError(t, err)
 
 	cases := []struct {
@@ -214,15 +224,15 @@ func TestResolveTargetHostFailsClosedBothDirections(t *testing.T) {
 		want    string
 		wantErr bool
 	}{
-		{"wildcard, inside policy", wildcardEntry, []string{"compute.googleapis.com"}, "compute.googleapis.com", false},
+		{"wildcard, inside policy", wildcardEntry, []string{"alpha.api.example.net"}, "alpha.api.example.net", false},
 		{"wildcard, outside policy", wildcardEntry, []string{"evil.example.com"}, "", true},
 		{"wildcard, absent", wildcardEntry, nil, "", true},
-		{"wildcard, duplicated", wildcardEntry, []string{"a.googleapis.com", "b.googleapis.com"}, "", true},
+		{"wildcard, duplicated", wildcardEntry, []string{"alpha.api.example.net", "beta.api.example.net"}, "", true},
 		{"concrete, absent", concreteEntry, nil, "", false},
-		{"concrete, equal", concreteEntry, []string{"bigquery.googleapis.com"}, "", false},
-		{"concrete, equal but cased", concreteEntry, []string{"BigQuery.GoogleAPIs.com"}, "", false},
-		{"concrete, disagreeing", concreteEntry, []string{"compute.googleapis.com"}, "", true},
-		{"concrete, duplicated", concreteEntry, []string{"bigquery.googleapis.com", "bigquery.googleapis.com"}, "", true},
+		{"concrete, equal", concreteEntry, []string{"beta.api.example.net"}, "", false},
+		{"concrete, equal but cased", concreteEntry, []string{"Beta.API.Example.NET"}, "", false},
+		{"concrete, disagreeing", concreteEntry, []string{"alpha.api.example.net"}, "", true},
+		{"concrete, duplicated", concreteEntry, []string{"beta.api.example.net", "beta.api.example.net"}, "", true},
 	}
 
 	for _, tc := range cases {
@@ -341,7 +351,7 @@ func TestConcreteOriginStripsTargetHostAndRejectsDisagreement(t *testing.T) {
 
 	// Disagreeing is a defect or a probe, never a legitimate request.
 	req = httptest.NewRequest("GET", path+"/v1/things", nil)
-	req.Header.Set(HeaderTargetHost, "compute.googleapis.com")
+	req.Header.Set(HeaderTargetHost, "alpha.api.example.net")
 	rec = httptest.NewRecorder()
 	rr.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusForbidden, rec.Code)

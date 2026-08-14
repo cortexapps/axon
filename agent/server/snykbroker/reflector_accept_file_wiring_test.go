@@ -55,11 +55,11 @@ func TestRenderRegistersWildcardOrigin(t *testing.T) {
 	plain := newRecordingBackend(t, "plain")
 
 	require.NoError(t, env.render(t, fmt.Sprintf(`{"private": [
-		{"method": "any", "origin": "https://*.googleapis.com", "path": "/*"},
+		{"method": "any", "origin": "https://*.api.example.net", "path": "/*"},
 		{"method": "any", "origin": "%s", "path": "/*"}
 	]}`, plain.server.URL)))
 
-	wildcardURI, err := env.reflector.getUriForTarget("https://*.googleapis.com")
+	wildcardURI, err := env.reflector.getUriForTarget("https://*.api.example.net")
 	require.NoError(t, err)
 	wildcardEntry, _, err := env.reflector.parseTargetUri(proxyPath(t, wildcardURI))
 	require.NoError(t, err)
@@ -79,10 +79,10 @@ func TestRenderedWildcardEnforcesItsOrigin(t *testing.T) {
 	other := newRecordingBackend(t, "b")
 
 	require.NoError(t, env.render(t, `{"private": [
-		{"method": "any", "origin": "https://*.googleapis.com", "path": "/*"}
+		{"method": "any", "origin": "https://*.api.example.net", "path": "/*"}
 	]}`))
 
-	uri, err := env.reflector.getUriForTarget("https://*.googleapis.com")
+	uri, err := env.reflector.getUriForTarget("https://*.api.example.net")
 	require.NoError(t, err)
 
 	req := httptest.NewRequest("GET", proxyPath(t, uri)+"/v1/things", nil)
@@ -101,8 +101,8 @@ func TestRenderedWildcardEnforcesItsOrigin(t *testing.T) {
 func TestRenderRejectsMalformedWildcardOrigin(t *testing.T) {
 	for name, origin := range map[string]string{
 		"public suffix": "https://*.com",
-		"plaintext":     "http://*.googleapis.com",
-		"partial label": "https://a*.googleapis.com",
+		"plaintext":     "http://*.api.example.net",
+		"partial label": "https://a*.api.example.net",
 	} {
 		t.Run(name, func(t *testing.T) {
 			env := newRenderEnv(t, config.RelayReflectorAllTraffic)
@@ -114,12 +114,39 @@ func TestRenderRejectsMalformedWildcardOrigin(t *testing.T) {
 	}
 }
 
+// Hostname authorization is worth exactly what the certificate check behind it
+// is worth. With verification off, anything answering the connection can claim
+// the authorized name, so the agent refuses to start rather than serving a
+// policy that authorizes nothing.
+func TestRenderRejectsWildcardOriginWithTLSVerificationDisabled(t *testing.T) {
+	env := newRenderEnv(t, config.RelayReflectorAllTraffic)
+	env.mgr.config.HttpDisableTLS = true
+
+	err := env.render(t, `{"private": [
+		{"method": "any", "origin": "https://*.api.example.net", "path": "/*"}
+	]}`)
+
+	require.ErrorIs(t, err, ErrWildcardOriginRequiresTLSVerification)
+}
+
+// A concrete origin names one host the operator chose, so disabling
+// verification is their call to make and must not break existing deployments.
+func TestRenderAllowsConcreteOriginWithTLSVerificationDisabled(t *testing.T) {
+	env := newRenderEnv(t, config.RelayReflectorAllTraffic)
+	env.mgr.config.HttpDisableTLS = true
+	backend := newRecordingBackend(t, "a")
+
+	require.NoError(t, env.render(t, fmt.Sprintf(`{"private": [
+		{"method": "any", "origin": "%s", "path": "/*"}
+	]}`, backend.server.URL)))
+}
+
 // Wildcard routing only exists on the reflector path, so declaring it with the
 // reflector off has to fail loudly rather than be quietly dropped.
 func TestRenderRejectsWildcardOriginWithReflectorDisabled(t *testing.T) {
 	env := newRenderEnv(t, config.RelayReflectorDisabled)
 	af, err := acceptfile.NewAcceptFile([]byte(`{"private": [
-		{"method": "any", "origin": "https://*.googleapis.com", "path": "/*"}
+		{"method": "any", "origin": "https://*.api.example.net", "path": "/*"}
 	]}`), env.mgr.config, env.mgr.logger)
 	require.NoError(t, err)
 

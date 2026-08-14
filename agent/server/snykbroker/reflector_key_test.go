@@ -33,6 +33,43 @@ func TestProxyEntryKeyStableAcrossHeaderOrder(t *testing.T) {
 	}
 }
 
+// A wildcard entry carries no key component of its own: the family lives in
+// TargetURI, which is already hashed. This pins that reasoning, so removing
+// the component cannot silently collapse two different families onto one key.
+func TestProxyEntryKeyDistinguishesWildcardFamilies(t *testing.T) {
+	keyFor := func(t *testing.T, origin string) string {
+		t.Helper()
+		entry, err := newProxyEntry(origin, false, 8080, nil, nil)
+		require.NoError(t, err)
+		return entry.key()
+	}
+
+	family := keyFor(t, "https://*.api.example.net")
+	otherFamily := keyFor(t, "https://*.api.example.org")
+	nestedFamily := keyFor(t, "https://*.internal.api.example.net")
+	concrete := keyFor(t, "https://alpha.api.example.net")
+
+	keys := map[string]string{
+		"family":        family,
+		"other family":  otherFamily,
+		"nested family": nestedFamily,
+		"concrete":      concrete,
+	}
+	seen := make(map[string]string, len(keys))
+	for name, key := range keys {
+		if previous, collided := seen[key]; collided {
+			t.Fatalf("%s and %s hash to the same key %q", previous, name, key)
+		}
+		seen[key] = name
+	}
+
+	// Stable across construction, so re-registering a family reuses its entry
+	// rather than accumulating duplicates.
+	for i := 0; i < 20; i++ {
+		require.Equal(t, family, keyFor(t, "https://*.api.example.net"))
+	}
+}
+
 // TestConcurrentGetProxyAndParseTargetUri reproduces the production race
 // between registration writing rr.targets (the broker start path retries
 // registration on its own goroutine, so it can register entries long after
