@@ -112,7 +112,8 @@ type AgentConfig struct {
 	// server pool still gets independent-TCP redundancy.
 	MaxStreamsPerServer int
 	// MaxInflightRequests caps concurrent in-flight requests dispatched into the
-	// agent across all streams. Requests over the cap return 503 immediately.
+	// agent across all streams. Requests over the cap queue until capacity
+	// frees or their deadline expires (then fail with a 503-coded cancel).
 	MaxInflightRequests int
 	// MaxRequestTimeout is the absolute ceiling on any single request, even when
 	// the server provides TimeoutMs=0. Prevents goroutine accumulation during

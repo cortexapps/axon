@@ -562,9 +562,10 @@ func TestSendErrorCancelsStream(t *testing.T) {
 	waitFor(t, 5*time.Second, func() bool { return streams.Load() >= 3 })
 }
 
-// TestInflightCap_RejectsOverflow: with MaxInflightRequests=1 and a slow
-// backend, the 2nd concurrent call should be rejected with CallCancel(503).
-func TestInflightCap_RejectsOverflow(t *testing.T) {
+// TestInflightCap_QueuesThenRuns: with MaxInflightRequests=1 and a slow
+// backend, the 2nd concurrent call queues until capacity frees and then
+// completes (no 503 for brief bursts).
+func TestInflightCap_QueuesThenRuns(t *testing.T) {
 	cfg := config.AgentConfig{
 		MinTunnelSlots:      1,
 		MaxStreamsPerServer: 2,
@@ -583,25 +584,61 @@ func TestInflightCap_RejectsOverflow(t *testing.T) {
 	table := newCallTable()
 
 	tc.startCall(sc, table, "r1", reqStart("GET", "/", 0))
-	// End the request body for r1 so the call can execute.
 	tc.handleCallFrame(sc, table, &pb.CallFrame{CallId: "r1", Body: &pb.CallFrame_End{End: &pb.CallEnd{}}})
 
 	// Give r1 a head start to acquire the semaphore.
 	time.Sleep(20 * time.Millisecond)
 	tc.startCall(sc, table, "r2", reqStart("GET", "/", 0))
+	tc.handleCallFrame(sc, table, &pb.CallFrame{CallId: "r2", Body: &pb.CallFrame_End{End: &pb.CallEnd{}}})
 
-	// r2 is rejected immediately (Cancel); r1 completes (End).
+	// Both complete: r1 immediately, r2 after queueing behind it.
 	fc.waitDone(t, 2)
 
+	for _, id := range []string{"r1", "r2"} {
+		frames := fc.byCall(id)
+		require.NotNil(t, frames[0].GetStart(), "%s should have started a response", id)
+		require.Equal(t, "200", frames[0].GetStart().PseudoHeaders[":status"], id)
+	}
+	require.Equal(t, float64(0), counterValue(t, tc.requestsRejected))
+}
+
+// TestInflightCap_QueueTimeout: a queued call whose deadline expires before
+// capacity frees fails with CallCancel(503).
+func TestInflightCap_QueueTimeout(t *testing.T) {
+	cfg := config.AgentConfig{
+		MinTunnelSlots:      1,
+		MaxStreamsPerServer: 2,
+		MaxInflightRequests: 1,
+		MaxRequestTimeout:   5 * time.Second,
+	}
+	tc, _ := newTestClient(t, cfg, &fakeRegistration{serverURI: "x", tokens: []string{"x"}})
+	tc.backend = &stubBackend{
+		statusCode: 200,
+		body:       []byte("ok"),
+		delay:      2 * time.Second,
+		respectCtx: true,
+	}
+
+	fc := newFrameCollector()
+	sc := newTestStreamCtx(fc.sendFn)
+	table := newCallTable()
+
+	tc.startCall(sc, table, "r1", reqStart("GET", "/", 0))
+	tc.handleCallFrame(sc, table, &pb.CallFrame{CallId: "r1", Body: &pb.CallFrame_End{End: &pb.CallEnd{}}})
+
+	time.Sleep(20 * time.Millisecond)
+	// r2 has a 100ms budget; r1 holds the only slot for 2s.
+	tc.startCall(sc, table, "r2", reqStart("GET", "/", 100))
+	tc.handleCallFrame(sc, table, &pb.CallFrame{CallId: "r2", Body: &pb.CallFrame_End{End: &pb.CallEnd{}}})
+
+	// r2 times out queued.
+	fc.waitDone(t, 1)
 	r2frames := fc.byCall("r2")
 	require.Len(t, r2frames, 1)
 	cancel := r2frames[0].GetCancel()
 	require.NotNil(t, cancel, "expected CallCancel for r2")
 	require.Equal(t, int32(503), cancel.Code)
-
-	r1frames := fc.byCall("r1")
-	require.NotNil(t, r1frames[0].GetStart(), "r1 should have started a response")
-	require.Equal(t, "200", r1frames[0].GetStart().PseudoHeaders[":status"])
+	require.Contains(t, cancel.Reason, "in-flight capacity")
 	require.Equal(t, float64(1), counterValue(t, tc.requestsRejected))
 }
 

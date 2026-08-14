@@ -127,31 +127,7 @@ func (tc *tunnelClient) handleCallFrame(sc *streamCtx, table *callTable, frame *
 
 // startCall admits a new call and runs it on its own goroutine.
 func (tc *tunnelClient) startCall(sc *streamCtx, table *callTable, callID string, start *pb.CallStart) {
-	// Non-blocking acquire on the in-flight semaphore. If full, reject fast
-	// rather than queueing requests that could OOM the agent during a
-	// downstream incident.
-	release := func() {}
-	if tc.inflightSem != nil {
-		select {
-		case tc.inflightSem <- struct{}{}:
-			tc.requestsInflight.Inc()
-			var once sync.Once
-			release = func() {
-				once.Do(func() {
-					<-tc.inflightSem
-					tc.requestsInflight.Dec()
-				})
-			}
-		default:
-			tc.requestsRejected.Inc()
-			tc.requestsTotal.WithLabelValues(start.PseudoHeaders[":method"], "503").Inc()
-			tc.sendCancel(sc.sendFn, callID, http.StatusServiceUnavailable, "agent at in-flight cap")
-			return
-		}
-	}
-
 	if tc.router == nil || tc.backend == nil {
-		release()
 		tc.sendCancel(sc.sendFn, callID, http.StatusServiceUnavailable, "agent not ready")
 		return
 	}
@@ -172,7 +148,6 @@ func (tc *tunnelClient) startCall(sc *streamCtx, table *callTable, callID string
 	bodyR, bodyW := io.Pipe()
 	c := &agentCall{id: callID, bodyW: bodyW, cancel: cancel}
 	if !table.add(c) {
-		release()
 		cancel()
 		bodyW.CloseWithError(fmt.Errorf("duplicate call id"))
 		tc.logger.Warn("Duplicate call_id from server; cancelling stream", zap.String("callId", callID))
@@ -193,11 +168,37 @@ func (tc *tunnelClient) startCall(sc *streamCtx, table *callTable, callID string
 		defer func() {
 			table.remove(callID)
 			cancel()
-			release()
 			tc.busySlots.Add(-1)
 			sc.ts.inflight.Add(-1)
 			sc.ts.lastCallAt.Store(time.Now().UnixNano())
 		}()
+
+		// Acquire the in-flight semaphore, queueing (bounded by the call's
+		// deadline) rather than failing fast: brief bursts over the cap
+		// become latency instead of 503s. Queueing here — on the call's own
+		// goroutine, with the call already admitted to the table — keeps
+		// the stream's recv loop free to deliver body frames (which the
+		// pipe backpressures) and heartbeats while we wait. Memory stays
+		// bounded: queued bodies push back through h2 flow control rather
+		// than accumulating.
+		if tc.inflightSem != nil {
+			select {
+			case tc.inflightSem <- struct{}{}:
+				tc.requestsInflight.Inc()
+				defer func() {
+					<-tc.inflightSem
+					tc.requestsInflight.Dec()
+				}()
+			case <-ctx.Done():
+				tc.requestsRejected.Inc()
+				tc.requestsTotal.WithLabelValues(start.PseudoHeaders[":method"], "503").Inc()
+				bodyR.CloseWithError(ctx.Err())
+				tc.sendCancel(sc.sendFn, callID, http.StatusServiceUnavailable,
+					"timed out waiting for in-flight capacity")
+				return
+			}
+		}
+
 		tc.runCall(ctx, sc, callID, start, bodyR)
 	}()
 }
