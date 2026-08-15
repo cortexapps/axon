@@ -1,9 +1,8 @@
 package snykbroker
 
 import (
-	"bufio"
+	"context"
 	"crypto/tls"
-	"encoding/base64"
 	"fmt"
 	"io"
 	"net"
@@ -13,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/cortexapps/axon/util"
 	"go.uber.org/zap"
 )
 
@@ -161,25 +161,19 @@ func (wp *WebSocketProxy) dialDirect(addr string, tlsConfig *tls.Config) (net.Co
 }
 
 func (wp *WebSocketProxy) dialThroughProxy(proxyURL *url.URL, targetAddr string, tlsConfig *tls.Config) (net.Conn, error) {
-	// Connect to proxy
-	proxyAddr := wp.resolveProxyAddr(proxyURL)
-	dialer := &net.Dialer{Timeout: wp.DialTimeout}
+	// Dial the proxy and establish the CONNECT tunnel via the shared
+	// helper (also used by the gRPC tunnel dialer), which preserves any
+	// bytes buffered past the CONNECT response.
+	ctx, cancel := context.WithTimeout(context.Background(), wp.DialTimeout)
+	defer cancel()
 
-	var proxyConn net.Conn
-	var err error
+	var proxyTLS *tls.Config
 	if proxyURL.Scheme == "https" {
-		proxyTLS := wp.getTLSConfig(proxyURL.Hostname(), true)
-		proxyConn, err = tls.DialWithDialer(dialer, "tcp", proxyAddr, proxyTLS)
-	} else {
-		proxyConn, err = dialer.Dial("tcp", proxyAddr)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("proxy connect failed: %w", err)
+		proxyTLS = wp.getTLSConfig(proxyURL.Hostname(), true)
 	}
 
-	// Send CONNECT request
-	if err := wp.sendConnectRequest(proxyConn, targetAddr, proxyURL); err != nil {
-		proxyConn.Close()
+	proxyConn, err := util.DialProxyConnect(ctx, proxyURL, targetAddr, proxyTLS, wp.HandshakeTimeout)
+	if err != nil {
 		return nil, err
 	}
 
@@ -213,68 +207,6 @@ func (wp *WebSocketProxy) dialThroughProxy(proxyURL *url.URL, targetAddr string,
 	}
 
 	return proxyConn, nil
-}
-
-func (wp *WebSocketProxy) resolveProxyAddr(proxyURL *url.URL) string {
-	host := proxyURL.Hostname()
-	port := proxyURL.Port()
-	if port == "" {
-		if proxyURL.Scheme == "https" {
-			port = "443"
-		} else {
-			port = "80"
-		}
-	}
-	return net.JoinHostPort(host, port)
-}
-
-func (wp *WebSocketProxy) sendConnectRequest(conn net.Conn, targetAddr string, proxyURL *url.URL) error {
-	conn.SetDeadline(time.Now().Add(wp.HandshakeTimeout))
-	defer conn.SetDeadline(time.Time{})
-
-	req := &http.Request{
-		Method: "CONNECT",
-		URL:    &url.URL{Opaque: targetAddr},
-		Host:   targetAddr,
-		Header: make(http.Header),
-	}
-
-	if proxyURL.User != nil {
-		password, _ := proxyURL.User.Password()
-		// Use Proxy-Authorization header for CONNECT requests to proxies
-		req.Header.Set("Proxy-Authorization", basicAuth(proxyURL.User.Username(), password))
-	}
-
-	if err := req.Write(conn); err != nil {
-		return fmt.Errorf("CONNECT request failed: %w", err)
-	}
-
-	br := bufio.NewReader(conn)
-	resp, err := http.ReadResponse(br, req)
-	if err != nil {
-		return fmt.Errorf("CONNECT response failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// Log detailed CONNECT response info for debugging proxy issues
-	wp.logger.Debug("CONNECT response received",
-		zap.String("status", resp.Status),
-		zap.Int("statusCode", resp.StatusCode),
-		zap.Bool("closeIndicated", resp.Close),
-		zap.Int64("contentLength", resp.ContentLength),
-		zap.Any("headers", resp.Header))
-
-	// Check if bufio.Reader buffered extra data (should be 0 for CONNECT)
-	if br.Buffered() > 0 {
-		wp.logger.Warn("CONNECT response had buffered data",
-			zap.Int("bufferedBytes", br.Buffered()))
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("proxy rejected CONNECT: %s", resp.Status)
-	}
-
-	return nil
 }
 
 func (wp *WebSocketProxy) forwardUpgradeRequest(r *http.Request, targetConn net.Conn, targetURL *url.URL) error {
@@ -392,10 +324,4 @@ func isTimeoutError(err error) bool {
 		return netErr.Timeout()
 	}
 	return false
-}
-
-// basicAuth returns the base64 encoded Basic auth string for Proxy-Authorization.
-func basicAuth(username, password string) string {
-	auth := username + ":" + password
-	return "Basic " + base64.StdEncoding.EncodeToString([]byte(auth))
 }

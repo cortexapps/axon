@@ -1,0 +1,94 @@
+# Publishes the gRPC tunnel server image to ghcr.io.
+#
+# Unlike the agent image (docker.yml), this pushes on pull requests as well
+# as main. The tunnel server is deployed infrastructure, and the only way to
+# exercise a change against real Cortex traffic is to deploy the image built
+# from that change — so a PR needs a pullable artifact before it lands, not
+# after. PR builds are tagged pr-<number> and by sha, so nothing a PR
+# publishes can be mistaken for a released image.
+name: Tunnel Server Image
+
+on:
+  push:
+    branches:
+      - main
+    paths: &server-paths
+      - 'server/**'
+      - 'proto/**'
+      - '.github/workflows/tunnel-server-image.yml'
+  pull_request:
+    paths: *server-paths
+  workflow_dispatch:
+
+concurrency:
+  group: tunnel-server-image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Cache Docker layers
+        uses: actions/cache@v5
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-tunnel-server-buildx-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-tunnel-server-buildx-
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ghcr.io/${{ github.repository_owner }}/cortex-axon-tunnel-server
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha
+          # Only main moves the floating "latest" tag. A PR image is for
+          # deliberately pinning a deployment at, never for anything that
+          # resolves a tag on its own.
+          flavor: |
+            latest=${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./server/docker/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # amd64 only: this runs on every PR touching the server, and arm64
+          # via QEMU costs minutes for an image that deploys to amd64 hosts.
+          platforms: linux/amd64
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache,mode=max
+
+      - name: Summarize published tags
+        run: |
+          {
+            echo "### Tunnel server image published"
+            echo
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

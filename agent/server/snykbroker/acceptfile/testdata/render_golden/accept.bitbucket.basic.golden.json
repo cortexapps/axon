@@ -1,0 +1,20 @@
+{
+  "private": [
+    {
+      "method": "any",
+      "origin": "http://localhost:80",
+      "path": "/__axon/*"
+    },
+    {
+      "auth": {
+        "password": "${BITBUCKET_PASSWORD}",
+        "scheme": "basic",
+        "username": "${BITBUCKET_USERNAME}"
+      },
+      "method": "any",
+      "origin": "${BITBUCKET_API}",
+      "path": "/*"
+    }
+  ],
+  "public": []
+}
