@@ -47,6 +47,10 @@ TOKENS=(tok-a tok-b)
 
 mkdir -p reports
 rm -f reports/loadgen-*.json samples.log chaos.log
+# Start this tag's archive empty. Load generator report files are named by
+# container hostname, so a previous run's files would otherwise linger
+# alongside this run's and be double-counted by summarize_models.py.
+rm -rf "reports/${RUN_TAG:?}"
 
 CHAOS_PID=""
 SAMPLER_PID=""
@@ -86,6 +90,11 @@ if lsof -nP -iTCP:"$DISPATCHER_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
     echo "Set DISPATCHER_PORT to a free port below 49152 and retry."
     exit 1
 fi
+
+# Pull base images up front: Docker Desktop's image cleanup can evict them
+# between runs, and a mid-`up` eviction fails container creation with
+# "No such image" after the build has already succeeded.
+$COMPOSE pull --quiet --ignore-buildable 2>/dev/null || $COMPOSE pull --quiet 2>/dev/null || true
 
 echo "=== Starting stack: servers=$SERVERS agents/token=$AGENTS_PER_TOKEN loadgens=$LOADGENS duration=$DURATION chaos=$CHAOS ==="
 echo "=== Connection model: mode=$CONN_MODE conns=$CONNS streamsPerConn=$STREAMS_PER_CONN (tag: $RUN_TAG) ==="
