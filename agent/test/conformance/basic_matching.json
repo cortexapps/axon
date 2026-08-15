@@ -1,0 +1,40 @@
+{
+  "name": "method and path matching",
+  "env": {
+    "UPSTREAM": "https://upstream.example"
+  },
+  "acceptFile": {
+    "private": [
+      { "method": "GET", "path": "/api/v1/repos", "origin": "${UPSTREAM}" },
+      { "method": "POST", "path": "/graphql", "origin": "${UPSTREAM}" },
+      { "method": "any", "path": "/webhooks/*", "origin": "${UPSTREAM}" }
+    ]
+  },
+  "cases": [
+    {
+      "name": "exact method and path",
+      "request": { "method": "GET", "path": "/api/v1/repos" },
+      "expect": { "matched": true, "url": "https://upstream.example/api/v1/repos" }
+    },
+    {
+      "name": "method mismatch rejected",
+      "request": { "method": "DELETE", "path": "/api/v1/repos" },
+      "expect": { "matched": false }
+    },
+    {
+      "name": "any method matches",
+      "request": { "method": "PATCH", "path": "/webhooks/gh" },
+      "expect": { "matched": true, "url": "https://upstream.example/webhooks/gh" }
+    },
+    {
+      "name": "unlisted path rejected",
+      "request": { "method": "GET", "path": "/admin/secrets" },
+      "expect": { "matched": false }
+    },
+    {
+      "name": "query string forwarded",
+      "request": { "method": "GET", "path": "/api/v1/repos?page=2&per_page=50" },
+      "expect": { "matched": true, "url": "https://upstream.example/api/v1/repos?page=2&per_page=50" }
+    }
+  ]
+}

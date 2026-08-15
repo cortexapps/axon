@@ -18,6 +18,7 @@ COPY plugins/. /build-plugins/.
 RUN cd /build-plugins/google-adc && go build -o /plugins/google-adc .
 
 COPY agent/. /build/.
+COPY proto/ /proto/
 RUN make -C /build setup proto
 RUN cd /build && go build -o /agent/cortex-axon-agent
 

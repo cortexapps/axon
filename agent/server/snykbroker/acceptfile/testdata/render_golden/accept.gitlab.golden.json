@@ -1,0 +1,49 @@
+{
+  "private": [
+    {
+      "method": "any",
+      "origin": "http://localhost:80",
+      "path": "/__axon/*"
+    },
+    {
+      "auth": {
+        "password": "${GITLAB_TOKEN}",
+        "scheme": "basic",
+        "username": "${GITLAB_USERNAME}"
+      },
+      "method": "GET",
+      "origin": "${GITLAB_API}",
+      "path": "/*/info/refs"
+    },
+    {
+      "auth": {
+        "password": "${GITLAB_TOKEN}",
+        "scheme": "basic",
+        "username": "${GITLAB_USERNAME}"
+      },
+      "method": "POST",
+      "origin": "${GITLAB_API}",
+      "path": "/*/git-upload-pack"
+    },
+    {
+      "auth": {
+        "password": "${GITLAB_TOKEN}",
+        "scheme": "basic",
+        "username": "${GITLAB_USERNAME}"
+      },
+      "method": "POST",
+      "origin": "${GITLAB_API}",
+      "path": "/*/git-receive-pack"
+    },
+    {
+      "auth": {
+        "scheme": "bearer",
+        "token": "${GITLAB_TOKEN}"
+      },
+      "method": "any",
+      "origin": "${GITLAB_API}",
+      "path": "/*"
+    }
+  ],
+  "public": []
+}

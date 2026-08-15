@@ -4,6 +4,7 @@ all: setup
 
 proto:
 	$(MAKE) -C agent proto
+	$(MAKE) -C server proto
 	$(MAKE) -C sdks/python proto
 .PHONY: proto
 
@@ -25,6 +26,7 @@ setup:
 
 test:
 	$(MAKE) -C agent test
+	$(MAKE) -C server test
 	$(MAKE) -C plugins/google-adc test test-race
 	@echo "TODO: sdk go test"
 	$(MAKE) -C sdks/go test

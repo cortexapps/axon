@@ -1,0 +1,18 @@
+{
+  "private": [
+    {
+      "method": "any",
+      "origin": "http://localhost:80",
+      "path": "/__axon/*"
+    },
+    {
+      "headers": {
+        "x-api-key": "${HARNESS_TOKEN}"
+      },
+      "method": "any",
+      "origin": "${HARNESS_API}",
+      "path": "/*"
+    }
+  ],
+  "public": []
+}

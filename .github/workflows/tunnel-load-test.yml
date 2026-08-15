@@ -1,0 +1,118 @@
+# Soak-tests the gRPC tunnel against a real multi-instance topology under
+# chaos: tunnel servers and agents are SIGKILLed and restarted mid-run while
+# traffic flows, and every response is byte-compared end to end.
+#
+# This is the only test that exercises the tunnel as a system — several server
+# instances, several agents per token, routing under churn, multi-MiB
+# streaming, and recovery. Unit tests cannot see any of it, so it runs as part
+# of CI rather than after the fact.
+name: Tunnel Load Test
+
+on:
+  push:
+    branches:
+      - '**'
+    paths: &tunnel-paths
+      # Anything gRPC — agent/server/grpctunnel today, and any future grpc*
+      # package without needing this list updated.
+      - '**/grpc*/**'
+      # The tunnel server is entirely gRPC, so every change to it is in scope.
+      - 'server/**'
+      - 'proto/**'
+      # The harness itself.
+      - 'agent/test/load/**'
+      - '.github/workflows/tunnel-load-test.yml'
+  pull_request:
+    paths: *tunnel-paths
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: 'Load phase length (e.g. 90s, 6m)'
+        default: '90s'
+      servers:
+        description: 'Tunnel server replicas'
+        default: '2'
+      workers:
+        description: 'Concurrent workers per load generator'
+        default: '8'
+
+concurrency:
+  # A superseded run of an older commit on the same ref tells us nothing worth
+  # waiting for.
+  group: tunnel-load-test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  soak:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    # Measured ~2m40s of harness time with warm images. The cap is generous so
+    # a cold build never reads as a product failure.
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      # No layer cache here on purpose. The harness builds its images through
+      # `docker compose build`, which will not populate an actions/cache path
+      # without explicit cache_to wiring, so a cache step would look like it
+      # was saving time while caching nothing. The cold build is this job's
+      # dominant cost; if that becomes worth removing, the real options are
+      # pulling the images the image workflows already publish to ghcr.io, or
+      # driving the build through docker/bake-action with cache type=gha.
+
+      # Measured peak footprint is ~5GB: a 1.26GB agent image (it bundles Node
+      # for snyk-broker), a 126MB server image, ~1.2GB of base images and
+      # ~2.5GB of build cache, against the runner's 14GB. Printed so a disk
+      # failure is diagnosable from the log rather than a mystery.
+      - name: Report free disk
+        run: df -h / | tail -1
+
+      - name: Run load test
+        working-directory: agent/test/load
+        env:
+          # Sized against measurements on this runner class: 337MiB peak
+          # memory and ~1 core mean across the stack, against 16GB and 4 vCPU.
+          SERVERS: ${{ github.event.inputs.servers || '2' }}
+          # Two agents per token, not one. With a single agent, a chaos
+          # agent-kill takes that token fully offline rather than shedding one
+          # of two, and the run fails on availability for a reason that says
+          # nothing about the code — measured at 97.6% on the killed token's
+          # traffic against 99.8% on the other, integrity clean in both. Agent
+          # redundancy is also most of what this harness exists to verify.
+          AGENTS_PER_TOKEN: '2'
+          LOADGENS: '1'
+          WORKERS: ${{ github.event.inputs.workers || '8' }}
+          DURATION: ${{ github.event.inputs.duration || '90s' }}
+          CHAOS: '1'
+          CHAOS_INTERVAL: '20'
+          # Reconnect backoff caps at 30s, so a shorter settle can fail a run
+          # that was going to recover. Do not lower this to save time.
+          QUIESCE: '45'
+          # Kept at the real floor rather than lowered to buy quiet: a
+          # threshold loose enough to never fail is not a test. Integrity is
+          # the assertion that must hold absolutely, and the harness fails the
+          # run on any integrity failure regardless of this value.
+          MIN_SUCCESS_PCT: '99'
+        run: ./load_test.sh
+
+      # The reports carry the per-token breakdown, latency percentiles and the
+      # acquire_wait backpressure counters — what you need to tell a saturated
+      # tunnel from a slow upstream after a red run.
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: load-test-reports
+          path: |
+            agent/test/load/reports/
+            agent/test/load/samples.log
+            agent/test/load/chaos.log
+          retention-days: 14
+
+      - name: Dump container logs on failure
+        if: failure()
+        working-directory: agent/test/load
+        run: docker compose -f docker-compose.load.yml logs --tail 200 || true
