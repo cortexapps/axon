@@ -1,0 +1,144 @@
+# gRPC tunnel load & chaos harness.
+#
+# Topology:
+#   loadgen (xT) → grpc-tunnel-server (xX, /broker ingress) → agent-{a,b,c}
+#   (xN per token, gRPC tunnel mode, direct BROKER_SERVER_URL/TOKEN) →
+#   echo-server. The dispatcher-mock receives the tunnel servers'
+#   BROKER_SERVER notifications and tells load generators which server
+#   instances can reach which token — the role Cortex's dispatcher plays
+#   in production.
+#
+# Scale with:  docker compose -f docker-compose.load.yml up -d \
+#     --scale grpc-tunnel-server=3 --scale agent-a=2 --scale agent-b=2 \
+#     --scale agent-c=2 --scale loadgen=2
+# (load_test.sh does this for you.)
+
+services:
+  # One upstream per broker token, so each token is a logically separate
+  # pool with its own origin. Every response carries x-echo-server, and the
+  # load generator asserts it matches the token it asked for — that is what
+  # catches a request leaking from one token's pool into the other's.
+  echo-server-a: &echo
+    image: golang:1.24-alpine
+    volumes:
+      - .:/src:ro
+    environment:
+      ECHO_NAME: upstream-a
+    command: sh -c "cd /src && go run echo-server.go"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:8080/healthz"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    networks: [loadnet]
+
+  echo-server-b:
+    <<: *echo
+    environment:
+      ECHO_NAME: upstream-b
+
+  dispatcher-mock:
+    image: golang:1.24-alpine
+    volumes:
+      - .:/src:ro
+    environment:
+      STALE_AFTER: ${STALE_AFTER:-45s}
+    command: sh -c "cd /src && go run dispatcher-mock.go"
+    ports:
+      - "${DISPATCHER_PORT:-18900}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:8080/healthz"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    networks: [loadnet]
+
+  grpc-tunnel-server:
+    build:
+      context: ../../..
+      dockerfile: server/docker/Dockerfile
+    image: cortex-axon-tunnel-server:local
+    environment:
+      GRPC_PORT: 50052
+      HTTP_PORT: 8080
+      BROKER_SERVER_URL: http://dispatcher-mock:8080
+      RE_REGISTRATION_INTERVAL: ${RE_REGISTRATION_INTERVAL:-15s}
+      MAX_STREAMS_PER_TOKEN: ${MAX_STREAMS_PER_TOKEN:-64}
+      DISPATCH_TIMEOUT: 60s
+      HEARTBEAT_INTERVAL: 10s
+    depends_on:
+      dispatcher-mock:
+        condition: service_healthy
+    networks: [loadnet]
+
+  # One agent service per token so BROKER_TOKEN differs; scale each for
+  # multiple agents sharing a token (multi-agent stream pooling).
+  agent-a: &agent
+    build:
+      context: ../../..
+      dockerfile: docker/Dockerfile
+    image: cortex-axon-agent:local
+    volumes:
+      - .:/src:ro
+    environment: &agent-env
+      RELAY_MODE: grpc-tunnel
+      ECHO_ORIGIN: http://echo-server-a:8080
+      BROKER_SERVER_URL: grpc-tunnel-server:50052
+      BROKER_TOKEN: tok-a
+      GRPC_INSECURE: "true"
+      # The only tunnel dial: how many connections the agent opens outbound.
+      AXON_GRPC_TUNNEL_CONNS: ${CONNS:-4}
+      AXON_UPSTREAM_MAX_CONNS_PER_HOST: ${UPSTREAM_MAX_CONNS:-128}
+      CORTEX_API_TOKEN: fake-token
+      CORTEX_API_BASE_URL: http://unused.invalid
+      CORTEX_TENANT_ID: load-test
+      PORT: 50051
+      HTTP_PORT: 80
+    command: relay -f /src/accept-load.json -i github -a load-test
+    depends_on:
+      grpc-tunnel-server:
+        condition: service_started
+      echo-server-a:
+        condition: service_healthy
+    networks: [loadnet]
+
+  agent-b:
+    <<: *agent
+    environment:
+      <<: *agent-env
+      BROKER_TOKEN: tok-b
+      ECHO_ORIGIN: http://echo-server-b:8080
+    depends_on:
+      grpc-tunnel-server:
+        condition: service_started
+      echo-server-b:
+        condition: service_healthy
+
+  loadgen:
+    image: golang:1.24-alpine
+    volumes:
+      - .:/src:ro
+      - ./reports:/reports
+    environment:
+      TOKENS: ${TOKENS:-tok-a,tok-b}
+      # Which upstream each token must be answered by; a mismatch is a
+      # cross-tenant leak and fails the run as an integrity failure.
+      TOKEN_ORIGINS: ${TOKEN_ORIGINS:-tok-a=upstream-a,tok-b=upstream-b}
+      DISPATCHER_URL: http://dispatcher-mock:8080
+      WORKERS: ${WORKERS:-16}
+      DURATION: ${DURATION:-2m}
+      MAX_BODY_BYTES: ${MAX_BODY_BYTES:-2097152}
+      MAX_RESP_BYTES: ${MAX_RESP_BYTES:-4194304}
+      MAX_DELAY_MS: ${MAX_DELAY_MS:-1000}
+      MIN_SUCCESS_PCT: ${MIN_SUCCESS_PCT:-99}
+      READY_TIMEOUT: 3m
+      RETRIES: ${RETRIES:-3}
+    command: sh -c "cd /src && go run loadgen.go"
+    restart: "no"
+    depends_on:
+      dispatcher-mock:
+        condition: service_healthy
+    networks: [loadnet]
+
+networks:
+  loadnet:

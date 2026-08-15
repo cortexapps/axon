@@ -1,0 +1,46 @@
+{
+  "private": [
+    {
+      "method": "any",
+      "origin": "http://localhost:80",
+      "path": "/__axon/*"
+    },
+    {
+      "auth": {
+        "password": "${GITHUB_TOKEN}",
+        "scheme": "basic",
+        "username": "github"
+      },
+      "method": "any",
+      "origin": "${GITHUB}",
+      "path": "/*",
+      "valid": [
+        {
+          "header": "x-cortex-service",
+          "values": [
+            "scaffolder"
+          ]
+        }
+      ]
+    },
+    {
+      "auth": {
+        "scheme": "bearer",
+        "token": "${GITHUB_TOKEN}"
+      },
+      "method": "any",
+      "origin": "${GITHUB_API}",
+      "path": "/*"
+    },
+    {
+      "auth": {
+        "scheme": "bearer",
+        "token": "${GITHUB_TOKEN}"
+      },
+      "method": "POST",
+      "origin": "${GITHUB_GRAPHQL}",
+      "path": "/graphql"
+    }
+  ],
+  "public": []
+}

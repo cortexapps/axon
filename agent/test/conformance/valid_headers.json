@@ -1,0 +1,54 @@
+{
+  "name": "valid-header gated rules (first match wins)",
+  "env": {
+    "GIT_HOST": "https://github.example",
+    "API_HOST": "https://api.github.example"
+  },
+  "acceptFile": {
+    "private": [
+      {
+        "method": "any",
+        "path": "/*",
+        "origin": "${GIT_HOST}",
+        "valid": [
+          { "header": "x-cortex-service", "values": ["scaffolder"] }
+        ]
+      },
+      { "method": "any", "path": "/*", "origin": "${API_HOST}" }
+    ]
+  },
+  "cases": [
+    {
+      "name": "gate header present routes to first rule",
+      "request": {
+        "method": "GET",
+        "path": "/org/repo.git",
+        "headers": { "x-cortex-service": "scaffolder" }
+      },
+      "expect": { "matched": true, "url": "https://github.example/org/repo.git" }
+    },
+    {
+      "name": "gate header wrong value falls through to second rule",
+      "request": {
+        "method": "GET",
+        "path": "/org/repo.git",
+        "headers": { "x-cortex-service": "catalog" }
+      },
+      "expect": { "matched": true, "url": "https://api.github.example/org/repo.git" }
+    },
+    {
+      "name": "gate header absent falls through to second rule",
+      "request": { "method": "GET", "path": "/repos/foo" },
+      "expect": { "matched": true, "url": "https://api.github.example/repos/foo" }
+    },
+    {
+      "name": "gate header name is case-insensitive",
+      "request": {
+        "method": "GET",
+        "path": "/org/repo.git",
+        "headers": { "X-Cortex-Service": "scaffolder" }
+      },
+      "expect": { "matched": true, "url": "https://github.example/org/repo.git" }
+    }
+  ]
+}
