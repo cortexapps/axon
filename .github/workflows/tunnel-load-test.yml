@@ -9,9 +9,11 @@
 name: Tunnel Load Test
 
 on:
-  push:
-    branches:
-      - '**'
+  # Pull requests plus main, rather than every branch push. A same-repo PR
+  # would otherwise run this twice for one commit, and it is a multi-minute
+  # Docker soak. Fork PRs still get covered, which matters more for a test
+  # than it does for an image build.
+  pull_request:
     paths: &tunnel-paths
       # Anything gRPC — agent/server/grpctunnel today, and any future grpc*
       # package without needing this list updated.
@@ -22,7 +24,9 @@ on:
       # The harness itself.
       - 'agent/test/load/**'
       - '.github/workflows/tunnel-load-test.yml'
-  pull_request:
+  push:
+    branches:
+      - main
     paths: *tunnel-paths
   workflow_dispatch:
     inputs:
