@@ -58,14 +58,19 @@ need a port per transport and the agents would need to know which to use.
 Requires nginx **≥ 1.25.1** for the `http2` directive. The older
 `listen ... http2` form does not behave the same way.
 
-## 3. Dispatch is the direction that does not self-describe
+## 3. Dispatch needs no demux at all
 
-Agent-to-server demuxes cleanly, because the protocols differ. Server-to-agent
-does not: **both servers serve `/broker/{token}/...`**, and nothing in the
-request says which backend owns that token.
+Both servers serve `/broker/{token}/...`, so at first this looks like a second
+routing problem. It is not: **a token belongs to exactly one transport.** An
+agent is either snyk-broker or gRPC, never both, so a token can only ever be
+held by one server. Nothing has to map tokens to backends.
 
-The spike resolves it with a static map, which works only because the test
-knows both tokens:
+The right shape is therefore not to route dispatch through a shared front
+door at all. Each server keeps its own headless Service and relay-dispatcher
+addresses instances directly, using the identity the `client-connected`
+notification already carried — which is exactly how snyk-broker works today.
+
+The compose spike does route dispatch through nginx, using a static token map:
 
 ```nginx
 map $uri $dispatch_backend {
@@ -74,23 +79,9 @@ map $uri $dispatch_backend {
 }
 ```
 
-**This does not generalize** and should not be carried into production. Real
-options, roughly in order of preference:
-
-1. **Separate Services for dispatch.** Keep one ingress for agents (where the
-   protocol demux earns its keep) and give each server its own Service for
-   inbound dispatch. Cortex already learns which server holds a token from the
-   `client-connected` notifications, so it can address the right one directly.
-   No token-aware routing anywhere.
-2. **Try one backend, fall back to the other.** A server that does not hold
-   the token returns an error, so `proxy_next_upstream` could retry the other.
-   Cheap, but it turns every miss into two round trips and makes a genuine
-   404 indistinguishable from a routing miss.
-3. **Token-aware routing at the ingress.** Correct but requires the ingress to
-   track token-to-transport, which is state the ingress should not own.
-
-Option 1 matches how the system already works and is what the k8s spec below
-assumes.
+That exists only so the spike can drive both transports through one address
+and prove the demux with one test. **It knows both tokens up front and does
+not generalize** — do not carry it into production. The k8s manifests do not.
 
 ## 4. Two nginx details that cost a run each
 
@@ -131,25 +122,61 @@ because both backends can reach both agents.
 
 ## 6. Translating to Kubernetes
 
-The pod holds three containers: nginx, the snyk-broker server, and the tunnel
-server. nginx is the only one with a Service exposed to agents.
+Three pieces, on the **existing snyk-broker hostname**. Nothing outside them
+changes: agents keep the address they use today and Cortex dispatches as it
+does today, so which transport an agent speaks is invisible to the rest of the
+system. Manifests in `k8s-relay.yaml`.
 
-- **Agent ingress**: one Service on the nginx port. nginx demuxes by path, as
-  above. This is the piece the spike validates.
-- **Dispatch**: a Service per server (option 1), addressed by Cortex directly.
-  Do not route dispatch through the shared nginx.
-- **Ingress/TLS**: with TLS terminating at the ingress, ALPN negotiates `h2`
-  for gRPC and `http/1.1` for primus, so the same demux applies — but the
-  ingress must be configured to allow gRPC backends (`grpc_pass` equivalent).
-  On nginx-ingress that is the `backend-protocol: GRPC` annotation, which is
-  per-Ingress, so gRPC paths need their own Ingress object.
-- **Timeouts**: both transports hold connections open for a long time. The
-  spike sets an hour on the gRPC and websocket locations; the ingress needs
-  matching `proxy-read-timeout` or streams will be cut on the default 60s.
-- **Health**: the tunnel server's `/healthz` reports connected stream count,
-  and snyk-broker has `/healthcheck`. Neither should be routed through nginx
-  for probes — probe the containers directly so an nginx fault does not read
-  as a backend fault.
+| Piece | What it is |
+|---|---|
+| `cortex-snyk-broker` | existing StatefulSet, untouched |
+| `cortex-relay-grpc-tunnel` | new StatefulSet |
+| `cortex-relay-nginx` | TLS front for the gRPC path only |
+
+**Separate StatefulSets, not one pod with both servers.** Each server
+identifies itself to relay-dispatcher by `$HOSTNAME` and derives its callback
+address from that same string (`health_check_link: http://{serverID}/healthcheck`,
+`broker_server_client.go` lines 164 and 208). Two containers in one pod share
+a hostname, so they would register as the same server and the second would
+overwrite the first — including its token connections. Separate pods have
+distinct hostnames, so the collision cannot happen and no server code changes.
+
+Two latent problems worth knowing, both avoided by this shape rather than
+fixed: `SERVER_ID` is read by nothing (`getServerID()` only consults
+`HOSTNAME`), so the `SERVER_ID` values in this repo's compose files are
+silently ignored; and the advertised link carries no port, so it could not
+distinguish two listeners on one host even with distinct IDs.
+
+**nginx is required, not decoration.** GCLB needs HTTP/2 to a backend to carry
+gRPC, and an HTTP/2 backend must accept TLS on the load-balancer leg. The
+tunnel server speaks plaintext h2c and has no TLS support at all. nginx holds
+a certificate so GCLB is satisfied and speaks h2c onward. GCLB does not verify
+backend certificates, so self-signed is fine. Adding TLS to the tunnel server
+would delete this component — a real simplification, needing cert loading,
+config and rotation.
+
+**The ingress splits the path; nginx only fronts gRPC.** That leaves
+snyk-broker's path exactly as it runs in production today, rather than putting
+a new hop and a new failure mode in front of a working transport. Routing
+everything through nginx also works — that is what the compose spike does —
+if you would rather have a single ingress backend.
+
+**The path must be a whole segment.** Ingress prefix matching is segment-wise,
+not character-wise, so `/cortex.axon.tunnel.v2.` does not match
+`/cortex.axon.tunnel.v2.TunnelService/Tunnel`. Match
+`/cortex.axon.tunnel.v2.TunnelService` instead. nginx `location` prefixes are
+character-based, which is why the shorter form works there and not here.
+
+**Timeouts and affinity.** `broker-ws-config` already proves GCLB carries
+long-lived connections: `timeoutSec: 86400`. The gRPC BackendConfig mirrors
+it. It deliberately omits `CLIENT_IP` affinity — primus needs that for
+reconnection, gRPC does not, and an agent opens several independent streams it
+expects spread across instances.
+
+**Dispatch needs no routing at all.** A token belongs to exactly one
+transport, so nothing has to map tokens to backends. Each StatefulSet keeps
+its own headless Service and relay-dispatcher addresses instances directly,
+exactly as it does for snyk-broker now.
 
 ## Running it
 

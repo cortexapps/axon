@@ -1,0 +1,282 @@
+# Serving both relay transports behind the EXISTING snyk-broker hostname.
+#
+# Nothing outside this file changes: agents keep using the hostname they use
+# today, and Cortex keeps dispatching the way it does today. The transport an
+# agent speaks is invisible to the rest of the system.
+#
+# Three pieces:
+#   cortex-snyk-broker          existing StatefulSet, untouched
+#   cortex-relay-grpc-tunnel    new StatefulSet
+#   cortex-relay-nginx          TLS front for the gRPC path only
+#
+# WHY SEPARATE STATEFULSETS (not two containers in one pod)
+#
+#   Each server identifies itself to relay-dispatcher by $HOSTNAME and derives
+#   its callback address from that same string
+#   (health_check_link: http://{serverID}/healthcheck). Two containers in one
+#   pod share a hostname, so they would register as the same server and the
+#   second would overwrite the first. Separate pods have distinct hostnames,
+#   so the problem never arises and no server code changes.
+#
+# WHY NGINX IS HERE AND NOT OPTIONAL
+#
+#   GCLB requires HTTP/2 to a backend for gRPC, and an HTTP/2 backend must
+#   accept TLS on the load-balancer leg. The tunnel server speaks plaintext
+#   h2c only — it has no TLS support. nginx holds a cert so GCLB is satisfied,
+#   and speaks h2c to the tunnel server. GCLB does not verify backend
+#   certificates, so a self-signed cert is sufficient.
+#
+#   The alternative is adding TLS to the tunnel server and deleting nginx.
+#   That is a genuine simplification and worth doing later; it needs cert
+#   loading, config, and a rotation story, which is why it is not the first
+#   step.
+#
+# WHY THE INGRESS SPLITS THE PATH RATHER THAN NGINX
+#
+#   Routing only the gRPC path through nginx leaves snyk-broker's path exactly
+#   as it is in production today. Sending everything through nginx would put a
+#   new hop, and a new way to fail, in front of a transport that currently
+#   works. If you would rather have one backend on the ingress, point `/*` at
+#   nginx and let it demux — the spike's nginx.conf in this directory does
+#   exactly that and is proven to work.
+---
+# Path-split on the existing hostname. gRPC first: GCLB evaluates rules
+# most-specific-first, but stating it first keeps the intent obvious.
+#
+# NOTE: the path must be a whole first segment. The gRPC full method is
+# /cortex.axon.tunnel.v2.TunnelService/Tunnel, so the segment to match is
+# `cortex.axon.tunnel.v2.TunnelService`. A shorter prefix such as
+# `/cortex.axon.tunnel.v2.` is a character prefix, not a path segment, and
+# Ingress prefix matching is segment-wise — it would not match.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: cortex-snyk-broker-ingress
+  annotations:
+    kubernetes.io/ingress.class: "gce"
+    kubernetes.io/ingress.allow-http: "false"
+    networking.gke.io/managed-certificates: managed-cert-cortex-snyk-broker
+spec:
+  ingressClassName: gce
+  rules:
+    - http:
+        paths:
+          - path: /cortex.axon.tunnel.v2.TunnelService/*
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: cortex-relay-nginx-service
+                port:
+                  number: 443
+          # Everything else stays with snyk-broker, exactly as today. This
+          # includes /primus/* AND /response-data/*, which is not under
+          # /primus and would break the response path if routed elsewhere.
+          - path: /*
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: cortex-snyk-broker-service
+                port:
+                  number: 80
+---
+# --- nginx: TLS for GCLB, h2c to the tunnel ------------------------------
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cortex-relay-nginx-config
+data:
+  nginx.conf: |
+    events {}
+    http {
+      log_format demux '$remote_addr "$request" proto=$server_protocol '
+                       'upstream=$upstream_addr status=$status';
+      access_log /dev/stdout demux;
+      error_log  /dev/stderr warn;
+
+      # A named upstream, not a hostname in a proxy_pass variable: this
+      # resolves once at config load. A variable hostname needs per-request
+      # DNS and fails as an opaque 502 without a resolver.
+      upstream grpc_tunnel {
+        server cortex-relay-grpc-tunnel-service:50052;
+      }
+
+      server {
+        # TLS because GCLB requires it for an HTTP/2 backend; the certificate
+        # is not verified by GCLB, so a self-signed one is fine.
+        listen 8443 ssl;
+        http2 on;
+        ssl_certificate     /etc/nginx/tls/tls.crt;
+        ssl_certificate_key /etc/nginx/tls/tls.key;
+
+        location /cortex.axon.tunnel.v2. {
+          grpc_pass grpc://grpc_tunnel;
+          # Tunnel streams are long-lived; the default would cut them.
+          grpc_read_timeout 24h;
+          grpc_send_timeout 24h;
+        }
+
+        location / {
+          return 404;   # only gRPC is routed here
+        }
+      }
+    }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cortex-relay-nginx-service
+  annotations:
+    cloud.google.com/app-protocol: '{"https":"HTTP2"}'
+    beta.cloud.google.com/backend-config: '{"default":"relay-grpc-config"}'
+spec:
+  type: ClusterIP
+  selector:
+    app: cortex-relay-nginx
+  ports:
+    - name: https
+      protocol: TCP
+      port: 443
+      targetPort: 8443
+---
+apiVersion: cloud.google.com/v1
+kind: BackendConfig
+metadata:
+  name: relay-grpc-config
+spec:
+  # Mirrors broker-ws-config: tunnel streams stay open as long as primus
+  # websockets do.
+  timeoutSec: 86400
+  connectionDraining:
+    drainingTimeoutSec: 300
+  # Deliberately no CLIENT_IP affinity. Primus needs it for reconnection;
+  # gRPC does not — an agent opens several independent streams and expects
+  # them spread across instances.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cortex-relay-nginx
+  labels:
+    app: cortex-relay-nginx
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: cortex-relay-nginx
+  template:
+    metadata:
+      labels:
+        app: cortex-relay-nginx
+    spec:
+      containers:
+        - name: nginx
+          # http2 directive needs >= 1.25.1.
+          image: nginx:1.27-alpine
+          ports:
+            - name: https
+              containerPort: 8443
+          volumeMounts:
+            - name: config
+              mountPath: /etc/nginx/nginx.conf
+              subPath: nginx.conf
+              readOnly: true
+            - name: tls
+              mountPath: /etc/nginx/tls
+              readOnly: true
+          readinessProbe:
+            tcpSocket:
+              port: https
+            initialDelaySeconds: 2
+            periodSeconds: 5
+      volumes:
+        - name: config
+          configMap:
+            name: cortex-relay-nginx-config
+        - name: tls
+          secret:
+            # Self-signed is sufficient; GCLB does not verify it.
+            secretName: cortex-relay-nginx-tls
+---
+# --- the tunnel server ---------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: cortex-relay-grpc-tunnel-service
+spec:
+  type: ClusterIP
+  selector:
+    app: cortex-relay-grpc-tunnel
+  ports:
+    - name: grpc
+      protocol: TCP
+      port: 50052
+      targetPort: grpc
+---
+# Per-pod stable DNS so relay-dispatcher can address one instance directly,
+# the same role cortex-snyk-broker-headless plays.
+apiVersion: v1
+kind: Service
+metadata:
+  name: cortex-relay-grpc-tunnel-headless
+spec:
+  clusterIP: None
+  selector:
+    app: cortex-relay-grpc-tunnel
+  ports:
+    - name: dispatch
+      protocol: TCP
+      port: 8080
+      targetPort: dispatch
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: cortex-relay-grpc-tunnel-sts
+  labels:
+    app: cortex-relay-grpc-tunnel
+spec:
+  replicas: 2
+  serviceName: cortex-relay-grpc-tunnel-headless
+  selector:
+    matchLabels:
+      app: cortex-relay-grpc-tunnel
+  template:
+    metadata:
+      labels:
+        app: cortex-relay-grpc-tunnel
+    spec:
+      containers:
+        - name: cortex-relay-grpc-tunnel
+          image: ghcr.io/cortexapps/cortex-axon-tunnel-server:latest
+          ports:
+            - name: grpc
+              containerPort: 50052
+            # Inbound dispatch from relay-dispatcher, plus /healthz.
+            - name: dispatch
+              containerPort: 8080
+          env:
+            - name: GRPC_PORT
+              value: "50052"
+            - name: HTTP_PORT
+              value: "8080"
+            - name: BROKER_SERVER_URL
+              value: "http://relay-dispatcher"
+            - name: HEARTBEAT_INTERVAL
+              value: "30s"
+            - name: DISPATCH_TIMEOUT
+              value: "60s"
+          # /healthz reports the connected stream count, which is also the
+          # only way to observe gRPC routing: long-lived streams never appear
+          # in proxy access logs, because those log on request completion.
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: dispatch
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: dispatch
+            initialDelaySeconds: 10
+            periodSeconds: 30
