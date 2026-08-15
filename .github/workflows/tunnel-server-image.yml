@@ -9,15 +9,21 @@
 name: Tunnel Server Image
 
 on:
+  # Every branch, not just main. The branch name is the tag you deploy by, and
+  # it only exists on a push event — a pull_request build can be tagged pr-<n>
+  # and by sha, but never by the branch someone is actually working on.
+  #
+  # Building on branch push rather than on pull_request also means one build
+  # per commit instead of two. A same-repo PR pushes its branch anyway, so
+  # nothing is lost. Fork PRs do not build, but they could never publish
+  # either: a fork's token has no packages:write.
   push:
     branches:
-      - main
-    paths: &server-paths
+      - '**'
+    paths:
       - 'server/**'
       - 'proto/**'
       - '.github/workflows/tunnel-server-image.yml'
-  pull_request:
-    paths: *server-paths
   workflow_dispatch:
 
 concurrency:
@@ -59,9 +65,11 @@ jobs:
         with:
           images: |
             ghcr.io/${{ github.repository_owner }}/cortex-axon-tunnel-server
+          # Branch name (slashes become dashes) plus the commit sha. The
+          # branch tag is the handle for "deploy what I am working on"; the
+          # sha tag is the one to pin, since a branch tag moves under you.
           tags: |
             type=ref,event=branch
-            type=ref,event=pr
             type=sha
           # Only main moves the floating "latest" tag. A PR image is for
           # deliberately pinning a deployment at, never for anything that
