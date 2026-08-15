@@ -1,0 +1,150 @@
+# One front door, both relay transports, two agents on different tokens.
+#
+# nginx stands in for the pod's single ingress. Both agents are told the same
+# BROKER_SERVER_URL — nginx — and neither knows the other transport exists.
+services:
+  nginx:
+    image: nginx:1.27-alpine
+    ports:
+      - "${NGINX_PORT:-58480}:8080"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - snyk-broker
+      - grpc-tunnel-server
+    networks: [muxnet]
+
+  # --- server side -------------------------------------------------------
+  snyk-broker:
+    build:
+      context: ../relay
+      dockerfile: Dockerfile.snyk-broker-server
+    image: cortex-snyk-broker-server:local
+    ports:
+      # Direct access, so the test can prove routing through nginx matches
+      # routing straight at the backend.
+      - "${SNYK_PORT:-58481}:7341"
+    volumes:
+      - ../relay:/src:ro
+    environment:
+      ACCEPT: /src/accept-server.json
+    networks: [muxnet]
+
+  grpc-tunnel-server:
+    build:
+      context: ../../..
+      dockerfile: server/docker/Dockerfile
+    image: cortex-axon-tunnel-server:local
+    ports:
+      - "${GRPC_HTTP_PORT:-58482}:8080"
+    environment:
+      GRPC_PORT: 50052
+      HTTP_PORT: 8080
+      SERVER_ID: mux-server-1
+      DISPATCH_TIMEOUT: 60s
+      HEARTBEAT_INTERVAL: 10s
+      ENV: development
+      TOKEN: tok-grpc
+    networks: [muxnet]
+
+  # --- registration, one per token ---------------------------------------
+  cortex-fake-snyk:
+    image: golang:1.26.1-alpine
+    volumes:
+      - ../relay:/src
+    working_dir: /src
+    environment:
+      PORT: 8081
+      # Both agents are pointed at nginx, never at a backend directly.
+      BROKER_SERVER_URL: http://nginx:8080
+      TOKEN: tok-snyk
+    command: sh -c "apk add --no-cache curl && cd /src && go run cortex-registration-fake.go"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/healthcheck"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+    networks: [muxnet]
+
+  cortex-fake-grpc:
+    image: golang:1.26.1-alpine
+    volumes:
+      - ../relay:/src
+    working_dir: /src
+    environment:
+      PORT: 8081
+      # The gRPC agent dials host:port, not a URL.
+      BROKER_SERVER_URL: nginx:8080
+      TOKEN: tok-grpc
+    command: sh -c "apk add --no-cache curl && cd /src && go run cortex-registration-fake.go"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/healthcheck"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+    networks: [muxnet]
+
+  # --- agents ------------------------------------------------------------
+  agent-snyk:
+    image: cortex-axon-agent:local
+    volumes:
+      - ../relay:/src:ro
+      - ../../server/snykbroker/acceptfile:/agent/plugins
+    environment:
+      CORTEX_API_TOKEN: fake-token
+      CORTEX_API_BASE_URL: http://cortex-fake-snyk:8081
+      GITHUB_RAW_API: https://raw.githubusercontent.com
+      GITLAB_TOKEN: gitlab-test-token
+      PORT: 7433
+      HTTP_PORT: 7434
+      PLUGIN_DIRS: /agent/plugins
+      HEADER_PROXY_VALUE: nope
+      # Stamped onto responses as x-axon-relay-instance, so a reply names the
+      # agent that produced it rather than leaving us to infer it.
+      CORTEX_INSTANCE_ID: agent-snyk
+    command: relay -f /src/accept-client.json -i github -a mux-snyk
+    depends_on:
+      cortex-fake-snyk:
+        condition: service_healthy
+      nginx:
+        condition: service_started
+    networks: [muxnet]
+
+  agent-grpc:
+    image: cortex-axon-agent:local
+    volumes:
+      - ../relay:/src:ro
+      - ../../server/snykbroker/acceptfile:/agent/plugins
+    environment:
+      CORTEX_API_TOKEN: fake-token
+      CORTEX_API_BASE_URL: http://cortex-fake-grpc:8081
+      GITHUB_RAW_API: https://raw.githubusercontent.com
+      GITLAB_TOKEN: gitlab-test-token
+      PORT: 7533
+      HTTP_PORT: 7534
+      PLUGIN_DIRS: /agent/plugins
+      HEADER_PROXY_VALUE: nope
+      CORTEX_INSTANCE_ID: agent-grpc
+      RELAY_MODE: grpc-tunnel
+      GRPC_INSECURE: "true"
+      AXON_GRPC_TUNNEL_CONNS: 2
+    command: relay -f /src/accept-client.json -i github -a mux-grpc
+    depends_on:
+      cortex-fake-grpc:
+        condition: service_healthy
+      nginx:
+        condition: service_started
+    networks: [muxnet]
+
+  # --- the thing both agents relay to ------------------------------------
+  # Serves /tmp, which the test writes token-stamped files into so a response
+  # proves which agent fetched it.
+  python-server:
+    image: python:3.12-alpine
+    volumes:
+      - /tmp:/tmp
+    command: sh -c "python3 -m http.server 80 -d /tmp"
+    networks: [muxnet]
+
+networks:
+  muxnet:
