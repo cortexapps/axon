@@ -120,109 +120,47 @@ function curlw {
     echo "$curl_result"
 }
 
-# Dispatch URL: grpc-tunnel-server HTTP port at /broker/{token}/{path}
-DISPATCH_URL="http://localhost:$HTTP_PORT/broker/$TOKEN"
+# Ingress for this transport: the tunnel server's HTTP dispatch port.
+# Everything the shared scenarios assert is addressed relative to it, so the
+# same checks run here as against snyk-broker.
+export DISPATCH_URL="http://localhost:$HTTP_PORT/broker/$TOKEN"
+source ./relay_scenarios.sh
 
-echo "Checking relay broker passthrough..."
-# Test relay of a text file through the gRPC tunnel.
-# python-server serves files from /tmp.
-FILENAME="token-$(date +%s)"
-echo "$TOKEN" > /tmp/$FILENAME
-echo "$TOKEN" > /tmp/axon-test-token
-result=$(curlw $DISPATCH_URL/$FILENAME)
-
-if [ "$result" != "$TOKEN" ]; then
-    echo "FAIL: Expected $TOKEN, got $result"
-    docker compose $COMPOSE_FILES logs
-    exit 1
-fi
-echo "Success: Text file relay through gRPC tunnel"
-
-echo "Checking binary file relay passthrough..."
-BINARY_FILENAME="binary-test-$(date +%s).bin"
-dd if=/dev/urandom of="/tmp/$BINARY_FILENAME" bs=1024 count=1536 2>/dev/null
-ORIGINAL_CHECKSUM=$(sha256sum "/tmp/$BINARY_FILENAME" | awk '{print $1}')
-
-BINARY_DOWNLOAD="/tmp/${BINARY_FILENAME}.downloaded"
-curl -s -f -o "$BINARY_DOWNLOAD" "$DISPATCH_URL/$BINARY_FILENAME"
-DOWNLOAD_STATUS=$?
-if [ $DOWNLOAD_STATUS -ne 0 ]; then
-    echo "FAIL: curl failed to download binary file (exit code $DOWNLOAD_STATUS)"
-    docker compose $COMPOSE_FILES logs
-    exit 1
-fi
-
-DOWNLOADED_CHECKSUM=$(sha256sum "$BINARY_DOWNLOAD" | awk '{print $1}')
-if [ "$ORIGINAL_CHECKSUM" != "$DOWNLOADED_CHECKSUM" ]; then
-    echo "FAIL: Binary checksum mismatch"
-    echo "  Original:   $ORIGINAL_CHECKSUM ($(wc -c < /tmp/$BINARY_FILENAME) bytes)"
-    echo "  Downloaded: $DOWNLOADED_CHECKSUM ($(wc -c < $BINARY_DOWNLOAD) bytes)"
-    exit 1
-else
-    echo "Success: Binary file (1.5MB) checksum verified ($ORIGINAL_CHECKSUM)"
-fi
-
-# Validate HTTPS relay by fetching the Axon README from GitHub.
-echo "Checking HTTPS relay (GitHub README)..."
-if ! proxy_result=$(curlw -f -v $DISPATCH_URL/cortexapps/axon/refs/heads/main/README.md 2>&1); then
-    echo "FAIL: Expected to be able to read the axon readme from GitHub, but got error"
-    echo "$proxy_result"
-    docker compose $COMPOSE_FILES logs
-    exit 1
-fi
-echo "Success: HTTPS relay through gRPC tunnel"
+run_shared_scenarios
 
 if [ "$PROXY" == "1" ]; then
-    echo "Checking relay HTTP_PROXY config..."
-    if ! echo "$proxy_result" | grep -i "x-proxy-mitmproxy"; then
-        echo "FAIL: Expected 'x-proxy-mitmproxy' header, got nothing"
-        exit 1
-    else
-        echo "Success: Found 'x-proxy-mitmproxy' header"
-    fi
-
-    echo "Checking echo endpoint with injected headers..."
-    if ! proxy_result=$(curlw -f -v $DISPATCH_URL/echo/foobar 2>&1); then
-        echo "FAIL: Expected to echo 'foobar' via the proxy, but got error"
-        echo "$proxy_result"
-        exit 1
-    fi
-
-    if ! echo "$proxy_result" | grep -q "added-fake-server"; then
-        echo "FAIL: Expected injected header value but not found"
-        echo "$proxy_result"
-        exit 1
-    else
-        echo "Success: Found expected injected header value in result"
-    fi
-
-    if ! echo "$proxy_result" | grep -q "HOME=/root"; then
-        echo "FAIL: Expected injected plugin header value but not found"
-        echo "$proxy_result"
-        exit 1
-    else
-        echo "Success: Found expected injected plugin header value in result"
-    fi
-
-    # Verify gRPC tunnel streams are active (replaces WebSocket tunnel check).
-    echo "Checking gRPC tunnel streams..."
+    # The point of the proxied topology for this transport: the agent's
+    # OUTBOUND gRPC dial has to work through an HTTP proxy, via CONNECT.
+    # That is the deployment shape most customers actually have, and it is
+    # the one thing snyk-broker's websocket path cannot tell us anything
+    # about.
+    #
+    # Network isolation already makes it structurally true — axon-relay is on
+    # the internal network only, so it cannot reach the tunnel server except
+    # through mitmproxy. But asserting only on "a stream appeared" would
+    # report a proxy regression as a confusing connection timeout. These two
+    # checks separate the questions: did we dial through the proxy, and did
+    # the tunnel then work.
+    echo "Checking gRPC outbound connection through the HTTP proxy..."
     axon_logs=$(docker compose $COMPOSE_FILES logs axon-relay 2>&1)
+
+    if ! echo "$axon_logs" | grep -q "Using HTTP proxy for gRPC connection"; then
+        echo "FAIL: Agent did not route its gRPC dial through the HTTP proxy"
+        echo "  Expected 'Using HTTP proxy for gRPC connection' in the agent logs."
+        echo "  Without it, any stream below connected by some other path."
+        echo "=== Axon Relay Logs (last 50) ==="
+        echo "$axon_logs" | tail -50
+        exit 1
+    fi
+    echo "Success: gRPC dial routed through the HTTP proxy (CONNECT)"
+
     if ! echo "$axon_logs" | grep -q "Tunnel stream established"; then
         echo "FAIL: Expected 'Tunnel stream established' in agent logs but not found"
         echo "=== Axon Relay Logs (last 50) ==="
         echo "$axon_logs" | tail -50
         exit 1
-    else
-        echo "Success: gRPC tunnel stream established"
     fi
-else
-    echo "Checking relay non-proxy config..."
-    if echo "$proxy_result" | grep -i "x-proxy-mitmproxy"; then
-        echo "FAIL: Expected no 'x-proxy-mitmproxy' header, got one"
-        exit 1
-    else
-        echo "Success: Did not find 'x-proxy-mitmproxy' header (as expected)"
-    fi
+    echo "Success: gRPC tunnel stream established over the proxied connection"
 fi
 
 echo "=== gRPC tunnel reconnection after SIGKILL ==="

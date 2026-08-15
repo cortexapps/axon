@@ -246,9 +246,18 @@ func (tc *tunnelClient) runCall(ctx context.Context, sc *streamCtx, callID strin
 	tc.requestsTotal.WithLabelValues(method, fmt.Sprintf("%d", resp.StatusCode)).Inc()
 
 	// Response start.
-	headers := make(map[string]string, len(resp.Header))
+	headers := make(map[string]string, len(resp.Header)+1)
 	for k, v := range resp.Header {
 		headers[strings.ToLower(k)] = strings.Join(v, ", ")
+	}
+
+	// Identify which agent instance served this call. Under snyk-broker the
+	// reflector stamps this on the way out; the tunnel routes upstream
+	// traffic directly and never touches the reflector, so it has to add the
+	// header itself. Without it the two transports differ in exactly the
+	// place you would notice last: debugging which agent in a pool answered.
+	if tc.config.InstanceId != "" {
+		headers["x-axon-relay-instance"] = tc.config.InstanceId
 	}
 	if err := sc.sendFn(&pb.ClientFrame{Msg: &pb.ClientFrame_Call{Call: &pb.CallFrame{
 		CallId: callID,
