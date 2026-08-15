@@ -91,18 +91,35 @@ if lsof -nP -iTCP:"$DISPATCHER_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
     exit 1
 fi
 
-# Pull base images up front: Docker Desktop's image cleanup can evict them
-# between runs, and a mid-`up` eviction fails container creation with
-# "No such image" after the build has already succeeded.
-$COMPOSE pull --quiet --ignore-buildable 2>/dev/null || $COMPOSE pull --quiet 2>/dev/null || true
-
 echo "=== Starting stack: servers=$SERVERS agents/token=$AGENTS_PER_TOKEN loadgens=$LOADGENS duration=$DURATION chaos=$CHAOS ==="
 echo "=== Connection model: mode=$CONN_MODE conns=$CONNS streamsPerConn=$STREAMS_PER_CONN (tag: $RUN_TAG) ==="
-$COMPOSE up -d --build \
-    --scale grpc-tunnel-server="$SERVERS" \
-    --scale agent-a="$AGENTS_PER_TOKEN" \
-    --scale agent-b="$AGENTS_PER_TOKEN" \
-    --scale loadgen="$LOADGENS" || { echo "compose up failed"; exit 1; }
+# Build first, then pull, then start. Docker Desktop's image cleanup can
+# evict the base images at any point, and an eviction during the
+# multi-minute build fails container creation with "No such image" once
+# the build has already succeeded. Pulling immediately before `up` keeps
+# that window to seconds, and we retry once if it loses anyway.
+$COMPOSE build || { echo "compose build failed"; exit 1; }
+
+function pull_base_images {
+    $COMPOSE pull --quiet --ignore-buildable 2>/dev/null ||
+        $COMPOSE pull --quiet 2>/dev/null || true
+}
+
+function start_stack {
+    $COMPOSE up -d --no-build \
+        --scale grpc-tunnel-server="$SERVERS" \
+        --scale agent-a="$AGENTS_PER_TOKEN" \
+        --scale agent-b="$AGENTS_PER_TOKEN" \
+        --scale loadgen="$LOADGENS"
+}
+
+pull_base_images
+if ! start_stack; then
+    echo "compose up failed; re-pulling base images and retrying once"
+    $COMPOSE down -v --remove-orphans >/dev/null 2>&1
+    pull_base_images
+    start_stack || { echo "compose up failed"; exit 1; }
+fi
 
 echo "=== Waiting for all tokens to be routable ==="
 COUNTER=90

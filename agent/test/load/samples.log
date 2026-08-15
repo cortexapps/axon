@@ -1,0 +1,180 @@
+--- 01:35:28
+{"0567b8a86ac8":"{\"status\":\"ok\",\"server_id\":\"0567b8a86ac8\",\"clients\":2,\"streams\":11,\"inflight\":0,\"broker_server_configured\":true}","e6759c7749b0":"{\"status\":\"ok\",\"server_id\":\"e6759c7749b0\",\"clients\":1,\"streams\":11,\"inflight\":0,\"broker_server_configured\":true}"}
+
+{"status":"ok","relay_mode":"grpc-tunnel","streams":7,"busy":0,"target":8}
+--- 01:35:38
+{"0567b8a86ac8":"{\"status\":\"ok\",\"server_id\":\"0567b8a86ac8\",\"clients\":2,\"streams\":12,\"inflight\":6,\"broker_server_configured\":true}","e6759c7749b0":"{\"status\":\"ok\",\"server_id\":\"e6759c7749b0\",\"clients\":2,\"streams\":20,\"inflight\":13,\"broker_server_configured\":true}"}
+
+{"status":"ok","relay_mode":"grpc-tunnel","streams":8,"busy":7,"target":8}
+--- 01:35:48
+{"0567b8a86ac8":"{\"status\":\"ok\",\"server_id\":\"0567b8a86ac8\",\"clients\":1,\"streams\":4,\"inflight\":4,\"broker_server_configured\":true}","e6759c7749b0":"{\"status\":\"ok\",\"server_id\":\"e6759c7749b0\",\"clients\":2,\"streams\":20,\"inflight\":10,\"broker_server_configured\":true}"}
+
+{"status":"ok","relay_mode":"grpc-tunnel","streams":8,"busy":8,"target":8}
+--- 01:35:58
+{"0567b8a86ac8":"{\"status\":\"ok\",\"server_id\":\"0567b8a86ac8\",\"clients\":2,\"streams\":8,\"inflight\":8,\"broker_server_configured\":true}","e6759c7749b0":"{\"status\":\"ok\",\"server_id\":\"e6759c7749b0\",\"clients\":2,\"streams\":24,\"inflight\":11,\"broker_server_configured\":true}"}
+
+{"status":"ok","relay_mode":"grpc-tunnel","streams":8,"busy":6,"target":8}
+--- 01:36:08
+{"0567b8a86ac8":"{\"status\":\"ok\",\"server_id\":\"0567b8a86ac8\",\"clients\":2,\"streams\":8,\"inflight\":8,\"broker_server_configured\":true}","e6759c7749b0":"{\"status\":\"ok\",\"server_id\":\"e6759c7749b0\",\"clients\":2,\"streams\":24,\"inflight\":4,\"broker_server_configured\":true}"}
+
+{"status":"ok","relay_mode":"grpc-tunnel","streams":8,"busy":4,"target":8}
+--- 01:36:18
+{"e6759c7749b0":"{\"status\":\"ok\",\"server_id\":\"e6759c7749b0\",\"clients\":2,\"streams\":24,\"inflight\":7,\"broker_server_configured\":true}"}
+
+{"status":"ok","relay_mode":"grpc-tunnel","streams":8,"busy":4,"target":8}
+--- 01:36:29
+{"0567b8a86ac8":"{\"status\":\"ok\",\"server_id\":\"0567b8a86ac8\",\"clients\":2,\"streams\":8,\"inflight\":8,\"broker_server_configured\":true}","e6759c7749b0":"{\"status\":\"ok\",\"server_id\":\"e6759c7749b0\",\"clients\":2,\"streams\":24,\"inflight\":5,\"broker_server_configured\":true}"}
+
+{"status":"ok","relay_mode":"grpc-tunnel","streams":8,"busy":4,"target":8}
+--- 01:36:39
+{"0567b8a86ac8":"{\"status\":\"ok\",\"server_id\":\"0567b8a86ac8\",\"clients\":2,\"streams\":8,\"inflight\":8,\"broker_server_configured\":true}","e6759c7749b0":"{\"status\":\"ok\",\"server_id\":\"e6759c7749b0\",\"clients\":2,\"streams\":24,\"inflight\":9,\"broker_server_configured\":true}"}
+
+{"status":"ok","relay_mode":"grpc-tunnel","streams":8,"busy":3,"target":8}
+--- 01:36:49
+{"0567b8a86ac8":"{\"status\":\"ok\",\"server_id\":\"0567b8a86ac8\",\"clients\":2,\"streams\":8,\"inflight\":8,\"broker_server_configured\":true}","e6759c7749b0":"{\"status\":\"ok\",\"server_id\":\"e6759c7749b0\",\"clients\":2,\"streams\":24,\"inflight\":7,\"broker_server_configured\":true}"}
+
+{"status":"ok","relay_mode":"grpc-tunnel","streams":8,"busy":5,"target":8}
+--- 01:36:59
+{"0567b8a86ac8":"{\"status\":\"ok\",\"server_id\":\"0567b8a86ac8\",\"clients\":2,\"streams\":8,\"inflight\":8,\"broker_server_configured\":true}","e6759c7749b0":"{\"status\":\"ok\",\"server_id\":\"e6759c7749b0\",\"clients\":2,\"streams\":24,\"inflight\":10,\"broker_server_configured\":true}"}
+
+{"status":"ok","relay_mode":"grpc-tunnel","streams":8,"busy":8,"target":8}
+--- 01:37:09
+{"0567b8a86ac8":"{\"status\":\"ok\",\"server_id\":\"0567b8a86ac8\",\"clients\":2,\"streams\":8,\"inflight\":7,\"broker_server_configured\":true}","e6759c7749b0":"{\"status\":\"ok\",\"server_id\":\"e6759c7749b0\",\"clients\":2,\"streams\":24,\"inflight\":10,\"broker_server_configured\":true}"}
+
+{"status":"ok","relay_mode":"grpc-tunnel","streams":8,"busy":4,"target":8}
+--- 01:37:20
+{"0567b8a86ac8":"{\"status\":\"ok\",\"server_id\":\"0567b8a86ac8\",\"clients\":2,\"streams\":8,\"inflight\":8,\"broker_server_configured\":true}","e6759c7749b0":"{\"status\":\"ok\",\"server_id\":\"e6759c7749b0\",\"clients\":2,\"streams\":24,\"inflight\":6,\"broker_server_configured\":true}"}
+
+{"status":"ok","relay_mode":"grpc-tunnel","streams":8,"busy":4,"target":8}
+--- 01:37:30
+{"0567b8a86ac8":"{\"status\":\"ok\",\"server_id\":\"0567b8a86ac8\",\"clients\":1,\"streams\":2,\"inflight\":2,\"broker_server_configured\":true}","e6759c7749b0":"{\"status\":\"ok\",\"server_id\":\"e6759c7749b0\",\"clients\":2,\"streams\":28,\"inflight\":12,\"broker_server_configured\":true}"}
+
+{"status":"ok","relay_mode":"grpc-tunnel","streams":8,"busy":6,"target":8}
+--- 01:37:40
+{"0567b8a86ac8":"{\"status\":\"ok\",\"server_id\":\"0567b8a86ac8\",\"clients\":1,\"streams\":4,\"inflight\":4,\"broker_server_configured\":true}","e6759c7749b0":"{\"status\":\"ok\",\"server_id\":\"e6759c7749b0\",\"clients\":2,\"streams\":28,\"inflight\":10,\"broker_server_configured\":true}"}
+
+{"status":"ok","relay_mode":"grpc-tunnel","streams":8,"busy":3,"target":8}
+--- 01:37:50
+{"0567b8a86ac8":"{\"status\":\"ok\",\"server_id\":\"0567b8a86ac8\",\"clients\":1,\"streams\":4,\"inflight\":4,\"broker_server_configured\":true}","e6759c7749b0":"{\"status\":\"ok\",\"server_id\":\"e6759c7749b0\",\"clients\":2,\"streams\":28,\"inflight\":17,\"broker_server_configured\":true}"}
+
+{"status":"ok","relay_mode":"grpc-tunnel","streams":8,"busy":5,"target":8}
+--- 01:38:00
+{"0567b8a86ac8":"{\"status\":\"ok\",\"server_id\":\"0567b8a86ac8\",\"clients\":1,\"streams\":4,\"inflight\":4,\"broker_server_configured\":true}","e6759c7749b0":"{\"status\":\"ok\",\"server_id\":\"e6759c7749b0\",\"clients\":2,\"streams\":20,\"inflight\":13,\"broker_server_configured\":true}"}
+
+{"status":"ok","relay_mode":"grpc-tunnel","streams":8,"busy":6,"target":8}
+--- 01:38:11
+{"0567b8a86ac8":"{\"status\":\"ok\",\"server_id\":\"0567b8a86ac8\",\"clients\":2,\"streams\":12,\"inflight\":5,\"broker_server_configured\":true}","e6759c7749b0":"{\"status\":\"ok\",\"server_id\":\"e6759c7749b0\",\"clients\":2,\"streams\":20,\"inflight\":6,\"broker_server_configured\":true}"}
+
+{"status":"ok","relay_mode":"grpc-tunnel","streams":8,"busy":2,"target":8}
+--- 01:38:21
+{"0567b8a86ac8":"{\"status\":\"ok\",\"server_id\":\"0567b8a86ac8\",\"clients\":2,\"streams\":12,\"inflight\":6,\"broker_server_configured\":true}","e6759c7749b0":"{\"status\":\"ok\",\"server_id\":\"e6759c7749b0\",\"clients\":2,\"streams\":20,\"inflight\":6,\"broker_server_configured\":true}"}
+
+{"status":"ok","relay_mode":"grpc-tunnel","streams":8,"busy":4,"target":8}
+--- 01:38:31
+{"0567b8a86ac8":"{\"status\":\"ok\",\"server_id\":\"0567b8a86ac8\",\"clients\":2,\"streams\":12,\"inflight\":7,\"broker_server_configured\":true}","e6759c7749b0":"{\"status\":\"ok\",\"server_id\":\"e6759c7749b0\",\"clients\":2,\"streams\":20,\"inflight\":10,\"broker_server_configured\":true}"}
+
+{"status":"ok","relay_mode":"grpc-tunnel","streams":8,"busy":5,"target":8}
+--- 01:38:41
+{"0567b8a86ac8":"{\"status\":\"ok\",\"server_id\":\"0567b8a86ac8\",\"clients\":1,\"streams\":4,\"inflight\":4,\"broker_server_configured\":true}","e6759c7749b0":"{\"status\":\"ok\",\"server_id\":\"e6759c7749b0\",\"clients\":2,\"streams\":24,\"inflight\":11,\"broker_server_configured\":true}"}
+
+{"status":"ok","relay_mode":"grpc-tunnel","streams":8,"busy":2,"target":8}
+--- 01:38:51
+{"0567b8a86ac8":"{\"status\":\"ok\",\"server_id\":\"0567b8a86ac8\",\"clients\":2,\"streams\":7,\"inflight\":7,\"broker_server_configured\":true}","e6759c7749b0":"{\"status\":\"ok\",\"server_id\":\"e6759c7749b0\",\"clients\":2,\"streams\":24,\"inflight\":8,\"broker_server_configured\":true}"}
+
+{"status":"ok","relay_mode":"grpc-tunnel","streams":8,"busy":2,"target":8}
+--- 01:39:02
+{"0567b8a86ac8":"{\"status\":\"ok\",\"server_id\":\"0567b8a86ac8\",\"clients\":2,\"streams\":8,\"inflight\":8,\"broker_server_configured\":true}","e6759c7749b0":"{\"status\":\"ok\",\"server_id\":\"e6759c7749b0\",\"clients\":2,\"streams\":24,\"inflight\":11,\"broker_server_configured\":true}"}
+
+{"status":"ok","relay_mode":"grpc-tunnel","streams":8,"busy":4,"target":8}
+--- 01:39:12
+{"0567b8a86ac8":"{\"status\":\"ok\",\"server_id\":\"0567b8a86ac8\",\"clients\":2,\"streams\":8,\"inflight\":8,\"broker_server_configured\":true}","e6759c7749b0":"{\"status\":\"ok\",\"server_id\":\"e6759c7749b0\",\"clients\":2,\"streams\":24,\"inflight\":6,\"broker_server_configured\":true}"}
+
+{"status":"ok","relay_mode":"grpc-tunnel","streams":8,"busy":1,"target":8}
+--- 01:39:22
+{"0567b8a86ac8":"{\"status\":\"ok\",\"server_id\":\"0567b8a86ac8\",\"clients\":2,\"streams\":8,\"inflight\":8,\"broker_server_configured\":true}","e6759c7749b0":"{\"status\":\"ok\",\"server_id\":\"e6759c7749b0\",\"clients\":2,\"streams\":24,\"inflight\":7,\"broker_server_configured\":true}"}
+
+{"status":"ok","relay_mode":"grpc-tunnel","streams":8,"busy":2,"target":8}
+--- 01:39:32
+{"0567b8a86ac8":"{\"status\":\"ok\",\"server_id\":\"0567b8a86ac8\",\"clients\":2,\"streams\":8,\"inflight\":8,\"broker_server_configured\":true}","e6759c7749b0":"{\"status\":\"ok\",\"server_id\":\"e6759c7749b0\",\"clients\":2,\"streams\":24,\"inflight\":6,\"broker_server_configured\":true}"}
+
+{"status":"ok","relay_mode":"grpc-tunnel","streams":8,"busy":4,"target":8}
+--- 01:39:42
+{"0567b8a86ac8":"{\"status\":\"ok\",\"server_id\":\"0567b8a86ac8\",\"clients\":2,\"streams\":20,\"inflight\":13,\"broker_server_configured\":true}","e6759c7749b0":"{\"status\":\"ok\",\"server_id\":\"e6759c7749b0\",\"clients\":2,\"streams\":5,\"inflight\":5,\"broker_server_configured\":true}"}
+
+{"status":"ok","relay_mode":"grpc-tunnel","streams":4,"busy":4,"target":8}
+--- 01:39:52
+{"0567b8a86ac8":"{\"status\":\"ok\",\"server_id\":\"0567b8a86ac8\",\"clients\":2,\"streams\":20,\"inflight\":6,\"broker_server_configured\":true}","e6759c7749b0":"{\"status\":\"ok\",\"server_id\":\"e6759c7749b0\",\"clients\":2,\"streams\":11,\"inflight\":8,\"broker_server_configured\":true}"}
+
+{"status":"ok","relay_mode":"grpc-tunnel","streams":7,"busy":3,"target":8}
+--- 01:40:03
+{"0567b8a86ac8":"{\"status\":\"ok\",\"server_id\":\"0567b8a86ac8\",\"clients\":2,\"streams\":20,\"inflight\":11,\"broker_server_configured\":true}","e6759c7749b0":"{\"status\":\"ok\",\"server_id\":\"e6759c7749b0\",\"clients\":2,\"streams\":12,\"inflight\":11,\"broker_server_configured\":true}"}
+
+{"status":"ok","relay_mode":"grpc-tunnel","streams":8,"busy":7,"target":8}
+--- 01:40:13
+{"0567b8a86ac8":"{\"status\":\"ok\",\"server_id\":\"0567b8a86ac8\",\"clients\":2,\"streams\":16,\"inflight\":3,\"broker_server_configured\":true}","e6759c7749b0":"{\"status\":\"ok\",\"server_id\":\"e6759c7749b0\",\"clients\":2,\"streams\":8,\"inflight\":8,\"broker_server_configured\":true}"}
+
+{"status":"ok","relay_mode":"grpc-tunnel","streams":8,"busy":5,"target":8}
+--- 01:40:23
+{"0567b8a86ac8":"{\"status\":\"ok\",\"server_id\":\"0567b8a86ac8\",\"clients\":2,\"streams\":24,\"inflight\":7,\"broker_server_configured\":true}","e6759c7749b0":"{\"status\":\"ok\",\"server_id\":\"e6759c7749b0\",\"clients\":2,\"streams\":8,\"inflight\":8,\"broker_server_configured\":true}"}
+
+{"status":"ok","relay_mode":"grpc-tunnel","streams":8,"busy":1,"target":8}
+--- 01:40:33
+{"0567b8a86ac8":"{\"status\":\"ok\",\"server_id\":\"0567b8a86ac8\",\"clients\":2,\"streams\":24,\"inflight\":7,\"broker_server_configured\":true}","e6759c7749b0":"{\"status\":\"ok\",\"server_id\":\"e6759c7749b0\",\"clients\":2,\"streams\":8,\"inflight\":8,\"broker_server_configured\":true}"}
+
+{"status":"ok","relay_mode":"grpc-tunnel","streams":8,"busy":2,"target":8}
+--- 01:40:43
+{"0567b8a86ac8":"{\"status\":\"ok\",\"server_id\":\"0567b8a86ac8\",\"clients\":2,\"streams\":24,\"inflight\":5,\"broker_server_configured\":true}","e6759c7749b0":"{\"status\":\"ok\",\"server_id\":\"e6759c7749b0\",\"clients\":2,\"streams\":8,\"inflight\":7,\"broker_server_configured\":true}"}
+
+{"status":"ok","relay_mode":"grpc-tunnel","streams":8,"busy":2,"target":8}
+--- 01:40:54
+{"0567b8a86ac8":"{\"status\":\"ok\",\"server_id\":\"0567b8a86ac8\",\"clients\":2,\"streams\":16,\"inflight\":16,\"broker_server_configured\":true}","e6759c7749b0":"{\"status\":\"ok\",\"server_id\":\"e6759c7749b0\",\"clients\":2,\"streams\":16,\"inflight\":12,\"broker_server_configured\":true}"}
+
+{"status":"ok","relay_mode":"grpc-tunnel","streams":8,"busy":6,"target":8}
+--- 01:41:04
+{"0567b8a86ac8":"{\"status\":\"ok\",\"server_id\":\"0567b8a86ac8\",\"clients\":2,\"streams\":16,\"inflight\":16,\"broker_server_configured\":true}","e6759c7749b0":"{\"status\":\"ok\",\"server_id\":\"e6759c7749b0\",\"clients\":2,\"streams\":16,\"inflight\":14,\"broker_server_configured\":true}"}
+
+{"status":"ok","relay_mode":"grpc-tunnel","streams":8,"busy":8,"target":8}
+--- 01:41:14
+{"0567b8a86ac8":"{\"status\":\"ok\",\"server_id\":\"0567b8a86ac8\",\"clients\":2,\"streams\":16,\"inflight\":16,\"broker_server_configured\":true}","e6759c7749b0":"{\"status\":\"ok\",\"server_id\":\"e6759c7749b0\",\"clients\":2,\"streams\":16,\"inflight\":16,\"broker_server_configured\":true}"}
+
+{"status":"ok","relay_mode":"grpc-tunnel","streams":8,"busy":7,"target":8}
+--- 01:41:24
+{"0567b8a86ac8":"{\"status\":\"ok\",\"server_id\":\"0567b8a86ac8\",\"clients\":2,\"streams\":20,\"inflight\":6,\"broker_server_configured\":true}","e6759c7749b0":"{\"status\":\"ok\",\"server_id\":\"e6759c7749b0\",\"clients\":2,\"streams\":12,\"inflight\":8,\"broker_server_configured\":true}"}
+
+{"status":"ok","relay_mode":"grpc-tunnel","streams":8,"busy":4,"target":8}
+--- 01:41:34
+{"0567b8a86ac8":"{\"status\":\"ok\",\"server_id\":\"0567b8a86ac8\",\"clients\":2,\"streams\":20,\"inflight\":0,\"broker_server_configured\":true}","e6759c7749b0":"{\"status\":\"ok\",\"server_id\":\"e6759c7749b0\",\"clients\":2,\"streams\":12,\"inflight\":0,\"broker_server_configured\":true}"}
+
+{"status":"ok","relay_mode":"grpc-tunnel","streams":8,"busy":0,"target":8}
+--- 01:41:44
+{"0567b8a86ac8":"{\"status\":\"ok\",\"server_id\":\"0567b8a86ac8\",\"clients\":2,\"streams\":20,\"inflight\":0,\"broker_server_configured\":true}","e6759c7749b0":"{\"status\":\"ok\",\"server_id\":\"e6759c7749b0\",\"clients\":2,\"streams\":12,\"inflight\":0,\"broker_server_configured\":true}"}
+
+{"status":"ok","relay_mode":"grpc-tunnel","streams":8,"busy":0,"target":8}
+--- 01:41:55
+{"0567b8a86ac8":"{\"status\":\"ok\",\"server_id\":\"0567b8a86ac8\",\"clients\":2,\"streams\":20,\"inflight\":0,\"broker_server_configured\":true}","e6759c7749b0":"{\"status\":\"ok\",\"server_id\":\"e6759c7749b0\",\"clients\":2,\"streams\":12,\"inflight\":0,\"broker_server_configured\":true}"}
+
+{"status":"ok","relay_mode":"grpc-tunnel","streams":8,"busy":0,"target":8}
+--- 01:42:05
+{"0567b8a86ac8":"{\"status\":\"ok\",\"server_id\":\"0567b8a86ac8\",\"clients\":2,\"streams\":20,\"inflight\":0,\"broker_server_configured\":true}","e6759c7749b0":"{\"status\":\"ok\",\"server_id\":\"e6759c7749b0\",\"clients\":2,\"streams\":12,\"inflight\":0,\"broker_server_configured\":true}"}
+
+{"status":"ok","relay_mode":"grpc-tunnel","streams":8,"busy":0,"target":8}
+--- 01:42:15
+{"0567b8a86ac8":"{\"status\":\"ok\",\"server_id\":\"0567b8a86ac8\",\"clients\":2,\"streams\":20,\"inflight\":0,\"broker_server_configured\":true}","e6759c7749b0":"{\"status\":\"ok\",\"server_id\":\"e6759c7749b0\",\"clients\":2,\"streams\":12,\"inflight\":0,\"broker_server_configured\":true}"}
+
+{"status":"ok","relay_mode":"grpc-tunnel","streams":8,"busy":0,"target":8}
+--- 01:42:25
+{"0567b8a86ac8":"{\"status\":\"ok\",\"server_id\":\"0567b8a86ac8\",\"clients\":2,\"streams\":20,\"inflight\":0,\"broker_server_configured\":true}","e6759c7749b0":"{\"status\":\"ok\",\"server_id\":\"e6759c7749b0\",\"clients\":2,\"streams\":12,\"inflight\":0,\"broker_server_configured\":true}"}
+
+{"status":"ok","relay_mode":"grpc-tunnel","streams":8,"busy":0,"target":8}
+--- 01:42:35
+{"0567b8a86ac8":"{\"status\":\"ok\",\"server_id\":\"0567b8a86ac8\",\"clients\":2,\"streams\":20,\"inflight\":0,\"broker_server_configured\":true}","e6759c7749b0":"{\"status\":\"ok\",\"server_id\":\"e6759c7749b0\",\"clients\":2,\"streams\":12,\"inflight\":0,\"broker_server_configured\":true}"}
+
+{"status":"ok","relay_mode":"grpc-tunnel","streams":8,"busy":0,"target":8}
+--- 01:42:46
+{"0567b8a86ac8":"{\"status\":\"ok\",\"server_id\":\"0567b8a86ac8\",\"clients\":2,\"streams\":20,\"inflight\":0,\"broker_server_configured\":true}","e6759c7749b0":"{\"status\":\"ok\",\"server_id\":\"e6759c7749b0\",\"clients\":2,\"streams\":12,\"inflight\":0,\"broker_server_configured\":true}"}
+
+{"status":"ok","relay_mode":"grpc-tunnel","streams":8,"busy":0,"target":8}
+--- 01:42:56
+{"0567b8a86ac8":"{\"status\":\"ok\",\"server_id\":\"0567b8a86ac8\",\"clients\":2,\"streams\":20,\"inflight\":0,\"broker_server_configured\":true}","e6759c7749b0":"{\"status\":\"ok\",\"server_id\":\"e6759c7749b0\",\"clients\":2,\"streams\":12,\"inflight\":0,\"broker_server_configured\":true}"}
+
+{"status":"ok","relay_mode":"grpc-tunnel","streams":8,"busy":0,"target":8}
