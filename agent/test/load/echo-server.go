@@ -50,10 +50,19 @@ func prngFill(buf []byte, seed uint64) {
 	}
 }
 
+// echoName identifies this echo-server instance. Each broker token in the
+// load test points at its own instance, and the load generator asserts the
+// response came back from the right one — that assertion is what proves
+// requests never leak between logically separate token pools.
+var echoName = "echo"
+
 func main() {
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
+	}
+	if n := os.Getenv("ECHO_NAME"); n != "" {
+		echoName = n
 	}
 
 	mux := http.NewServeMux()
@@ -63,7 +72,7 @@ func main() {
 	})
 	mux.HandleFunc("/echo/", handleEcho)
 
-	log.Printf("echo-server listening on :%s", port)
+	log.Printf("echo-server %q listening on :%s", echoName, port)
 	log.Fatal(http.ListenAndServe(":"+port, mux))
 }
 
@@ -92,6 +101,7 @@ func handleEcho(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("x-echo-bytes-received", strconv.FormatInt(n, 10))
 	w.Header().Set("x-echo-request-id", id)
 	w.Header().Set("x-echo-injected", r.Header.Get("x-load-injected"))
+	w.Header().Set("x-echo-server", echoName)
 	w.Header().Set("Content-Length", strconv.Itoa(size))
 	w.WriteHeader(status)
 

@@ -83,9 +83,45 @@ def main(models):
     print()
     for m, (agg, chaos) in rows.items():
         print("%-8s chaos events: %d" % (m, chaos))
+
+    # Per-token view: each broker token is a logically separate pool with
+    # its own upstream, so these lines show whether the pools stayed
+    # independent rather than one dragging down the other.
+    print()
+    print("Per-token (each token has its own upstream):")
+    hdr2 = ("%-8s %-8s %9s %9s %7s %8s %7s %7s" %
+            ("model", "token", "requests", "success%", "integ", "availf",
+             "p50", "p99"))
+    print(hdr2)
+    print("-" * len(hdr2))
+    for m in models:
+        files = sorted(glob.glob(os.path.join("reports", m, "loadgen-*.json")))
+        merged = {}
+        for f in files:
+            with open(f) as fh:
+                d = json.load(fh)
+            for tok, s in (d.get("by_token") or {}).items():
+                cur = merged.setdefault(
+                    tok, {"total": 0, "ok": 0, "integ": 0, "avail": 0,
+                          "p50": 0, "p99": 0})
+                cur["total"] += s["total"]
+                cur["ok"] += s["ok"]
+                cur["integ"] += s["integrity_failures"]
+                cur["avail"] += s["availability_fails"]
+                cur["p50"] = max(cur["p50"], s["latency_p50_ms"])
+                cur["p99"] = max(cur["p99"], s["latency_p99_ms"])
+        for tok in sorted(merged):
+            c = merged[tok]
+            succ = 100.0 * c["ok"] / c["total"] if c["total"] else 0.0
+            print("%-8s %-8s %9d %9.3f %7d %8d %7d %7d" % (
+                m, tok, c["total"], succ, c["integ"], c["avail"],
+                c["p50"], c["p99"]))
+
     print()
     print("p50/p95/p99 are the worst across load generators, in ms.")
     print("integ must be 0 in every model; any non-zero value fails the run.")
+    print("A non-zero integ on a per-token line can mean a cross-tenant leak:")
+    print("a token answered by an upstream that is not its own.")
 
 
 if __name__ == "__main__":

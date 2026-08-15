@@ -3,11 +3,13 @@ set -u
 
 # gRPC tunnel load & chaos test.
 #
-# Stands up T load generators → X tunnel servers → N agents (across 3
-# broker tokens) → echo upstream, with a dispatcher-mock playing Cortex's
-# routing role, runs sustained randomized load, optionally SIGKILLs and
-# restarts agents/servers during the run, and validates:
+# Stands up T load generators → X tunnel servers → N agents per broker
+# token → one echo upstream PER TOKEN, with a dispatcher-mock playing
+# Cortex's routing role, runs sustained randomized load, optionally
+# SIGKILLs and restarts agents/servers during the run, and validates:
 #   - zero end-to-end integrity failures (byte-exact both directions)
+#   - no cross-tenant leaks: each token is answered only by its own
+#     upstream (agent-a→upstream-a, agent-b→upstream-b)
 #   - availability >= MIN_SUCCESS_PCT despite chaos
 #   - steady-state recovery after chaos stops (every token routable)
 #
@@ -41,7 +43,7 @@ RUN_TAG=${RUN_TAG:-$CONN_MODE}
 
 COMPOSE="docker compose -f docker-compose.load.yml"
 DISPATCHER="http://localhost:${DISPATCHER_PORT}"
-TOKENS=(tok-a tok-b tok-c)
+TOKENS=(tok-a tok-b)
 
 mkdir -p reports
 rm -f reports/loadgen-*.json samples.log chaos.log
@@ -91,7 +93,6 @@ $COMPOSE up -d --build \
     --scale grpc-tunnel-server="$SERVERS" \
     --scale agent-a="$AGENTS_PER_TOKEN" \
     --scale agent-b="$AGENTS_PER_TOKEN" \
-    --scale agent-c="$AGENTS_PER_TOKEN" \
     --scale loadgen="$LOADGENS" || { echo "compose up failed"; exit 1; }
 
 echo "=== Waiting for all tokens to be routable ==="
@@ -149,10 +150,9 @@ if [ "$CHAOS" = "1" ]; then
             COUNT=$($COMPOSE ps -q $SVC | wc -l)
             [ "$COUNT" -le 1 ] && { sleep "$CHAOS_INTERVAL"; continue; }
         else
-            case $((i % 3)) in
-                0) SVC="agent-a" ;;
-                1) SVC="agent-b" ;;
-                2) SVC="agent-c" ;;
+            case $((i % 4)) in
+                1) SVC="agent-a" ;;
+                *) SVC="agent-b" ;;
             esac
         fi
         VICTIM=$($COMPOSE ps -q "$SVC" | pick_random_line)

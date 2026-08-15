@@ -14,10 +14,16 @@
 # (load_test.sh does this for you.)
 
 services:
-  echo-server:
+  # One upstream per broker token, so each token is a logically separate
+  # pool with its own origin. Every response carries x-echo-server, and the
+  # load generator asserts it matches the token it asked for — that is what
+  # catches a request leaking from one token's pool into the other's.
+  echo-server-a: &echo
     image: golang:1.24-alpine
     volumes:
       - .:/src:ro
+    environment:
+      ECHO_NAME: upstream-a
     command: sh -c "cd /src && go run echo-server.go"
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:8080/healthz"]
@@ -25,6 +31,11 @@ services:
       timeout: 3s
       retries: 30
     networks: [loadnet]
+
+  echo-server-b:
+    <<: *echo
+    environment:
+      ECHO_NAME: upstream-b
 
   dispatcher-mock:
     image: golang:1.24-alpine
@@ -71,7 +82,7 @@ services:
       - .:/src:ro
     environment: &agent-env
       RELAY_MODE: grpc-tunnel
-      ECHO_ORIGIN: http://echo-server:8080
+      ECHO_ORIGIN: http://echo-server-a:8080
       BROKER_SERVER_URL: grpc-tunnel-server:50052
       BROKER_TOKEN: tok-a
       GRPC_INSECURE: "true"
@@ -93,7 +104,7 @@ services:
     depends_on:
       grpc-tunnel-server:
         condition: service_started
-      echo-server:
+      echo-server-a:
         condition: service_healthy
     networks: [loadnet]
 
@@ -102,12 +113,12 @@ services:
     environment:
       <<: *agent-env
       BROKER_TOKEN: tok-b
-
-  agent-c:
-    <<: *agent
-    environment:
-      <<: *agent-env
-      BROKER_TOKEN: tok-c
+      ECHO_ORIGIN: http://echo-server-b:8080
+    depends_on:
+      grpc-tunnel-server:
+        condition: service_started
+      echo-server-b:
+        condition: service_healthy
 
   loadgen:
     image: golang:1.24-alpine
@@ -115,7 +126,10 @@ services:
       - .:/src:ro
       - ./reports:/reports
     environment:
-      TOKENS: ${TOKENS:-tok-a,tok-b,tok-c}
+      TOKENS: ${TOKENS:-tok-a,tok-b}
+      # Which upstream each token must be answered by; a mismatch is a
+      # cross-tenant leak and fails the run as an integrity failure.
+      TOKEN_ORIGINS: ${TOKEN_ORIGINS:-tok-a=upstream-a,tok-b=upstream-b}
       DISPATCHER_URL: http://dispatcher-mock:8080
       WORKERS: ${WORKERS:-16}
       DURATION: ${DURATION:-2m}

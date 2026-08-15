@@ -73,6 +73,9 @@ type config struct {
 	workers       int
 	duration      time.Duration
 	maxBody       int
+	// tokenOrigins maps a broker token to the echo-server instance that
+	// token's agents are configured to reach. Empty means "don't check".
+	tokenOrigins map[string]string
 	maxResp       int
 	maxDelayMs    int
 	minSuccessPct float64
@@ -83,8 +86,21 @@ type config struct {
 	serverHost    string // override for non-docker smoke runs
 }
 
+// tokenStat is one broker token's slice of the run. Tracked separately so
+// the report shows whether the logically separate pools behaved
+// independently — one token's upstream or agents going down should not
+// show up in the other token's numbers.
+type tokenStat struct {
+	ok          int
+	integrity   int
+	availFails  int
+	retries     int
+	latenciesMs []float64
+}
+
 type stats struct {
 	mu                  sync.Mutex
+	byToken             map[string]*tokenStat
 	ok                  int
 	integrityFailures   int
 	availabilityFails   int
@@ -128,6 +144,7 @@ func main() {
 func loadConfig() config {
 	cfg := config{
 		tokens:        strings.Split(envDefault("TOKENS", "tok-a"), ","),
+		tokenOrigins:  parseTokenOrigins(os.Getenv("TOKEN_ORIGINS")),
 		dispatcherURL: envDefault("DISPATCHER_URL", "http://dispatcher-mock:8080"),
 		workers:       atoiEnv("WORKERS", 16),
 		duration:      durEnv("DURATION", 2*time.Minute),
@@ -285,10 +302,10 @@ func runOne(cfg config, client *http.Client, res *resolver, st *stats) {
 		servers, err := res.servers(token, attempt > 0)
 		if err != nil || len(servers) == 0 {
 			if attempt >= cfg.retries {
-				st.availability(fmt.Sprintf("no routable server for %s: %v", token, err))
+				st.availability(token, fmt.Sprintf("no routable server for %s: %v", token, err))
 				return
 			}
-			st.retry()
+			st.retry(token)
 			time.Sleep(250 * time.Millisecond)
 			continue
 		}
@@ -298,20 +315,20 @@ func runOne(cfg config, client *http.Client, res *resolver, st *stats) {
 		}
 		url := fmt.Sprintf("http://%s:%s/broker/%s%s", server, cfg.serverPort, token, path)
 
-		outcome, detail := attemptOnce(client, url, id, status, respSize, seed, wantBodyHash, body)
+		outcome, detail := attemptOnce(client, url, id, status, respSize, seed, wantBodyHash, body, cfg.tokenOrigins[token])
 		switch outcome {
 		case "ok":
-			st.success(time.Since(start))
+			st.success(token, time.Since(start))
 			return
 		case "integrity":
-			st.integrity(detail + " url=" + url)
+			st.integrity(token, detail+" url="+url)
 			return
 		case "infra":
 			if attempt >= cfg.retries {
-				st.availability(detail + " url=" + url)
+				st.availability(token, detail+" url="+url)
 				return
 			}
-			st.retry()
+			st.retry(token)
 			time.Sleep(250 * time.Millisecond)
 		}
 	}
@@ -319,7 +336,7 @@ func runOne(cfg config, client *http.Client, res *resolver, st *stats) {
 
 // attemptOnce performs one exchange. Returns outcome ∈ {ok, integrity,
 // infra} and a detail string.
-func attemptOnce(client *http.Client, url, id string, wantStatus, respSize int, seed uint64, wantBodyHash string, body []byte) (string, string) {
+func attemptOnce(client *http.Client, url, id string, wantStatus, respSize int, seed uint64, wantBodyHash string, body []byte, wantOrigin string) (string, string) {
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return "infra", fmt.Sprintf("build request: %v", err)
@@ -354,6 +371,14 @@ func attemptOnce(client *http.Client, url, id string, wantStatus, respSize int, 
 	if got := resp.Header.Get("x-echo-injected"); got != "yes" {
 		return "integrity", fmt.Sprintf("accept-file injected header: want yes got %q", got)
 	}
+	// Cross-tenant leak check: this token's agents are wired to exactly one
+	// echo-server instance, so a response from any other one means a request
+	// escaped its own pool.
+	if wantOrigin != "" {
+		if got := resp.Header.Get("x-echo-server"); got != wantOrigin {
+			return "integrity", fmt.Sprintf("CROSS-TENANT LEAK: request for upstream %q answered by %q", wantOrigin, got)
+		}
+	}
 
 	// Stream-validate the deterministic response body chunk by chunk,
 	// mirroring the echo server's generation exactly.
@@ -383,33 +408,53 @@ func attemptOnce(client *http.Client, url, id string, wantStatus, respSize int, 
 	return "ok", ""
 }
 
-func (st *stats) success(d time.Duration) {
+// forToken returns the per-token bucket. Caller must hold st.mu.
+func (st *stats) forToken(token string) *tokenStat {
+	if st.byToken == nil {
+		st.byToken = map[string]*tokenStat{}
+	}
+	ts, ok := st.byToken[token]
+	if !ok {
+		ts = &tokenStat{}
+		st.byToken[token] = ts
+	}
+	return ts
+}
+
+func (st *stats) success(token string, d time.Duration) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	st.ok++
-	st.latenciesMs = append(st.latenciesMs, float64(d.Milliseconds()))
+	ms := float64(d.Milliseconds())
+	st.latenciesMs = append(st.latenciesMs, ms)
+	ts := st.forToken(token)
+	ts.ok++
+	ts.latenciesMs = append(ts.latenciesMs, ms)
 }
 
-func (st *stats) retry() {
+func (st *stats) retry(token string) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	st.routingRetries++
+	st.forToken(token).retries++
 }
 
-func (st *stats) integrity(detail string) {
+func (st *stats) integrity(token, detail string) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	st.integrityFailures++
+	st.forToken(token).integrity++
 	if len(st.integrityDetails) < 20 {
 		st.integrityDetails = append(st.integrityDetails, detail)
 	}
 	log.Printf("INTEGRITY FAILURE: %s", detail)
 }
 
-func (st *stats) availability(detail string) {
+func (st *stats) availability(token, detail string) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	st.availabilityFails++
+	st.forToken(token).availFails++
 	if len(st.availabilityDetails) < 20 {
 		st.availabilityDetails = append(st.availabilityDetails, detail)
 	}
@@ -435,8 +480,32 @@ func writeReport(cfg config, hostname string, st *stats) {
 	}
 	sort.Float64s(st.latenciesMs)
 
+	// Per-token breakdown: proves both pools carried traffic, and shows
+	// whether a disruption in one token's pool bled into the other's.
+	perToken := map[string]any{}
+	for tok, ts := range st.byToken {
+		sort.Float64s(ts.latenciesMs)
+		tokTotal := ts.ok + ts.availFails + ts.integrity
+		tokSucc := 100.0
+		if tokTotal > 0 {
+			tokSucc = float64(ts.ok) / float64(tokTotal) * 100
+		}
+		perToken[tok] = map[string]any{
+			"total":              tokTotal,
+			"ok":                 ts.ok,
+			"integrity_failures": ts.integrity,
+			"availability_fails": ts.availFails,
+			"routing_retries":    ts.retries,
+			"success_pct":        tokSucc,
+			"latency_p50_ms":     percentile(ts.latenciesMs, 50),
+			"latency_p95_ms":     percentile(ts.latenciesMs, 95),
+			"latency_p99_ms":     percentile(ts.latenciesMs, 99),
+		}
+	}
+
 	report := map[string]any{
 		"host":                 hostname,
+		"by_token":             perToken,
 		"total":                total,
 		"ok":                   st.ok,
 		"integrity_failures":   st.integrityFailures,
@@ -474,6 +543,24 @@ func envDefault(k, def string) string {
 		return v
 	}
 	return def
+}
+
+// parseTokenOrigins reads "tok-a=upstream-a,tok-b=upstream-b" into a map of
+// broker token to the echo-server instance that token must be answered by.
+func parseTokenOrigins(v string) map[string]string {
+	m := map[string]string{}
+	for _, pair := range strings.Split(v, ",") {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue
+		}
+		k, val, ok := strings.Cut(pair, "=")
+		if !ok {
+			continue
+		}
+		m[strings.TrimSpace(k)] = strings.TrimSpace(val)
+	}
+	return m
 }
 
 func atoiEnv(k string, def int) int {
