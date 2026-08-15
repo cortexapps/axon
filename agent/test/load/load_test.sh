@@ -38,6 +38,10 @@ CHAOS_INTERVAL=${CHAOS_INTERVAL:-20}
 export CONN_MODE=${CONN_MODE:-pool}
 export CONNS=${CONNS:-8}
 export STREAMS_PER_CONN=${STREAMS_PER_CONN:-8}
+# "direct" mode: idle stream reserve and the stream ceiling that backpressure
+# relies on.
+export IDLE_STREAMS=${IDLE_STREAMS:-4}
+export MAX_STREAMS=${MAX_STREAMS:-64}
 # Tag report/log filenames so comparison runs don't overwrite each other.
 RUN_TAG=${RUN_TAG:-$CONN_MODE}
 
@@ -92,7 +96,11 @@ if lsof -nP -iTCP:"$DISPATCHER_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
 fi
 
 echo "=== Starting stack: servers=$SERVERS agents/token=$AGENTS_PER_TOKEN loadgens=$LOADGENS duration=$DURATION chaos=$CHAOS ==="
-echo "=== Connection model: mode=$CONN_MODE conns=$CONNS streamsPerConn=$STREAMS_PER_CONN (tag: $RUN_TAG) ==="
+if [ "$CONN_MODE" = "direct" ]; then
+    echo "=== Connection model: mode=direct conns=$CONNS idleStreams=$IDLE_STREAMS maxStreams=$MAX_STREAMS (tag: $RUN_TAG) ==="
+else
+    echo "=== Connection model: mode=$CONN_MODE conns=$CONNS streamsPerConn=$STREAMS_PER_CONN (tag: $RUN_TAG) ==="
+fi
 # Build first, then pull, then start. Docker Desktop's image cleanup can
 # evict the base images at any point, and an eviction during the
 # multi-minute build fails container creation with "No such image" once

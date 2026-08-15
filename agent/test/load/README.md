@@ -53,9 +53,11 @@ workflow via `make -C agent load-test` if desired.
 | `CHAOS_INTERVAL` | 20 | seconds between chaos events |
 | `MIN_SUCCESS_PCT` | 99 | availability floor per load generator |
 | `MAX_BODY_BYTES` / `MAX_RESP_BYTES` | 2MiB / 4MiB | payload ceilings (exercise chunking) |
-| `CONN_MODE` | pool | agent connection model: `pool`, `conns` or `mux` |
-| `CONNS` | 8 | connection count for `conns` / `mux` |
+| `CONN_MODE` | pool | agent connection model: `pool`, `conns`, `mux` or `direct` |
+| `CONNS` | 8 | connection count for `conns` / `mux` / `direct` |
 | `STREAMS_PER_CONN` | 8 | streams multiplexed per connection (`mux` only) |
+| `IDLE_STREAMS` | 4 | idle streams held ready (`direct` only) |
+| `MAX_STREAMS` | 64 | per-agent stream ceiling (`direct` only) |
 | `RUN_TAG` | `$CONN_MODE` | subdirectory under `reports/` for this run's artifacts |
 
 ## Comparing connection models
@@ -64,19 +66,33 @@ workflow via `make -C agent load-test` if desired.
 identical topology, load and chaos rate, then prints a side-by-side table:
 
 ```bash
-./compare_conn_models.sh                      # pool, conns, mux
-MODELS="pool mux" DURATION=10m ./compare_conn_models.sh
+./compare_conn_models.sh                      # pool, conns, mux, direct
+MODELS="mux direct" DURATION=10m ./compare_conn_models.sh
 ```
 
-Each model is sized to the **same concurrent stream count** (`STREAMS`,
-default 16), so the comparison isolates connection count rather than
-concurrency:
+`pool`, `conns` and `mux` are sized to the **same concurrent stream count**
+(`STREAMS`, default 16), so comparing them isolates connection count rather
+than concurrency:
 
 | Model | Connections | Streams/conn | Shape |
 |-------|-------------|--------------|-------|
 | `pool` | grows 2→16 | 1 | adaptive watermark (default) |
 | `conns` | 16 | 1 | fixed fan-out, one connection per stream |
 | `mux` | 2 | 8 | few connections, HTTP/2 multiplexing (snyk-broker's shape) |
+| `direct` | 2, round-robin | 1 | on-demand streams, 4 idle held ready, 32 max |
+
+`direct` is deliberately **not** held to `STREAMS`. Its claim is that a fixed
+concurrency number is the thing to delete — streams follow demand, and the
+ceiling exists only so an overloaded agent pushes back instead of accepting
+work it cannot do. Pinning it to a fixed stream count would test that claim
+by assuming its opposite. It runs at the same connection count as `mux`, so
+the `direct`-vs-`mux` pair isolates exactly one change: on-demand streams and
+round-robin spread instead of a fixed multiplex over pinned connections.
+
+Note also that `direct` ignores `MAX_STREAMS_PER_SERVER`. Spread comes from
+the round-robin balancer placing streams across every instance, so a
+per-server cap could only reject placements the balancer had already made
+well.
 
 Note `MAX_STREAMS_PER_SERVER` counts *connections*, not streams — in `mux`
 mode the streams sharing a connection all land on the same backend, so only
