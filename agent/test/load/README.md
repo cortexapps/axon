@@ -110,6 +110,38 @@ binds before the model's own connection count does.
 Per-model artifacts land in `reports/<model>/`; re-summarize any time with
 `python3 summarize_models.py pool conns mux`.
 
+### Measured results
+
+5 servers, 2 agents/token, 2 load generators × 30 workers, 6m per model,
+chaos every 30s (11 events each), 2 tokens with isolated upstreams:
+
+| model | req/s | success% | integ | avail fails | p50 | p95 | p99 |
+|-------|-------|----------|-------|-------------|-----|-----|-----|
+| `pool` | 121 | 99.986 | 0 | 6 | 47 | 1282 | 9144 |
+| `conns` | 122 | 99.995 | 0 | 2 | 47 | 1306 | 8669 |
+| `mux` | 232 | 99.968 | 0 | 27 | 48 | 956 | 1979 |
+| `direct` | **281** | 99.994 | 0 | 6 | **40** | **882** | **1024** |
+
+`direct` carries 2.3× the throughput of the fixed-16-stream models at a
+9× better p99, using 2 connections rather than 16, with availability and
+integrity intact.
+
+The p99 gap is the fixed stream count, and `acquire_wait_ms` in the
+`/healthz` samples is the direct evidence: `conns` accumulated mean waits
+of 1–4.8 **seconds** purely queueing for a free stream, while `direct`
+served 2.3× the requests with fewer waits per server. Callers were paying
+seconds for a stream slot, not for the upstream.
+
+`mux` also has the most availability failures despite few connections,
+which is the blast-radius argument: 8 streams pinned to one connection
+all die together.
+
+Caveat when comparing to older numbers: the transport-pooling and O(1)
+stream-acquisition fixes landed for **all** modes, so every model
+improved. `conns`'s p50 halved (109ms → 47ms) from the upstream
+connection pooling alone. The throughput and p99 gaps are what is
+attributable to the connection model itself.
+
 ## Reading the results
 
 - `reports/loadgen-*.json` — per-generator: totals, success %, latency
