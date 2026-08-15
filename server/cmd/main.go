@@ -86,8 +86,10 @@ func main() {
 	httpMux.Handle("/broker/", httpAdapter)
 	httpMux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"status":"ok","server_id":%q,"clients":%d,"streams":%d,"inflight":%d,"broker_server_configured":%t}`,
-			cfg.ServerID, registry.Count(), registry.StreamCount(), dispatcher.InflightCount(), brokerClient.IsConfigured())
+		acquireWaits, acquireWaitMs := dispatcher.AcquireStats()
+		fmt.Fprintf(w, `{"status":"ok","server_id":%q,"clients":%d,"streams":%d,"inflight":%d,"acquire_waits":%d,"acquire_wait_ms":%d,"broker_server_configured":%t}`,
+			cfg.ServerID, registry.Count(), registry.StreamCount(), dispatcher.InflightCount(),
+			acquireWaits, acquireWaitMs, brokerClient.IsConfigured())
 	})
 
 	httpServer := &http.Server{

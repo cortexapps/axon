@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	pb "github.com/cortexapps/axon-server/.generated/proto/tunnelpb"
@@ -90,6 +91,21 @@ type Dispatcher struct {
 	mu       sync.Mutex
 	calls    map[string]*call            // call_id → call
 	byStream map[string]map[string]*call // stream_id → call_id → call
+
+	// Cumulative backpressure accounting, alongside the tagged metrics, so
+	// /healthz can report it without a metrics scrape. acquireWaits counts
+	// dispatches that found every stream busy; acquireWaitMs is the total
+	// time they spent waiting.
+	acquireWaits  atomic.Int64
+	acquireWaitMs atomic.Int64
+}
+
+// AcquireStats returns how many dispatches had to wait for an idle stream
+// and the total milliseconds spent waiting. Rising values mean the agent is
+// at the concurrency it can serve and the wait is being passed back to
+// callers as latency.
+func (d *Dispatcher) AcquireStats() (waits int64, totalMs int64) {
+	return d.acquireWaits.Load(), d.acquireWaitMs.Load()
 }
 
 // NewDispatcher creates a new Dispatcher.
@@ -218,9 +234,10 @@ func (d *Dispatcher) acquireStream(ctx context.Context, token broker.Token) (*tu
 		handle, allBusy := d.registry.AcquireIdleStream(token)
 		if handle != nil {
 			if waited {
+				waitMs := time.Since(start).Milliseconds()
+				d.acquireWaitMs.Add(waitMs)
 				d.withIdentity(token, func(tenant, integration, alias string) {
-					d.metrics.DispatchAcquireWait(tenant, integration, alias,
-						float64(time.Since(start).Milliseconds()))
+					d.metrics.DispatchAcquireWait(tenant, integration, alias, float64(waitMs))
 				})
 			}
 			return handle, nil
@@ -230,6 +247,7 @@ func (d *Dispatcher) acquireStream(ctx context.Context, token broker.Token) (*tu
 		}
 		if !waited {
 			waited = true
+			d.acquireWaits.Add(1)
 			d.withIdentity(token, func(tenant, integration, alias string) {
 				d.metrics.DispatchAllBusy(tenant, integration, alias)
 			})
