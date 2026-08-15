@@ -137,6 +137,76 @@ func TestDirect_WatermarkRuleDoesNotApply(t *testing.T) {
 	assert.Equal(t, int32(9), tc.targetSlots.Load())
 }
 
+// fakeStreamsOnServers seeds streams spread over the named server instances,
+// round-robin, the way the balancer places them.
+func fakeStreamsOnServers(tc *tunnelClient, n int, servers []string) {
+	tc.mu.Lock()
+	tc.streams = make(map[*tunnelStream]struct{})
+	for i := 0; i < n; i++ {
+		ts := &tunnelStream{id: i, cancel: func() {}, serverID: servers[i%len(servers)]}
+		tc.streams[ts] = struct{}{}
+	}
+	tc.runningWorkers = n
+	tc.mu.Unlock()
+	tc.refreshObservedServers()
+}
+
+func TestDirect_ReserveCountsDistinctServers(t *testing.T) {
+	tc := newDirectClient(t, 3, 256)
+
+	fakeStreamsOnServers(tc, 9, []string{"srv-a", "srv-b", "srv-c"})
+
+	assert.Equal(t, int32(3), tc.observedServers.Load())
+	assert.Equal(t, 9, tc.idleReserve(), "3 idle per server across 3 servers")
+	assert.Equal(t, 3, tc.idleStreams(), "the configured knob stays per-server")
+}
+
+// A server dispatches only onto streams registered with itself, so it makes
+// callers wait as soon as its own share of the reserve is taken. The reserve
+// therefore has to grow with the fleet, or per-server idleness thins toward
+// zero as servers are added.
+func TestDirect_ReserveGrowsWithTheFleet(t *testing.T) {
+	tc := newDirectClient(t, 2, 256)
+
+	fakeStreamsOnServers(tc, 4, []string{"srv-a", "srv-b"})
+	assert.Equal(t, 4, tc.idleReserve())
+
+	fakeStreamsOnServers(tc, 10, []string{"srv-a", "srv-b", "srv-c", "srv-d", "srv-e"})
+	assert.Equal(t, 10, tc.idleReserve(), "reserve tracks the fleet, so per-server idleness holds")
+}
+
+func TestDirect_ReserveBeforeAnyServerSeen(t *testing.T) {
+	tc := newDirectClient(t, 4, 64)
+
+	// Nothing connected yet: assume a single server so startup opens the
+	// configured reserve rather than nothing.
+	assert.Equal(t, int32(0), tc.observedServers.Load())
+	assert.Equal(t, 4, tc.idleReserve())
+}
+
+func TestDirect_GrowthTargetsTheScaledReserve(t *testing.T) {
+	tc := newDirectClient(t, 2, 256)
+
+	// 6 streams over 3 servers, all busy → reserve is 2*3=6, so six more
+	// streams are needed, not two.
+	fakeStreamsOnServers(tc, 6, []string{"srv-a", "srv-b", "srv-c"})
+	tc.targetSlots.Store(6)
+	tc.busySlots.Store(6)
+	tc.maybeGrow()
+
+	assert.Equal(t, int32(12), tc.targetSlots.Load())
+}
+
+func TestDirect_ReserveIgnoresStreamsWithNoServerYet(t *testing.T) {
+	tc := newDirectClient(t, 4, 64)
+
+	fakeStreams(tc, 5) // no server ids assigned
+	tc.refreshObservedServers()
+
+	assert.Equal(t, int32(0), tc.observedServers.Load())
+	assert.Equal(t, 4, tc.idleReserve())
+}
+
 func TestDirect_ModeClassification(t *testing.T) {
 	require.True(t, config.TunnelConnModeDirect.IsDirect())
 	require.False(t, config.TunnelConnModeDirect.IsFixed(),

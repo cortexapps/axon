@@ -96,7 +96,9 @@ services:
       AXON_GRPC_TUNNEL_CONN_MODE: ${CONN_MODE:-pool}
       AXON_GRPC_TUNNEL_CONNS: ${CONNS:-8}
       AXON_GRPC_TUNNEL_STREAMS_PER_CONN: ${STREAMS_PER_CONN:-8}
-      AXON_GRPC_TUNNEL_IDLE_STREAMS: ${IDLE_STREAMS:-4}
+      # Idle reserve is per server instance; total reserve is this times the
+      # number of servers the agent holds streams on.
+      AXON_GRPC_TUNNEL_IDLE_STREAMS: ${IDLE_STREAMS:-2}
       AXON_GRPC_TUNNEL_MAX_STREAMS: ${MAX_STREAMS:-64}
       AXON_UPSTREAM_MAX_CONNS_PER_HOST: ${UPSTREAM_MAX_CONNS:-128}
       MAX_STREAMS_PER_SERVER: ${MAX_STREAMS_PER_SERVER:-2}

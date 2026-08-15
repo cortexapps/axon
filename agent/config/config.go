@@ -167,8 +167,13 @@ type AgentConfig struct {
 	// match so concurrent calls reuse connections instead of handshaking.
 	UpstreamMaxConnsPerHost int
 	// TunnelIdleStreams is how many idle streams the "direct" mode keeps
-	// waiting for work. It is a latency knob, not a capacity one: it sets how
-	// large a burst is absorbed without waiting on a stream open.
+	// waiting for work, PER SERVER INSTANCE the agent is connected to. It is
+	// a latency knob, not a capacity one: it sets how large a burst is
+	// absorbed without waiting on a stream open.
+	//
+	// Per-server because a server can only dispatch onto streams registered
+	// with itself, so it makes callers wait as soon as its own share of the
+	// reserve is taken — however idle the agent is overall.
 	TunnelIdleStreams int
 	// TunnelMaxStreams caps concurrent streams in "direct" mode, which caps
 	// concurrent calls. This is the safety backstop, and also the mechanism

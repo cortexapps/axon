@@ -56,7 +56,7 @@ workflow via `make -C agent load-test` if desired.
 | `CONN_MODE` | pool | agent connection model: `pool`, `conns`, `mux` or `direct` |
 | `CONNS` | 8 | connection count for `conns` / `mux` / `direct` |
 | `STREAMS_PER_CONN` | 8 | streams multiplexed per connection (`mux` only) |
-| `IDLE_STREAMS` | 4 | idle streams held ready (`direct` only) |
+| `IDLE_STREAMS` | 2 | idle streams held ready **per server** (`direct` only) |
 | `MAX_STREAMS` | 64 | per-agent stream ceiling (`direct` only) |
 | `RUN_TAG` | `$CONN_MODE` | subdirectory under `reports/` for this run's artifacts |
 
@@ -79,7 +79,7 @@ than concurrency:
 | `pool` | grows 2→16 | 1 | adaptive watermark (default) |
 | `conns` | 16 | 1 | fixed fan-out, one connection per stream |
 | `mux` | 2 | 8 | few connections, HTTP/2 multiplexing (snyk-broker's shape) |
-| `direct` | 2, round-robin | 1 | on-demand streams, 4 idle held ready, 32 max |
+| `direct` | 2, round-robin | 1 | on-demand streams, 2 idle/server held ready, 32 max |
 
 `direct` is deliberately **not** held to `STREAMS`. Its claim is that a fixed
 concurrency number is the thing to delete — streams follow demand, and the
@@ -88,6 +88,14 @@ work it cannot do. Pinning it to a fixed stream count would test that claim
 by assuming its opposite. It runs at the same connection count as `mux`, so
 the `direct`-vs-`mux` pair isolates exactly one change: on-demand streams and
 round-robin spread instead of a fixed multiplex over pinned connections.
+
+The idle reserve is **per server instance**, multiplied by the number of
+servers the agent holds streams on. A server dispatches only onto streams
+registered with itself, so it makes callers wait the moment its own share of
+the reserve is taken — however idle the agent is overall. A flat reserve
+spread over S servers thins to reserve/S each and degrades silently as the
+fleet grows; watch `acquire_waits` / `acquire_wait_ms` in the `/healthz`
+samples to see it.
 
 Note also that `direct` ignores `MAX_STREAMS_PER_SERVER`. Spread comes from
 the round-robin balancer placing streams across every instance, so a

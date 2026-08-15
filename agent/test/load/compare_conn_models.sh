@@ -50,7 +50,9 @@ export MAX_STREAMS_PER_SERVER=${MAX_STREAMS_PER_SERVER:-4}
 # what the offered load actually needs or it, not the model, sets the limit.
 export MAX_STREAMS_PER_TOKEN=${MAX_STREAMS_PER_TOKEN:-128}
 # Idle reserve and per-agent stream ceiling for "direct".
-DIRECT_IDLE=${DIRECT_IDLE:-4}
+# Per server instance: the agent multiplies it by the number of servers it
+# holds streams on, so this does not need retuning as SERVERS changes.
+DIRECT_IDLE=${DIRECT_IDLE:-2}
 DIRECT_MAX=${DIRECT_MAX:-32}
 
 MODELS=${MODELS:-"pool conns mux direct"}
@@ -58,7 +60,7 @@ MODELS=${MODELS:-"pool conns mux direct"}
 echo "=== Connection-model comparison ==="
 echo "topology: servers=$SERVERS agents/token=$AGENTS_PER_TOKEN loadgens=$LOADGENS workers=$WORKERS"
 echo "load:     duration=$DURATION chaos every ${CHAOS_INTERVAL}s"
-echo "streams:  $STREAMS concurrent per agent (pool/conns/mux); direct: ${DIRECT_IDLE} idle, ${DIRECT_MAX} max, on demand"
+echo "streams:  $STREAMS concurrent per agent (pool/conns/mux); direct: ${DIRECT_IDLE} idle/server, ${DIRECT_MAX} max, on demand"
 echo "models:   $MODELS"
 echo
 
@@ -92,7 +94,7 @@ for model in $MODELS; do
     export RUN_TAG="$model"
     echo "############################################################"
     if [ "$model" = "direct" ]; then
-        echo "### direct: conns=$CONNS idleStreams=$IDLE_STREAMS maxStreams=$MAX_STREAMS"
+        echo "### direct: conns=$CONNS idleStreamsPerServer=$IDLE_STREAMS maxStreams=$MAX_STREAMS"
     else
         echo "### $model: conns=$CONNS streamsPerConn=$STREAMS_PER_CONN"
     fi

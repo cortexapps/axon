@@ -40,7 +40,7 @@ export CONNS=${CONNS:-8}
 export STREAMS_PER_CONN=${STREAMS_PER_CONN:-8}
 # "direct" mode: idle stream reserve and the stream ceiling that backpressure
 # relies on.
-export IDLE_STREAMS=${IDLE_STREAMS:-4}
+export IDLE_STREAMS=${IDLE_STREAMS:-2}
 export MAX_STREAMS=${MAX_STREAMS:-64}
 # Tag report/log filenames so comparison runs don't overwrite each other.
 RUN_TAG=${RUN_TAG:-$CONN_MODE}

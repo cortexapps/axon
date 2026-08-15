@@ -102,6 +102,11 @@ type tunnelClient struct {
 	serverMaxStreams atomic.Int32
 	lastGrowAt       atomic.Int64
 
+	// observedServers is how many distinct server instances our streams are
+	// spread over, refreshed on the sizing tick. "direct" mode scales its
+	// idle reserve by it — see idleReserve.
+	observedServers atomic.Int32
+
 	// restartMu serializes Restart() so two concurrent calls do not race the
 	// Close→Start handoff. Held only across the Close+Start; never with mu.
 	restartMu sync.Mutex
@@ -387,7 +392,7 @@ func (tc *tunnelClient) startAsync() {
 		zap.Int("conns", tc.config.TunnelConns),
 		zap.Int("streamsPerConn", tc.config.TunnelStreamsPerConn),
 		zap.Int("fixedSlots", tc.fixedSlots()),
-		zap.Int("idleStreams", tc.idleStreams()),
+		zap.Int("idleStreamsPerServer", tc.idleStreams()),
 		zap.Int("minSlots", tc.minSlots()),
 		zap.Int("maxSlots", tc.effectiveMaxSlots()),
 		zap.Int("maxStreamsPerServer", tc.config.MaxStreamsPerServer),
@@ -628,12 +633,48 @@ func (tc *tunnelClient) connIndex(id int) int {
 	return (id - 1) % conns
 }
 
-// idleStreams is the number of ready-and-waiting streams "direct" mode keeps.
+// idleStreams is the configured idle reserve, per server instance.
 func (tc *tunnelClient) idleStreams() int {
 	if n := tc.config.TunnelIdleStreams; n > 0 {
 		return n
 	}
 	return 1
+}
+
+// idleReserve is the total number of streams to keep idle: the configured
+// reserve multiplied by the number of server instances we currently hold
+// streams on.
+//
+// The reserve has to scale with the fleet because idleness is only useful
+// where a call can land on it. A server dispatches onto the streams
+// registered with itself, so it reports "all busy" — and makes the caller
+// wait — the moment its own share of the reserve is taken, however idle the
+// agent is overall. A flat reserve spread round-robin over S servers leaves
+// each with reserve/S, which silently thins toward zero as the fleet grows.
+func (tc *tunnelClient) idleReserve() int {
+	servers := int(tc.observedServers.Load())
+	if servers < 1 {
+		servers = 1
+	}
+	return tc.idleStreams() * servers
+}
+
+// refreshObservedServers recounts the distinct server instances our streams
+// are spread over. Called on the once-a-second sizing tick rather than per
+// call: it allocates, and the count only moves when the fleet does.
+func (tc *tunnelClient) refreshObservedServers() {
+	if !tc.config.TunnelConnMode.IsDirect() {
+		return
+	}
+	tc.mu.Lock()
+	seen := make(map[string]struct{}, len(tc.streams))
+	for s := range tc.streams {
+		if s.serverID != "" {
+			seen[s.serverID] = struct{}{}
+		}
+	}
+	tc.mu.Unlock()
+	tc.observedServers.Store(int32(len(seen)))
 }
 
 // minSlots returns the configured pool floor (at least 1). The fixed modes
@@ -644,7 +685,7 @@ func (tc *tunnelClient) minSlots() int {
 		return n
 	}
 	if tc.config.TunnelConnMode.IsDirect() {
-		return tc.idleStreams()
+		return tc.idleReserve()
 	}
 	if tc.config.MinTunnelSlots < 1 {
 		return 1
@@ -787,7 +828,7 @@ func (tc *tunnelClient) maybeGrow() {
 // offering idle streams, and the server's dispatch turns that into caller-
 // visible latency; that is the intended pushback, not a failure.
 func (tc *tunnelClient) ensureIdleHeadroom() {
-	want := tc.idleStreams()
+	want := tc.idleReserve()
 
 	tc.mu.Lock()
 	connected := len(tc.streams)
@@ -828,7 +869,7 @@ func (tc *tunnelClient) releaseIdleHeadroom() {
 	if !tc.config.TunnelConnMode.IsDirect() {
 		return
 	}
-	want := int32(tc.idleStreams())
+	want := int32(tc.idleReserve())
 
 	tc.mu.Lock()
 	connected := len(tc.streams)
@@ -862,6 +903,7 @@ func (tc *tunnelClient) watermarkLoop() {
 		case <-tc.parentCtx.Done():
 			return
 		case <-ticker.C:
+			tc.refreshObservedServers()
 			tc.maybeGrow()
 		}
 	}
