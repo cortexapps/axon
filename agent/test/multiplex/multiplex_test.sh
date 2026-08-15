@@ -164,6 +164,30 @@ cross_check() {
 cross_check "snyk backend" "http://localhost:$SNYK_PORT" "$GRPC_TOKEN"
 cross_check "grpc backend" "http://localhost:$GRPC_HTTP_PORT" "$SNYK_TOKEN"
 
+# ---------------------------------------------------------------------------
+# 4. Each server serves the health path it advertises.
+# ---------------------------------------------------------------------------
+# Both notifications tell relay-dispatcher to check us at /healthcheck. The
+# tunnel server used to serve only /healthz, so every dispatcher health check
+# would have 404'd — invisible in docker, and only noticed once something in
+# Kubernetes acted on the advertised link.
+echo
+echo "=== Advertised health path is served ==="
+
+check_health_path() {
+    local label="$1" base="$2"
+    local code
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$base/healthcheck" 2>&1)
+    if [ "$code" != "200" ]; then
+        fail "$label: /healthcheck returned $code, and that is the path we advertise"
+        return
+    fi
+    echo "OK  $label: serves /healthcheck"
+}
+
+check_health_path "snyk backend" "http://localhost:$SNYK_PORT"
+check_health_path "grpc backend" "http://localhost:$GRPC_HTTP_PORT"
+
 echo
 if [ "$FAILED" = "0" ]; then
     echo "MULTIPLEX TEST PASSED: one ingress served both transports"
