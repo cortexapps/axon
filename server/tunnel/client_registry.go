@@ -3,7 +3,6 @@ package tunnel
 import (
 	"errors"
 	"fmt"
-	"sort"
 	"sync"
 	"sync/atomic"
 
@@ -24,11 +23,17 @@ type StreamHandle struct {
 	// healthy streams.
 	LastSuccessAt atomic.Int64
 
-	// busy is true while a call is in flight on this stream. In the slot-pool
-	// model each stream carries at most one call at a time; the dispatcher
-	// acquires the stream before sending CallStart and releases it when the
-	// call fully terminates.
+	// busy is true while a call is in flight on this stream. Each stream
+	// carries at most one call at a time; the dispatcher acquires the stream
+	// before sending CallStart and releases it when the call fully
+	// terminates. That one-call-per-stream rule is what makes a busy stream
+	// genuinely unavailable, which is in turn what gives dispatch its
+	// backpressure: an agent that falls behind stops offering idle streams.
 	busy atomic.Bool
+
+	// onRelease returns the stream to its entry's idle stack. Set by the
+	// registry at Register time; nil for handles that were never registered.
+	onRelease func()
 }
 
 // TryAcquire marks the stream busy. Returns false if it was already busy.
@@ -36,9 +41,16 @@ func (s *StreamHandle) TryAcquire() bool {
 	return s.busy.CompareAndSwap(false, true)
 }
 
-// Release marks the stream idle again.
+// Release marks the stream idle again and returns it to the idle stack. The
+// compare-and-swap makes a double Release a no-op, so a call that both fails
+// and then finishes cannot enqueue the stream twice.
 func (s *StreamHandle) Release() {
-	s.busy.Store(false)
+	if !s.busy.CompareAndSwap(true, false) {
+		return
+	}
+	if s.onRelease != nil {
+		s.onRelease()
+	}
 }
 
 // Busy reports whether a call is currently in flight on this stream.
@@ -64,6 +76,46 @@ type clientEntry struct {
 	Token                  broker.Token
 	Streams                map[string]*StreamHandle // streamID -> handle
 	BrokerServerRegistered atomic.Bool
+
+	// idle is a stack of streams believed to be idle, so dispatch can take
+	// one in O(1) instead of scanning and sorting every stream on the token.
+	// It is a hint, not the truth — busy is: a handle may sit here while
+	// concurrently acquired elsewhere, so acquisition still confirms with
+	// TryAcquire and skips losers. LIFO is deliberate: the most recently
+	// released stream is the one most recently proven healthy, which is the
+	// preference the old LastSuccessAt sort was reaching for.
+	idle []*StreamHandle
+}
+
+// pushIdle returns a stream to the idle stack. Callers hold r.mu.
+func (e *clientEntry) pushIdle(s *StreamHandle) {
+	e.idle = append(e.idle, s)
+}
+
+// popIdle takes the newest idle stream, dropping entries that are stale
+// (already busy, or no longer registered). Callers hold r.mu.
+func (e *clientEntry) popIdle() *StreamHandle {
+	for len(e.idle) > 0 {
+		s := e.idle[len(e.idle)-1]
+		e.idle = e.idle[:len(e.idle)-1]
+		if e.Streams[s.StreamID] != s {
+			continue // unregistered while queued
+		}
+		if s.TryAcquire() {
+			return s
+		}
+	}
+	return nil
+}
+
+// removeIdle drops a stream from the idle stack. Callers hold r.mu.
+func (e *clientEntry) removeIdle(streamID string) {
+	for i, s := range e.idle {
+		if s.StreamID == streamID {
+			e.idle = append(e.idle[:i], e.idle[i+1:]...)
+			return
+		}
+	}
 }
 
 // ErrTokenStreamCap is returned by Register when the token already holds
@@ -119,6 +171,8 @@ func (r *ClientRegistry) Register(token broker.Token, identity ClientIdentity, s
 			return fmt.Errorf("%w (%d)", ErrTokenStreamCap, r.maxStreamsPerToken)
 		}
 		existing.Streams[stream.StreamID] = stream
+		stream.onRelease = r.makeOnRelease(key, stream)
+		existing.pushIdle(stream)
 		r.logger.Info("Added stream to existing client entry",
 			zap.String("tenantId", identity.TenantID),
 			zap.String("instanceId", identity.InstanceID),
@@ -128,11 +182,14 @@ func (r *ClientRegistry) Register(token broker.Token, identity ClientIdentity, s
 		return nil
 	}
 
-	r.entries[key] = &clientEntry{
+	entry := &clientEntry{
 		Identity: identity,
 		Token:    token,
 		Streams:  map[string]*StreamHandle{stream.StreamID: stream},
 	}
+	stream.onRelease = r.makeOnRelease(key, stream)
+	entry.pushIdle(stream)
+	r.entries[key] = entry
 
 	r.logger.Info("Registered new client",
 		zap.String("tenantId", identity.TenantID),
@@ -142,6 +199,22 @@ func (r *ClientRegistry) Register(token broker.Token, identity ClientIdentity, s
 		zap.String("streamId", stream.StreamID),
 	)
 	return nil
+}
+
+// makeOnRelease builds the callback that returns a stream to its entry's
+// idle stack when its call finishes. It re-checks registration because a
+// stream can die mid-call: the dispatcher still releases it, and by then the
+// entry may be gone or the handle replaced.
+func (r *ClientRegistry) makeOnRelease(key string, s *StreamHandle) func() {
+	return func() {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		entry, ok := r.entries[key]
+		if !ok || entry.Streams[s.StreamID] != s {
+			return
+		}
+		entry.pushIdle(s)
+	}
 }
 
 // Unregister removes a specific stream for a token.
@@ -158,6 +231,7 @@ func (r *ClientRegistry) Unregister(token broker.Token, streamID string) bool {
 	}
 
 	delete(entry.Streams, streamID)
+	entry.removeIdle(streamID)
 
 	if len(entry.Streams) == 0 {
 		delete(r.entries, key)
@@ -190,37 +264,34 @@ func (r *ClientRegistry) GetIdentity(token broker.Token) *ClientIdentity {
 }
 
 // AcquireIdleStream returns an idle stream handle for dispatching, marked
-// busy, preferring the idle stream with the most recent successful response.
-// Idle streams that have never recorded a success are tried in round-robin
-// order. Returns (nil, false) when the token has no streams at all, and
-// (nil, true) when streams exist but all are busy.
+// busy. Returns (nil, false) when the token has no streams at all, and
+// (nil, true) when streams exist but all are busy — the signal the dispatcher
+// turns into a brief wait, and thus into backpressure toward the caller.
+//
+// This is the hot path: one acquisition per dispatched call. It pops the idle
+// stack rather than ranking every stream on the token, so cost does not grow
+// with the agent's stream count.
 //
 // The caller owns the returned stream's busy flag and must call Release()
 // when the call fully terminates.
 func (r *ClientRegistry) AcquireIdleStream(token broker.Token) (handle *StreamHandle, allBusy bool) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
 
 	entry, ok := r.entries[token.Hashed()]
 	if !ok || len(entry.Streams) == 0 {
 		return nil, false
 	}
 
-	// Collect stream handles into a slice with deterministic ordering
-	// (map iteration order is randomized).
-	streams := make([]*StreamHandle, 0, len(entry.Streams))
-	for _, s := range entry.Streams {
-		streams = append(streams, s)
+	if s := entry.popIdle(); s != nil {
+		return s, false
 	}
-	sort.Slice(streams, func(i, j int) bool {
-		return streams[i].StreamID < streams[j].StreamID
-	})
 
-	// Prefer idle streams with the most recent successful response.
-	sort.SliceStable(streams, func(i, j int) bool {
-		return streams[i].LastSuccessAt.Load() > streams[j].LastSuccessAt.Load()
-	})
-	for _, s := range streams {
+	// The stack is a hint and can drift empty while a stream is in fact
+	// idle (a handle released after being unregistered, say). Falling back
+	// to a scan keeps "all busy" honest — reporting a false all-busy would
+	// stall dispatch until the caller's deadline for no reason.
+	for _, s := range entry.Streams {
 		if s.TryAcquire() {
 			return s, false
 		}

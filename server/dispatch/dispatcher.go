@@ -205,16 +205,34 @@ func (d *Dispatcher) Dispatch(ctx context.Context, token broker.Token, req *Requ
 }
 
 // acquireStream finds an idle stream for the token, waiting (bounded by ctx)
-// when all streams are busy. Slot-pool model: each stream carries one call
-// at a time, so briefly waiting is the queue.
+// when all streams are busy. Each stream carries one call at a time, so
+// briefly waiting is the queue — and waiting here is the whole backpressure
+// mechanism: an agent at capacity stops offering idle streams, and that
+// shows up as latency to whoever made the request rather than as work
+// piling up invisibly inside the agent. The wait is measured so the
+// difference is visible.
 func (d *Dispatcher) acquireStream(ctx context.Context, token broker.Token) (*tunnel.StreamHandle, error) {
+	start := time.Now()
+	waited := false
 	for {
 		handle, allBusy := d.registry.AcquireIdleStream(token)
 		if handle != nil {
+			if waited {
+				d.withIdentity(token, func(tenant, integration, alias string) {
+					d.metrics.DispatchAcquireWait(tenant, integration, alias,
+						float64(time.Since(start).Milliseconds()))
+				})
+			}
 			return handle, nil
 		}
 		if !allBusy {
 			return nil, ErrNoTunnel
+		}
+		if !waited {
+			waited = true
+			d.withIdentity(token, func(tenant, integration, alias string) {
+				d.metrics.DispatchAllBusy(tenant, integration, alias)
+			})
 		}
 		select {
 		case <-ctx.Done():
@@ -222,6 +240,17 @@ func (d *Dispatcher) acquireStream(ctx context.Context, token broker.Token) (*tu
 		case <-time.After(acquireRetryInterval):
 		}
 	}
+}
+
+// withIdentity looks up a token's client identity for metric tagging. It is
+// only called off the fast path (when a dispatch actually had to wait), so
+// the registry lookup never costs an uncontended dispatch anything.
+func (d *Dispatcher) withIdentity(token broker.Token, fn func(tenant, integration, alias string)) {
+	if id := d.registry.GetIdentity(token); id != nil {
+		fn(id.TenantID, id.Integration, id.Alias)
+		return
+	}
+	fn("", "", "")
 }
 
 // pumpRequestBody reads the request body and sends it as CallData frames,

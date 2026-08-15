@@ -171,6 +171,7 @@ func (tc *tunnelClient) startCall(sc *streamCtx, table *callTable, callID string
 			tc.busySlots.Add(-1)
 			sc.ts.inflight.Add(-1)
 			sc.ts.lastCallAt.Store(time.Now().UnixNano())
+			tc.releaseIdleHeadroom()
 		}()
 
 		// Acquire the in-flight semaphore, queueing (bounded by the call's

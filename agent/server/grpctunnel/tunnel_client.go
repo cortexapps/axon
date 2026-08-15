@@ -45,7 +45,16 @@ const (
 	failuresBeforeReregister  = 5
 )
 
-var errServerCapHit = errors.New("server-id stream cap reached")
+var (
+	errServerCapHit = errors.New("server-id stream cap reached")
+	errPoolClosed   = errors.New("connection pool closed")
+)
+
+// roundRobinServiceConfig spreads a connection's streams across every server
+// instance DNS resolves to, instead of pinning it to one (grpc's pick_first
+// default). Spread then comes from the balancer rather than from opening more
+// connections and hoping the load balancer scatters them.
+const roundRobinServiceConfig = `{"loadBalancingConfig":[{"round_robin":{}}]}`
 
 // connectError tags an error from the initial connection establishment with
 // the phase in which it occurred, so metrics can break down where things fail.
@@ -110,6 +119,9 @@ type tunnelClient struct {
 	// mode. Unused by the other modes, where a stream owns its connection.
 	conns *connGroup
 
+	// pool holds the fixed connection set for "direct" mode.
+	pool *connPool
+
 	wg sync.WaitGroup
 
 	// Metrics
@@ -132,8 +144,14 @@ type tunnelStream struct {
 	cancel   context.CancelFunc
 
 	// connIdx is the shared-connection index this stream rides on in "mux"
-	// mode, or -1 when the stream owns its connection outright.
+	// mode, or -1 when the stream does not ride a refcounted shared
+	// connection.
 	connIdx int
+
+	// pooled marks a stream riding a connection owned by connPool ("direct"
+	// mode): the connection outlives the stream, so ending the stream must
+	// not close it.
+	pooled bool
 
 	// inflight counts calls currently running on this stream (0 or 1 in
 	// the slot-pool model); lastCallAt is the UnixNano timestamp of the
@@ -173,9 +191,20 @@ type TunnelClientParams struct {
 func NewTunnelClient(p TunnelClientParams) snykbroker.RelayInstanceManager {
 	httpClient := p.HttpClient
 	if httpClient == nil {
+		// Mirrors the pooling of the injected client (see createHttpTransport):
+		// the default transport's 2 idle connections per host would serialize
+		// concurrent calls behind fresh handshakes.
+		maxConns := p.Config.UpstreamMaxConnsPerHost
+		if maxConns < 1 {
+			maxConns = 128
+		}
 		httpClient = &http.Client{
 			Transport: &http.Transport{
-				Proxy: http.ProxyFromEnvironment,
+				Proxy:               http.ProxyFromEnvironment,
+				MaxIdleConns:        maxConns * 2,
+				MaxIdleConnsPerHost: maxConns,
+				MaxConnsPerHost:     maxConns,
+				IdleConnTimeout:     90 * time.Second,
 			},
 		}
 	}
@@ -306,6 +335,7 @@ func (tc *tunnelClient) Start() error {
 	tc.runningWorkers = 0
 	tc.serverStreamCounts = make(map[string]int)
 	tc.conns = newConnGroup()
+	tc.pool = newConnPool(tc.config.TunnelConns)
 	tc.busySlots.Store(0)
 	tc.serverMaxStreams.Store(0)
 	tc.targetSlots.Store(int32(tc.minSlots()))
@@ -357,8 +387,9 @@ func (tc *tunnelClient) startAsync() {
 		zap.Int("conns", tc.config.TunnelConns),
 		zap.Int("streamsPerConn", tc.config.TunnelStreamsPerConn),
 		zap.Int("fixedSlots", tc.fixedSlots()),
+		zap.Int("idleStreams", tc.idleStreams()),
 		zap.Int("minSlots", tc.minSlots()),
-		zap.Int("maxSlots", tc.config.MaxTunnelSlots),
+		zap.Int("maxSlots", tc.effectiveMaxSlots()),
 		zap.Int("maxStreamsPerServer", tc.config.MaxStreamsPerServer),
 		zap.Int("maxInflightRequests", tc.config.MaxInflightRequests),
 		zap.Duration("maxRequestTimeout", tc.config.MaxRequestTimeout),
@@ -555,8 +586,8 @@ func (tc *tunnelClient) removeStream(ts *tunnelStream) {
 	tc.mu.Unlock()
 	// On a shared connection the server-id slot belongs to the connection,
 	// not the stream; connGroup.release gives it back when the last stream
-	// on that connection goes away.
-	if ts.connIdx < 0 {
+	// on that connection goes away. Pooled streams never took one.
+	if ts.connIdx < 0 && !ts.pooled {
 		tc.releaseServerSlot(ts.serverID)
 	}
 	tc.connectionsActive.WithLabelValues(ts.serverID).Dec()
@@ -597,11 +628,23 @@ func (tc *tunnelClient) connIndex(id int) int {
 	return (id - 1) % conns
 }
 
+// idleStreams is the number of ready-and-waiting streams "direct" mode keeps.
+func (tc *tunnelClient) idleStreams() int {
+	if n := tc.config.TunnelIdleStreams; n > 0 {
+		return n
+	}
+	return 1
+}
+
 // minSlots returns the configured pool floor (at least 1). The fixed modes
-// pin the floor to their full stream count so nothing retires beneath it.
+// pin the floor to their full stream count so nothing retires beneath it;
+// "direct" pins it to the idle-stream reserve.
 func (tc *tunnelClient) minSlots() int {
 	if n := tc.fixedSlots(); n > 0 {
 		return n
+	}
+	if tc.config.TunnelConnMode.IsDirect() {
+		return tc.idleStreams()
 	}
 	if tc.config.MinTunnelSlots < 1 {
 		return 1
@@ -613,6 +656,9 @@ func (tc *tunnelClient) minSlots() int {
 // server-announced per-token cap, never below the floor.
 func (tc *tunnelClient) effectiveMaxSlots() int {
 	max := tc.config.MaxTunnelSlots
+	if tc.config.TunnelConnMode.IsDirect() {
+		max = tc.config.TunnelMaxStreams
+	}
 	if max < 1 {
 		max = 1
 	}
@@ -677,6 +723,12 @@ func (tc *tunnelClient) maybeGrow() {
 	if tc.config.TunnelConnMode.IsFixed() {
 		return
 	}
+	// "direct" mode sizes itself by a much simpler rule, with no ratio, step
+	// or cooldown to tune.
+	if tc.config.TunnelConnMode.IsDirect() {
+		tc.ensureIdleHeadroom()
+		return
+	}
 
 	last := tc.lastGrowAt.Load()
 	now := time.Now().UnixNano()
@@ -722,6 +774,78 @@ func (tc *tunnelClient) maybeGrow() {
 		zap.Int("newTarget", newTarget),
 	)
 	tc.ensureWorkers()
+}
+
+// ensureIdleHeadroom is "direct" mode's entire sizing rule: keep
+// TunnelIdleStreams streams idle and ready, up to the stream cap. It runs
+// when a call is admitted — the instant idle capacity drops — so a burst is
+// met by opening streams rather than by queueing.
+//
+// There is no cooldown and no growth step. Opening a stream on an existing
+// connection is cheap, and the reserve exists precisely so that the common
+// case never waits for one. When the cap is reached the agent simply stops
+// offering idle streams, and the server's dispatch turns that into caller-
+// visible latency; that is the intended pushback, not a failure.
+func (tc *tunnelClient) ensureIdleHeadroom() {
+	want := tc.idleStreams()
+
+	tc.mu.Lock()
+	connected := len(tc.streams)
+	running := tc.runningWorkers
+	tc.mu.Unlock()
+
+	idle := connected - int(tc.busySlots.Load())
+	if idle < 0 {
+		idle = 0
+	}
+	// Workers that are dialing are idle capacity already on its way. Without
+	// counting them, a burst of N calls would each see the same deficit and
+	// spawn a worker apiece, overshooting badly.
+	pending := running - connected
+	if pending < 0 {
+		pending = 0
+	}
+
+	deficit := want - (idle + pending)
+	if deficit <= 0 {
+		return
+	}
+
+	target := running + deficit
+	if max := tc.effectiveMaxSlots(); target > max {
+		target = max
+	}
+	if target <= int(tc.targetSlots.Load()) {
+		return
+	}
+	tc.targetSlots.Store(int32(target))
+	tc.ensureWorkers()
+}
+
+// releaseIdleHeadroom runs when a call finishes and gives back streams the
+// agent no longer needs, converging to the idle reserve once a burst passes.
+func (tc *tunnelClient) releaseIdleHeadroom() {
+	if !tc.config.TunnelConnMode.IsDirect() {
+		return
+	}
+	want := int32(tc.idleStreams())
+
+	tc.mu.Lock()
+	connected := len(tc.streams)
+	tc.mu.Unlock()
+
+	if connected-int(tc.busySlots.Load()) <= int(want) {
+		return
+	}
+	for {
+		t := tc.targetSlots.Load()
+		if t <= want {
+			return
+		}
+		if tc.targetSlots.CompareAndSwap(t, t-1) {
+			return
+		}
+	}
 }
 
 // watermarkLoop re-evaluates the free-capacity watermark once per
@@ -889,12 +1013,15 @@ func (tc *tunnelClient) runOneStream(id int) error {
 		close(watchdogDone)
 		tc.removeStream(sc.ts)
 		sc.ts.cancel()
-		if sc.ts.connIdx >= 0 {
+		switch {
+		case sc.ts.pooled:
+			// The pool owns this connection; it outlives the stream.
+		case sc.ts.connIdx >= 0:
 			// Shared: closes only once the last stream on it lets go.
 			if sid := tc.conns.release(sc.ts.connIdx); sid != "" {
 				tc.releaseServerSlot(sid)
 			}
-		} else if sc.ts.conn != nil {
+		case sc.ts.conn != nil:
 			sc.ts.conn.Close()
 		}
 	}()
@@ -996,19 +1123,28 @@ func (tc *tunnelClient) openSlot(id int) (*streamCtx, error) {
 		return nil, newConnectErr("dial_opts", err)
 	}
 
-	// In "mux" mode several stream workers share one connection, so dial
-	// through the group; otherwise this worker owns its connection.
+	// How this worker gets a connection depends on the model: "mux" shares a
+	// refcounted one, "direct" borrows one from the fixed pool, and the rest
+	// own theirs outright.
 	connIdx := -1
+	pooled := false
 	var conn *grpc.ClientConn
 	dial := func() (*grpc.ClientConn, error) { return grpc.NewClient(dialAddr, dialOpts...) }
-	if tc.config.TunnelConnMode == config.TunnelConnModeMux {
+	switch {
+	case tc.config.TunnelConnMode == config.TunnelConnModeMux:
 		connIdx = tc.connIndex(id)
 		entry, aerr := tc.conns.acquire(connIdx, dial)
 		if aerr != nil {
 			return nil, newConnectErr("dial", aerr)
 		}
 		conn = entry.conn
-	} else {
+	case tc.config.TunnelConnMode.IsDirect():
+		pooled = true
+		conn, err = tc.pool.get(id-1, dial)
+		if err != nil {
+			return nil, newConnectErr("dial", err)
+		}
+	default:
 		conn, err = dial()
 		if err != nil {
 			return nil, newConnectErr("dial", err)
@@ -1016,14 +1152,17 @@ func (tc *tunnelClient) openSlot(id int) (*streamCtx, error) {
 	}
 
 	// closeConn undoes the acquisition above: a dedicated connection closes
-	// outright, a shared one only when its last stream lets go.
+	// outright, a refcounted one only when its last stream lets go, and a
+	// pooled one not at all — the pool owns its lifetime.
 	closeConn := func() {
-		if connIdx < 0 {
+		switch {
+		case pooled:
+		case connIdx < 0:
 			conn.Close()
-			return
-		}
-		if sid := tc.conns.release(connIdx); sid != "" {
-			tc.releaseServerSlot(sid)
+		default:
+			if sid := tc.conns.release(connIdx); sid != "" {
+				tc.releaseServerSlot(sid)
+			}
 		}
 	}
 
@@ -1087,7 +1226,10 @@ func (tc *tunnelClient) openSlot(id int) (*streamCtx, error) {
 	// connection only the first stream takes a slot, since every stream on it
 	// talks to the same backend. That keeps MaxStreamsPerServer meaning "how
 	// many connections may land on one server instance" in every mode.
-	takeSlot := true
+	// "direct" mode skips this entirely: round_robin already spreads streams
+	// evenly over every instance, so a per-server cap could only reject
+	// placements the balancer had already made well.
+	takeSlot := !pooled
 	if connIdx >= 0 {
 		takeSlot = tc.conns.noteServerID(connIdx, serverHello.ServerId)
 	}
@@ -1114,6 +1256,7 @@ func (tc *tunnelClient) openSlot(id int) (*streamCtx, error) {
 		conn:     conn,
 		cancel:   cancel,
 		connIdx:  connIdx,
+		pooled:   pooled,
 	}
 	ts.lastCallAt.Store(time.Now().UnixNano())
 
@@ -1253,6 +1396,9 @@ func (tc *tunnelClient) Close() error {
 	if tc.conns != nil {
 		tc.conns.closeAll()
 	}
+	if tc.pool != nil {
+		tc.pool.closeAll()
+	}
 
 	tc.mu.Lock()
 	tc.streams = nil
@@ -1281,6 +1427,10 @@ func (tc *tunnelClient) buildDialOptions(targetAddr string) ([]grpc.DialOption, 
 			grpc.MaxCallRecvMsgSize(maxGrpcMsgSize),
 			grpc.MaxCallSendMsgSize(maxGrpcMsgSize),
 		),
+	}
+
+	if tc.config.TunnelConnMode.IsDirect() {
+		opts = append(opts, grpc.WithDefaultServiceConfig(roundRobinServiceConfig))
 	}
 
 	dialAddr := targetAddr

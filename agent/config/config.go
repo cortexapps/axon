@@ -78,12 +78,30 @@ const (
 	// TunnelConnModeMux keeps a fixed TunnelConns connections and multiplexes
 	// TunnelStreamsPerConn streams over each.
 	TunnelConnModeMux TunnelConnMode = "mux"
+	// TunnelConnModeDirect keeps a fixed TunnelConns connections — a static
+	// resilience decision, load-balanced round-robin across server instances
+	// — and opens streams on demand, keeping TunnelIdleStreams of them
+	// waiting so a burst never pays for a stream open. One call per stream,
+	// up to TunnelMaxStreams.
+	//
+	// There is deliberately no traffic shaping here. Concurrency is whatever
+	// the agent can actually serve: when it falls behind, idle streams run
+	// out, the server's dispatch blocks briefly, and the delay propagates to
+	// the caller as latency. That stream cap is what makes the backpressure
+	// real rather than a queue hidden in the agent's heap.
+	TunnelConnModeDirect TunnelConnMode = "direct"
 )
 
 // IsFixed reports whether the mode uses a fixed number of streams — i.e. one
 // that neither grows on demand nor retires on idle.
 func (m TunnelConnMode) IsFixed() bool {
 	return m == TunnelConnModeConns || m == TunnelConnModeMux
+}
+
+// IsDirect reports whether the mode keeps a fixed connection set with
+// on-demand streams over it.
+func (m TunnelConnMode) IsDirect() bool {
+	return m == TunnelConnModeDirect
 }
 
 type AgentConfig struct {
@@ -144,6 +162,19 @@ type AgentConfig struct {
 	TunnelConnMode TunnelConnMode
 	// TunnelConns is the connection count for the "conns" and "mux" modes.
 	TunnelConns int
+	// UpstreamMaxConnsPerHost bounds concurrent connections the agent opens
+	// to any single upstream host, and sets the idle-connection pool size to
+	// match so concurrent calls reuse connections instead of handshaking.
+	UpstreamMaxConnsPerHost int
+	// TunnelIdleStreams is how many idle streams the "direct" mode keeps
+	// waiting for work. It is a latency knob, not a capacity one: it sets how
+	// large a burst is absorbed without waiting on a stream open.
+	TunnelIdleStreams int
+	// TunnelMaxStreams caps concurrent streams in "direct" mode, which caps
+	// concurrent calls. This is the safety backstop, and also the mechanism
+	// by which an overloaded agent pushes back instead of accepting work it
+	// cannot do.
+	TunnelMaxStreams int
 	// TunnelStreamsPerConn is how many streams share each connection in "mux"
 	// mode. Ignored by the other modes.
 	TunnelStreamsPerConn int
@@ -459,11 +490,50 @@ func NewAgentEnvConfig() AgentConfig {
 	if v := os.Getenv("AXON_GRPC_TUNNEL_CONN_MODE"); v != "" {
 		mode := TunnelConnMode(v)
 		switch mode {
-		case TunnelConnModePool, TunnelConnModeConns, TunnelConnModeMux:
+		case TunnelConnModePool, TunnelConnModeConns, TunnelConnModeMux, TunnelConnModeDirect:
 			cfg.TunnelConnMode = mode
 		default:
-			panic(fmt.Sprintf("invalid AXON_GRPC_TUNNEL_CONN_MODE %q (want pool, conns or mux)", v))
+			panic(fmt.Sprintf("invalid AXON_GRPC_TUNNEL_CONN_MODE %q (want pool, conns, mux or direct)", v))
 		}
+	}
+
+	cfg.UpstreamMaxConnsPerHost = 128
+	if v := os.Getenv("AXON_UPSTREAM_MAX_CONNS_PER_HOST"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			panic(err)
+		}
+		if n < 1 {
+			panic("AXON_UPSTREAM_MAX_CONNS_PER_HOST must be >= 1")
+		}
+		cfg.UpstreamMaxConnsPerHost = n
+	}
+
+	cfg.TunnelIdleStreams = 4
+	if v := os.Getenv("AXON_GRPC_TUNNEL_IDLE_STREAMS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			panic(err)
+		}
+		if n < 1 {
+			panic("AXON_GRPC_TUNNEL_IDLE_STREAMS must be >= 1")
+		}
+		cfg.TunnelIdleStreams = n
+	}
+
+	cfg.TunnelMaxStreams = 256
+	if v := os.Getenv("AXON_GRPC_TUNNEL_MAX_STREAMS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			panic(err)
+		}
+		if n < 1 {
+			panic("AXON_GRPC_TUNNEL_MAX_STREAMS must be >= 1")
+		}
+		cfg.TunnelMaxStreams = n
+	}
+	if cfg.TunnelMaxStreams < cfg.TunnelIdleStreams {
+		cfg.TunnelMaxStreams = cfg.TunnelIdleStreams
 	}
 
 	cfg.TunnelConns = 8

@@ -104,6 +104,33 @@ func (m *Metrics) DispatchError(tenantID, integration, alias, errorType string) 
 	}).Counter("dispatch.errors").Inc(1)
 }
 
+// DispatchAcquireWait records how long a call waited for an idle stream on
+// the agent.
+//
+// This is the backpressure signal. Every stream busy means the agent is at
+// the concurrency it can actually serve, and the wait recorded here is the
+// delay that then propagates to the caller as latency. Near-zero means
+// headroom; a rising value is the agent falling behind, and it is the one
+// number that distinguishes "the tunnel is saturated" from "the upstream got
+// slow" — dispatch.duration_ms alone cannot.
+func (m *Metrics) DispatchAcquireWait(tenantID, integration, alias string, d float64) {
+	m.Scope.Tagged(map[string]string{
+		LabelTenantID:    tenantID,
+		LabelIntegration: integration,
+		LabelAlias:       alias,
+	}).Histogram("dispatch.acquire_wait_ms", tally.DefaultBuckets).RecordValue(d)
+}
+
+// DispatchAllBusy counts dispatches that found every stream on the token
+// busy and had to wait for one.
+func (m *Metrics) DispatchAllBusy(tenantID, integration, alias string) {
+	m.Scope.Tagged(map[string]string{
+		LabelTenantID:    tenantID,
+		LabelIntegration: integration,
+		LabelAlias:       alias,
+	}).Counter("dispatch.all_busy").Inc(1)
+}
+
 // StreamDuration records how long a tunnel stream was alive.
 func (m *Metrics) StreamDuration(tenantID, integration, alias string) tally.Stopwatch {
 	return m.Scope.Tagged(map[string]string{
