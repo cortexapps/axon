@@ -84,13 +84,20 @@ func main() {
 	httpMux := http.NewServeMux()
 	httpMux.Handle("/metrics", m.Handler())
 	httpMux.Handle("/broker/", httpAdapter)
-	httpMux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+	health := func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		acquireWaits, acquireWaitMs := dispatcher.AcquireStats()
 		fmt.Fprintf(w, `{"status":"ok","server_id":%q,"clients":%d,"streams":%d,"inflight":%d,"acquire_waits":%d,"acquire_wait_ms":%d,"broker_server_configured":%t}`,
 			cfg.ServerID, registry.Count(), registry.StreamCount(), dispatcher.InflightCount(),
 			acquireWaits, acquireWaitMs, brokerClient.IsConfigured())
-	})
+	}
+	httpMux.HandleFunc("/healthz", health)
+	// The same body under the path we actually advertise. Both
+	// client-connected and server-starting tell the dispatcher to health
+	// check us at /healthcheck, and nothing served it — every check would
+	// have 404'd. snyk-broker serves /healthcheck, so matching it also keeps
+	// one shape for the dispatcher across both transports.
+	httpMux.HandleFunc("/healthcheck", health)
 
 	httpServer := &http.Server{
 		Addr:    fmt.Sprintf(":%d", cfg.HttpPort),
