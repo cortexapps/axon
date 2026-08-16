@@ -12,8 +12,13 @@ set -e
 #   - [optional] mitmproxy: HTTP proxy for proxy-mode testing
 
 export TOKEN=0e481b34-76ac-481a-a92f-c94a6cf6f6c1
-export GRPC_PORT=50152
-export HTTP_PORT=58180
+# Host ports are kept BELOW the ephemeral range (32768-60999 on Linux,
+# 49152-65535 on macOS). The test opens many outbound connections, and one of
+# them transiently claiming a listener's port as its source port makes the
+# next `compose up` fail with "address already in use". load_test.sh hit this
+# and pins its ports the same way.
+export GRPC_PORT=17152
+export HTTP_PORT=17180
 
 if [ "$PROXY" == "1" ]; then
     echo "TESTING WITH PROXY"
@@ -28,7 +33,7 @@ else
     export COMPOSE_FILES="-f docker-compose.grpc.yml -f docker-compose.grpc.noproxy.yml"
 
     # Also set the HTTP_PORT to a different value to ensure we respect that port
-    export HTTP_PORT=58280
+    export HTTP_PORT=17280
 fi
 
 function cleanup {
