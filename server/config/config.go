@@ -20,6 +20,17 @@ const (
 type Config struct {
 	// GrpcPort is the port the gRPC tunnel server listens on.
 	GrpcPort int
+	// GrpcTLSCertFile and GrpcTLSKeyFile enable TLS on the gRPC listener.
+	// Both must be set, or the listener serves plaintext h2c.
+	//
+	// The server does not produce a certificate, only consume one — where it
+	// comes from is a deployment decision. Behind a Google load balancer that
+	// can be a throwaway self-signed cert, because the balancer requires TLS
+	// to speak HTTP/2 to a backend but accepts any certificate an in-GCP
+	// backend presents. Anywhere agents connect directly, it should be a real
+	// one. Neither case needs different code here.
+	GrpcTLSCertFile string
+	GrpcTLSKeyFile  string
 	// HttpPort is the port the HTTP dispatch server listens on.
 	HttpPort int
 	// BrokerServerURL is the base URL of the BROKER_SERVER HTTP API
@@ -99,6 +110,14 @@ func NewConfigFromEnv() Config {
 			panic(fmt.Errorf("invalid HTTP_PORT: %w", err))
 		}
 		cfg.HttpPort = p
+	}
+
+	cfg.GrpcTLSCertFile = os.Getenv("GRPC_TLS_CERT_FILE")
+	cfg.GrpcTLSKeyFile = os.Getenv("GRPC_TLS_KEY_FILE")
+	if (cfg.GrpcTLSCertFile == "") != (cfg.GrpcTLSKeyFile == "") {
+		// Half-configured TLS means someone intended encryption and will not
+		// get it. Failing here beats silently serving plaintext.
+		panic("GRPC_TLS_CERT_FILE and GRPC_TLS_KEY_FILE must be set together")
 	}
 
 	cfg.BrokerServerURL = os.Getenv("BROKER_SERVER_URL")

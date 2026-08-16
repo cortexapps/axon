@@ -20,6 +20,7 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/keepalive"
 )
 
@@ -56,7 +57,26 @@ func main() {
 	tunnelService := tunnel.NewService(cfg, logger, registry, brokerClient, m)
 
 	// Create gRPC server with keepalive.
-	grpcServer := grpc.NewServer(
+	// TLS when a certificate is configured, plaintext h2c otherwise. The
+	// server consumes a certificate rather than producing one, so the same
+	// binary works behind a load balancer that demands TLS and in a test
+	// stack that does not.
+	var grpcOpts []grpc.ServerOption
+	if cfg.GrpcTLSCertFile != "" {
+		creds, err := credentials.NewServerTLSFromFile(cfg.GrpcTLSCertFile, cfg.GrpcTLSKeyFile)
+		if err != nil {
+			logger.Fatal("Failed to load gRPC TLS certificate",
+				zap.String("cert", cfg.GrpcTLSCertFile),
+				zap.String("key", cfg.GrpcTLSKeyFile),
+				zap.Error(err))
+		}
+		grpcOpts = append(grpcOpts, grpc.Creds(creds))
+		logger.Info("gRPC listener serving TLS", zap.String("cert", cfg.GrpcTLSCertFile))
+	} else {
+		logger.Info("gRPC listener serving plaintext h2c (no TLS certificate configured)")
+	}
+
+	grpcServer := grpc.NewServer(append(grpcOpts,
 		grpc.KeepaliveParams(keepalive.ServerParameters{
 			Time:    30 * time.Second,
 			Timeout: 10 * time.Second,
@@ -65,7 +85,7 @@ func main() {
 			MinTime:             15 * time.Second,
 			PermitWithoutStream: true,
 		}),
-	)
+	)...)
 	pb.RegisterTunnelServiceServer(grpcServer, tunnelService)
 
 	// Start gRPC listener.
