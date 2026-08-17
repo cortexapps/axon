@@ -11,6 +11,7 @@
 #   DISPATCH_URL   ingress for this transport, ending in /broker/<token>
 #   TOKEN          the broker token
 #   PROXY          1 when running the proxied topology
+#   EXPECT_RELAY_MODE  the transport this script drives, as __axon/info reports it
 #   COMPOSE_FILES  compose -f flags, for log dumps on failure
 #   curlw          a curl wrapper that fails the run on transport errors
 #
@@ -47,7 +48,23 @@ scenario_axon_endpoints() {
     if [ "$integration" != "github" ]; then
         scenario_fail "Expected integration 'github', got '$integration'" "=== Info response: $info ==="
     fi
-    echo "Success: agent info endpoint reports the configured integration"
+
+    # The backend reads these to track what the fleet is actually running, so
+    # they have to be right per transport rather than merely present. Asserting
+    # the transport here is what makes this scenario differ between the two
+    # scripts that share it — everything else must match.
+    local mode build
+    mode=$(echo "$info" | jq -r '.relay_mode')
+    if [ "$mode" != "$EXPECT_RELAY_MODE" ]; then
+        scenario_fail "Expected relay_mode '$EXPECT_RELAY_MODE', got '$mode'" "=== Info response: $info ==="
+    fi
+
+    build=$(echo "$info" | jq -r '.build_version')
+    if [ -z "$build" ] || [ "$build" = "null" ]; then
+        scenario_fail "Expected a build_version, got '$build'" "=== Info response: $info ==="
+    fi
+
+    echo "Success: agent reports integration, relay_mode=$mode, build_version=$build"
 }
 
 # A plain relayed GET: python-server serves /tmp, so a file written here must

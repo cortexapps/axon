@@ -97,6 +97,17 @@ func getBuildVersion() string {
 	return "dev"
 }
 
+// relayMode reports the transport this agent relays over. Config leaves it
+// empty when nothing is set, which means the snyk-broker default rather than
+// "unknown" — reporting the effective value keeps the backend from having to
+// know that.
+func (h *axonHandler) relayMode() string {
+	if h.config.RelayMode == "" {
+		return string(config.RelayModeSnykBroker)
+	}
+	return h.config.RelayMode
+}
+
 func (h *axonHandler) healthcheck(w http.ResponseWriter, r *http.Request) {
 	result := map[string]interface{}{
 		"OK": true,
@@ -107,17 +118,23 @@ func (h *axonHandler) healthcheck(w http.ResponseWriter, r *http.Request) {
 func (h *axonHandler) info(w http.ResponseWriter, r *http.Request) {
 
 	result := &struct {
-		Integration string   `json:"integration"`
-		Alias       string   `json:"alias"`
-		Handlers    []string `json:"handlers"`
-		InstanceID  string   `json:"instance_id"`
+		Integration  string   `json:"integration"`
+		Alias        string   `json:"alias"`
+		Handlers     []string `json:"handlers"`
+		InstanceID   string   `json:"instance_id"`
 		BuildVersion string   `json:"build_version"`
+		// Which relay transport this agent is running: "snyk-broker" or
+		// "grpc-tunnel". Reported so the fleet's transport mix is visible
+		// from the backend rather than inferred from which server an agent
+		// happens to be connected to.
+		RelayMode string `json:"relay_mode"`
 	}{
-		InstanceID:  h.config.InstanceId,
-		Integration: h.config.Integration,
-		Alias:       h.config.IntegrationAlias,
-		Handlers:    []string{},
+		InstanceID:   h.config.InstanceId,
+		Integration:  h.config.Integration,
+		Alias:        h.config.IntegrationAlias,
+		Handlers:     []string{},
 		BuildVersion: getBuildVersion(),
+		RelayMode:    h.relayMode(),
 	}
 
 	handlers, err := h.fetchHandlers(r)
