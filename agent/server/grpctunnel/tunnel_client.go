@@ -868,8 +868,16 @@ func (tc *tunnelClient) openSlot(id int) (*streamCtx, error) {
 		Msg: &pb.ClientFrame_Hello{
 			Hello: &pb.ClientHello{
 				BrokerToken: token,
+				// Sent so the server can eventually authenticate the agent
+				// directly and read the tenant from the token, which is the
+				// only thing the registration round-trip currently exists to
+				// do. Nothing validates it yet; sending it from the start is
+				// what lets that work be built against real agents. Empty
+				// when the agent was handed a broker token directly and never
+				// registered.
+				CortexApiToken: tc.config.CortexApiToken,
 				// Everything below is informational (logs/metrics on the
-				// server); the broker token alone is the credential.
+				// server); the broker token alone is the credential today.
 				ClientVersion: common.ClientVersion,
 				TenantId:      os.Getenv("CORTEX_TENANT_ID"),
 				Integration:   tc.integrationInfo.Integration.String(),

@@ -43,13 +43,22 @@ message ServerFrame {
 // ClientHello is the first message sent by the client after opening a
 // stream.
 //
-// Trust model: possession of broker_token is the credential. The token's
-// meaning — which (tenant, integration, alias) it belongs to — was fixed
-// server-side inside Cortex when the authenticated registration flow
+// Trust model today: possession of broker_token is the credential. The
+// token's meaning — which (tenant, integration, alias) it belongs to — was
+// fixed server-side inside Cortex when the authenticated registration flow
 // minted it, and the Cortex dispatcher addresses tunnel servers by token
-// only. Every other field below is client-supplied, informational
-// metadata for logging and metrics; servers MUST NOT use it for
-// authorization, routing, or stream-acceptance decisions.
+// only. Every field below other than broker_token and cortex_api_token is
+// client-supplied, informational metadata for logging and metrics; servers
+// MUST NOT use it for authorization, routing, or stream-acceptance
+// decisions.
+//
+// Where this is going: cortex_api_token is sent so the server can eventually
+// authenticate the agent directly and read the tenant from the token itself.
+// That removes the reason the registration round-trip exists — it exists only
+// to resolve a tenant from that token — and makes broker_token an internal
+// detail rather than the credential. Nothing validates cortex_api_token yet;
+// it is on the wire so that server-side work can be built and tested against
+// real agents.
 message ClientHello {
   // Cortex-API-issued token, used for dispatch routing. Same token the
   // snyk-broker transport uses. The sole credential on this handshake.
@@ -66,11 +75,22 @@ message ClientHello {
   string alias = 5;
   // Unique agent instance ID (from config.InstanceId). Informational.
   string instance_id = 6;
-  // Field 7 was cortex_api_token, removed: it shipped a live credential
-  // over the tunnel for a validation flow that never existed.
+  // Field 7 was an earlier cortex_api_token, removed when it shipped a live
+  // credential for a validation flow that did not exist. Field 9 reintroduces
+  // it deliberately, for the flow described above; 7 stays reserved so an
+  // agent on the old schema cannot have its bytes read as the new field.
   reserved 7;
   // Arbitrary metadata. Informational.
   map<string, string> metadata = 8;
+  // The Cortex API token this agent is configured with, for server-side
+  // authentication once that exists. Empty when the agent was given a broker
+  // token directly and never registered.
+  //
+  // This is a live, higher-privilege credential: it authenticates to the
+  // Cortex API, not just to relay dispatch. It must never be logged, echoed
+  // in errors, or included in metrics. Handle it like broker_token, which is
+  // likewise absent from every log line the server writes.
+  string cortex_api_token = 9;
 }
 
 // ServerHello is the response to ClientHello.
