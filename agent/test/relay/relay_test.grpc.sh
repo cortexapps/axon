@@ -129,6 +129,7 @@ function curlw {
 # Everything the shared scenarios assert is addressed relative to it, so the
 # same checks run here as against snyk-broker.
 export DISPATCH_URL="http://localhost:$HTTP_PORT/broker/$TOKEN"
+export EXPECT_RELAY_MODE=grpc-tunnel
 source ./relay_scenarios.sh
 
 run_shared_scenarios

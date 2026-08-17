@@ -127,6 +127,7 @@ function curlw {
 # Ingress for this transport. Everything the shared scenarios assert is
 # addressed relative to it, so the same checks run against both relays.
 export DISPATCH_URL="http://localhost:$SERVER_PORT/broker/$TOKEN"
+export EXPECT_RELAY_MODE=snyk-broker
 source ./relay_scenarios.sh
 
 # snyk-broker only returns a relayed body when asked for a raw response.
