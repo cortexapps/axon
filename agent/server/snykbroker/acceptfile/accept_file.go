@@ -192,7 +192,8 @@ func (w acceptFileWrapper) AddRule(routeType string, entry acceptFileRule) accep
 	}
 	existingRoutes := w.dict[routeType].([]any)
 	w.dict[routeType] = append([]any{routeDict}, existingRoutes...)
-	return acceptFileRuleWrapper{dict: routeDict}
+	// without the back-reference every accessor that logs would nil-deref
+	return acceptFileRuleWrapper{dict: routeDict, acceptFile: w.acceptFile}
 }
 
 func (w acceptFileWrapper) toJSON() ([]byte, error) {

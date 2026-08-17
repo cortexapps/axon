@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"hash/fnv"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -342,6 +343,36 @@ func (rr *RegistrationReflector) ServeHTTP(w http.ResponseWriter, r *http.Reques
 		zap.String("newPath", newPath),
 	)
 
+	// Strip before anything can forward, log, or fail: internal routing
+	// metadata must not survive on any path, rejections included.
+	requestedTargets := r.Header.Values(HeaderTargetHost)
+	r.Header.Del(HeaderTargetHost)
+
+	// A tunnel carries no per-request routing, so a family has no authority to
+	// upgrade against.
+	if entry.wildcard != nil && IsWebSocketUpgrade(r) {
+		rr.logger.Error("WebSocket upgrade is not supported for a wildcard origin",
+			zap.String("targetURI", entry.TargetURI),
+		)
+		http.Error(w, ErrClassDestinationRejected, http.StatusForbidden)
+		return
+	}
+
+	// The reason is safe to log; the requested value is not.
+	targetHost, err := entry.resolveTargetHost(requestedTargets)
+	if err != nil {
+		rr.logger.Error("Rejected destination",
+			zap.String("targetURI", entry.TargetURI),
+			zap.String("class", ErrClassDestinationRejected),
+			zap.Error(err),
+		)
+		http.Error(w, ErrClassDestinationRejected, http.StatusForbidden)
+		return
+	}
+	if targetHost != "" {
+		r = withDynamicTarget(r, targetHost)
+	}
+
 	// Check if this is a WebSocket upgrade request
 	if rr.config.ReflectorWebSocketUpgrade && IsWebSocketUpgrade(r) {
 		rr.logger.Debug("Detected WebSocket upgrade request, using WebSocket proxy")
@@ -373,6 +404,23 @@ type proxyEntry struct {
 	headers         acceptfile.ResolverMap
 	responseHeaders map[string]string
 	hashCode        string
+	// Set when the origin authorizes a family. Such an entry has no
+	// destination of its own; the authority arrives per request.
+	wildcard *wildcardOrigin
+}
+
+// dynamicTargetContextKey carries the validated per-request target host from
+// ServeHTTP to the Director, so a rewrite is impossible without the
+// allowlist check having run.
+type dynamicTargetContextKey struct{}
+
+func withDynamicTarget(r *http.Request, host string) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), dynamicTargetContextKey{}, host))
+}
+
+func dynamicTargetFromRequest(req *http.Request) (string, bool) {
+	host, ok := req.Context().Value(dynamicTargetContextKey{}).(string)
+	return host, ok && host != ""
 }
 
 func newProxyEntry(targetURI string, isDefault bool, port int, headers acceptfile.ResolverMap, transport *http.Transport) (*proxyEntry, error) {
@@ -380,10 +428,9 @@ func newProxyEntry(targetURI string, isDefault bool, port int, headers acceptfil
 		return nil, fmt.Errorf("target URI cannot be empty")
 	}
 
-	// Parse the target URI
-	asUri, err := url.Parse(targetURI)
+	asUri, wildcard, err := parseOrigin(targetURI)
 	if err != nil {
-		return nil, fmt.Errorf("invalid target URI: %w", err)
+		return nil, err
 	}
 
 	// Create the reverse proxy
@@ -394,6 +441,7 @@ func newProxyEntry(targetURI string, isDefault bool, port int, headers acceptfil
 		TargetURI: targetURI,
 		handler:   proxy,
 		headers:   headers,
+		wildcard:  wildcard,
 	}
 
 	// Set up the director to handle host and headers
@@ -401,6 +449,17 @@ func newProxyEntry(targetURI string, isDefault bool, port int, headers acceptfil
 	proxy.Director = func(req *http.Request) {
 		defaultDirector(req)
 		req.Host = asUri.Host
+
+		// A wildcard entry always has one, because ServeHTTP rejects the
+		// request otherwise, so the literal "*" in asUri is never dialed.
+		if host, ok := dynamicTargetFromRequest(req); ok {
+			// The header names a host; the origin keeps deciding the port.
+			if port := asUri.Port(); port != "" {
+				host = net.JoinHostPort(host, port)
+			}
+			req.URL.Host = host
+			req.Host = host
+		}
 
 		// Copy headers to avoid mutation
 		processedHeaders := headers.ToStringMap()
@@ -425,6 +484,42 @@ func newProxyEntry(targetURI string, isDefault bool, port int, headers acceptfil
 	pe.proxyURI = pe.encodeProxyUri(targetURI, port, isDefault)
 
 	return pe, nil
+}
+
+// resolveTargetHost returns the host to retarget to, or "" to dial the entry's
+// declared origin. Fail-closed both ways: a family never falls back to a
+// declared host, and a concrete origin never ignores a value that disagrees.
+func (pe *proxyEntry) resolveTargetHost(values []string) (string, error) {
+	if len(values) > 1 {
+		return "", fmt.Errorf("duplicate target host")
+	}
+
+	if len(values) == 0 {
+		if pe.wildcard != nil {
+			return "", fmt.Errorf("wildcard origin requires a target host")
+		}
+		return "", nil
+	}
+
+	host, err := parseTargetHost(values[0])
+	if err != nil {
+		return "", err
+	}
+
+	if pe.wildcard != nil {
+		if !pe.wildcard.matches(host) {
+			return "", fmt.Errorf("target host is outside the origin policy")
+		}
+		return host, nil
+	}
+
+	// The value only ever restates the declared authority, so anything else is
+	// a defect or a probe.
+	declared, parseErr := url.Parse(pe.TargetURI)
+	if parseErr != nil || !strings.EqualFold(declared.Hostname(), host) {
+		return "", fmt.Errorf("target host disagrees with the declared origin")
+	}
+	return "", nil
 }
 
 func (pe *proxyEntry) key() string {
