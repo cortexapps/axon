@@ -269,19 +269,19 @@ func (h *httpServer) Start() (int, error) {
 	if err != nil {
 		panic(err)
 	}
+	// construct the server before spawning the serve goroutine and hand it a
+	// local reference, so Close (which nils h.server) never races with it
+	server := &http.Server{
+		Handler:     h.mux,
+		ReadTimeout: defaultReadTimeout,
+	}
+	h.server = server
 	go func() {
-
-		h.server = &http.Server{
-			Handler:     h.mux,
-			ReadTimeout: defaultReadTimeout,
-		}
-
-		err := h.server.Serve(ln)
+		err := server.Serve(ln)
 		if err != nil && err != http.ErrServerClosed {
 			panic(err)
 		}
 	}()
-	time.Sleep(100 * time.Millisecond)
 	h.listener = ln
 	h.port = ln.Addr().(*net.TCPAddr).Port
 	return h.port, nil

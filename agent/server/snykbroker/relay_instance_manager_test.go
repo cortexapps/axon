@@ -246,6 +246,30 @@ func TestRelayReRegisterServer(t *testing.T) {
 
 }
 
+// The reregister endpoint runs on an arbitrary HTTP handler goroutine while
+// the broker is up and the reflector is serving traffic. It must only report
+// whether registration changed, and hand any resulting restart to the single
+// restart consumer, so it never registers reflector entries itself.
+func TestRelayReRegisterDoesNotTouchReflector(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	mgr := createTestRelayInstanceManager(t, ctrl, nil, true, defaultIntegrationInfo)
+
+	before := len(*mgr.reflector.targets.Load())
+	require.NotZero(t, before, "start should have registered entries")
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/__axon/broker/reregister", nil)
+	httpHandler := (mgr.RelayInstanceManager).(cortex_http.RegisterableHandler)
+
+	mux := mux.NewRouter()
+	httpHandler.RegisterRoutes(mux)
+	mux.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Len(t, *mgr.reflector.targets.Load(), before)
+}
+
 func TestSystemCheck(t *testing.T) {
 
 	jsonPayload := `

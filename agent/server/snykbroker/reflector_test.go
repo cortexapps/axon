@@ -17,7 +17,6 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/require"
-	"go.uber.org/zap/zaptest"
 )
 
 type testReflectorEnv struct {
@@ -32,8 +31,27 @@ func newTestReflectorEnv(t *testing.T) *testReflectorEnv {
 	})
 }
 
+// waitForTunnelDrain blocks until no WebSocket tunnel is still copying.
+// activeConnections is decremented only after both copy goroutines have
+// returned, so reaching zero means none of them can log again.
+func waitForTunnelDrain(t *testing.T, rr *RegistrationReflector) {
+	t.Helper()
+	if rr.wsProxy == nil {
+		return
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for rr.wsProxy.ActiveConnections() > 0 {
+		if time.Now().After(deadline) {
+			t.Errorf("websocket tunnels did not drain within 5s (%d still active)",
+				rr.wsProxy.ActiveConnections())
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func newTestReflectorEnvWithConfig(t *testing.T, cfg config.AgentConfig) *testReflectorEnv {
-	logger := zaptest.NewLogger(t)
+	logger := newTestLogger(t)
 	rr := NewRegistrationReflector(RegistrationReflectorParams{
 		Logger:   logger,
 		Registry: prometheus.NewRegistry(),
@@ -41,6 +59,10 @@ func newTestReflectorEnvWithConfig(t *testing.T, cfg config.AgentConfig) *testRe
 	})
 	router := mux.NewRouter()
 	server := httptest.NewServer(router)
+	// Cleanups run LIFO, so this drain runs last - after Stop and server.Close
+	// have torn the connections down. It asserts that tunnels actually finish;
+	// newTestLogger is what makes a late log safe.
+	t.Cleanup(func() { waitForTunnelDrain(t, rr) })
 	t.Cleanup(server.Close)
 	t.Cleanup(func() { rr.Stop() })
 	return &testReflectorEnv{
@@ -175,7 +197,7 @@ func TestModuleStartup(t *testing.T) {
 				HttpRelayReflectorMode: tc.cfg.HttpRelayReflectorMode,
 			}
 			result := MaybeNewRegistrationReflector(cfg, RegistrationReflectorParams{
-				Logger: zaptest.NewLogger(t),
+				Logger: newTestLogger(t),
 			})
 			if tc.expected {
 				require.NotNil(t, result, "Expected reflector to be created")
@@ -571,7 +593,7 @@ func TestWebSocketProxyThroughHTTPProxy(t *testing.T) {
 	defer proxyServer.Close()
 
 	// Create reflector with the proxy configured via transport
-	logger := zaptest.NewLogger(t)
+	logger := newTestLogger(t)
 
 	// Parse proxy URL to set up transport
 	proxyURL, _ := url.Parse(proxyServer.URL)
@@ -592,6 +614,10 @@ func TestWebSocketProxyThroughHTTPProxy(t *testing.T) {
 	rr.RegisterRoutes(router)
 	reflectorServer := httptest.NewServer(router)
 	defer reflectorServer.Close()
+
+	// This test builds its own reflector rather than using newTestReflectorEnv,
+	// because it needs a custom Transport, so it must register the drain itself.
+	t.Cleanup(func() { waitForTunnelDrain(t, rr) })
 
 	// Register the target with the reflector
 	proxyURI := rr.ProxyURI(targetServer.URL)
@@ -617,7 +643,7 @@ func TestWebSocketProxyThroughHTTPProxy(t *testing.T) {
 }
 
 func TestWebSocketProxyTLSConfigFromTransport(t *testing.T) {
-	logger := zaptest.NewLogger(t)
+	logger := newTestLogger(t)
 
 	// Create a transport with custom TLS config
 	customRoots := x509.NewCertPool()
@@ -643,7 +669,7 @@ func TestWebSocketProxyTLSConfigFromTransport(t *testing.T) {
 }
 
 func TestWebSocketProxyWithoutTransport(t *testing.T) {
-	logger := zaptest.NewLogger(t)
+	logger := newTestLogger(t)
 
 	// Create WebSocketProxy without transport
 	wsProxy := NewWebSocketProxy(logger, nil)

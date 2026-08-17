@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -21,10 +22,12 @@ import (
 )
 
 type RegistrationReflector struct {
-	logger          *zap.Logger
-	transport       *http.Transport
-	server          cortexHttp.Server
-	targets         map[string]proxyEntry
+	logger    *zap.Logger
+	transport *http.Transport
+	server    cortexHttp.Server
+	// Never mutated once published; registration swaps in a new map. Readers
+	// hold no lock, so the map a reader is ranging over must stay frozen.
+	targets         atomic.Pointer[map[string]proxyEntry]
 	serverStarted   atomic.Bool
 	mode            config.RelayReflectorMode
 	config          config.AgentConfig
@@ -58,10 +61,10 @@ func NewRegistrationReflector(p RegistrationReflectorParams) *RegistrationReflec
 		transport: p.Transport,
 		server:    server,
 		logger:    httpParams.Logger,
-		targets:   make(map[string]proxyEntry),
 		mode:      p.Config.HttpRelayReflectorMode,
 		config:    p.Config,
 	}
+	rr.targets.Store(&map[string]proxyEntry{})
 
 	// Create WebSocket proxy with callbacks for tunnel lifecycle
 	rr.wsProxy = NewWebSocketProxy(httpParams.Logger, p.Transport)
@@ -152,12 +155,30 @@ func (rr *RegistrationReflector) getProxy(targetURI string, isDefault bool, head
 
 	key := newEntry.key()
 
-	entry, exists := rr.targets[key]
-	if !exists {
-		entry = *newEntry
-		rr.targets[key] = entry
-		newEntry.addResponseHeader("x-axon-relay-instance", rr.config.InstanceId)
+	// Set before the entry is published so the copy in the map carries the
+	// header too, rather than only the reverse proxy's captured newEntry.
+	newEntry.addResponseHeader("x-axon-relay-instance", rr.config.InstanceId)
 
+	// Copy-on-write: publish a new map rather than mutating the live one, so
+	// readers never synchronize. Retried on CAS failure because a concurrent
+	// registration may have published between the load and the swap.
+	for {
+		current := rr.targets.Load()
+		if entry, exists := (*current)[key]; exists {
+			return &entry, nil
+		}
+
+		next := make(map[string]proxyEntry, len(*current)+1)
+		for k, v := range *current {
+			next[k] = v
+		}
+		next[key] = *newEntry
+
+		if !rr.targets.CompareAndSwap(current, &next) {
+			continue
+		}
+
+		entry := next[key]
 		rr.logger.Info("Registered redirector",
 			zap.String("targetURI", entry.TargetURI),
 			zap.String("proxyURI", entry.proxyURI),
@@ -167,7 +188,6 @@ func (rr *RegistrationReflector) getProxy(targetURI string, isDefault bool, head
 		)
 		return &entry, nil
 	}
-	return &entry, nil
 }
 
 func (rr *RegistrationReflector) extractHash(part string) string {
@@ -188,9 +208,12 @@ func (rr *RegistrationReflector) parseTargetUri(proxyPath string) (*proxyEntry, 
 		remainder = path[slash:]
 	}
 	hash := rr.extractHash(beforeSlash)
+
+	targets := *rr.targets.Load()
+
 	if hash == "" {
 		// find the default proxy entry
-		if entry, exists := rr.targets["default"]; exists {
+		if entry, exists := targets["default"]; exists {
 			// Found the default proxy entry
 			return &entry, proxyPath, nil
 		} else {
@@ -199,11 +222,9 @@ func (rr *RegistrationReflector) parseTargetUri(proxyPath string) (*proxyEntry, 
 		}
 	}
 
-	for _, entry := range rr.targets {
-		if entry.key() == hash {
-			// Found the target URI
-			return &entry, remainder, nil
-		}
+	// the map is keyed by exactly the value key() returns
+	if entry, exists := targets[hash]; exists {
+		return &entry, remainder, nil
 	}
 
 	return nil, "", fmt.Errorf("no proxy entry found for path: %s", proxyPath)
@@ -239,13 +260,15 @@ func WithHeadersResolver(headers acceptfile.ResolverMap) ProxyOption {
 	}
 }
 
+// getUriForTarget scans by target URI rather than by key. Only tests need this
+// direction, so the linear scan is not on any request path.
 func (rr *RegistrationReflector) getUriForTarget(target string) (string, error) {
 
 	if target == "" {
 		return "", fmt.Errorf("target URI cannot be empty")
 	}
 
-	for _, entry := range rr.targets {
+	for _, entry := range *rr.targets.Load() {
 		if entry.TargetURI == target {
 			return entry.proxyURI, nil
 		}
@@ -413,9 +436,15 @@ func (pe *proxyEntry) key() string {
 		key := pe.TargetURI
 
 		if len(pe.headers) > 0 {
-			// Create a unique key that includes headers to allow different header sets for the same URI
-			headerKey := ""
+			// Create a unique key that includes headers to allow different header sets for the same URI.
+			// Sorted so the hash is stable across map iteration order.
+			names := make([]string, 0, len(pe.headers))
 			for k := range pe.headers {
+				names = append(names, k)
+			}
+			sort.Strings(names)
+			headerKey := ""
+			for _, k := range names {
 				headerKey += fmt.Sprintf("|%s=%s", k, pe.headers.ResolverKey(k))
 			}
 			key = key + headerKey

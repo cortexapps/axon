@@ -177,7 +177,7 @@ func (r *relayInstanceManager) handleReregister(w http.ResponseWriter, req *http
 		return
 	}
 	r.logger.Info("Reregistering broker")
-	info, err := r.getUrlAndToken()
+	info, err := r.refreshTokenInfo()
 	r.emitOperationCounter("reregister", err == nil)
 	if err != nil {
 		r.logger.Error("Unable to reregister", zap.Error(err))
@@ -187,8 +187,9 @@ func (r *relayInstanceManager) handleReregister(w http.ResponseWriter, req *http
 	}
 
 	if info.HasChanged {
-		r.Restart()
+		r.requestRestart("reregister", r.generation.Load())
 	}
+	w.WriteHeader(http.StatusOK)
 }
 
 func (r *relayInstanceManager) getSnykBrokerPort() int {
@@ -381,7 +382,10 @@ func (r *relayInstanceManager) waitForPortAvailable(port int, timeout time.Durat
 	return fmt.Errorf("port %d not available after %v", port, timeout)
 }
 
-func (r *relayInstanceManager) getUrlAndToken() (*tokenInfo, error) {
+// refreshTokenInfo re-registers and reports whether the registration changed.
+// It deliberately does not touch the reflector: callers that only need the
+// change signal must not register proxy entries as a side effect.
+func (r *relayInstanceManager) refreshTokenInfo() (*tokenInfo, error) {
 	uri, token, err := r.getUrlAndTokenCore()
 	if err != nil {
 		return nil, err
@@ -399,13 +403,23 @@ func (r *relayInstanceManager) getUrlAndToken() (*tokenInfo, error) {
 		r.tokenInfo = tokenInfo
 	}
 
+	return tokenInfo, nil
+}
+
+// getUrlAndToken additionally registers the reflector's default entry, so it
+// belongs to the broker start path only.
+func (r *relayInstanceManager) getUrlAndToken() (*tokenInfo, error) {
+	tokenInfo, err := r.refreshTokenInfo()
+	if err != nil {
+		return nil, err
+	}
+
 	// Route BROKER_SERVER_URL through reflector when mode reflects registration (registration, all).
 	if r.reflector != nil && r.config.HttpRelayReflectorMode.ReflectsRegistration() {
 		tokenInfo.ServerUri = r.reflector.ProxyURI(tokenInfo.ServerUri, WithDefault(true))
 	}
 
 	return tokenInfo, nil
-
 }
 
 func (r *relayInstanceManager) getUrlAndTokenCore() (string, string, error) {
@@ -509,7 +523,7 @@ func (r *relayInstanceManager) Start() error {
 			for {
 				select {
 				case <-time.After(r.config.AutoRegisterFrequency):
-					info, err := r.getUrlAndToken()
+					info, err := r.refreshTokenInfo()
 					if err != nil {
 						r.logger.Error("Unable to auto register", zap.Error(err))
 						continue

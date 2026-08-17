@@ -68,6 +68,23 @@ test: mocks
 	go mod tidy
 	go test -v ./...
 
+# Packages that currently pass the race detector. The rest of the tree does
+# not yet: server, server/handler, server/http, server/snykbroker and cmd all
+# have known races (supervisor process lifecycle, handler manager, the fx
+# server stack). Move packages up here as those are fixed.
+RACE_CLEAN_PKGS := ./common/... ./config/... ./scaffold/... ./server/api/... ./server/cron/... ./server/snykbroker/acceptfile/... ./util/...
+
+# The reflector lives in server/snykbroker, whose other tests are not yet
+# race-clean, so it is gated at test granularity instead. Derived from the
+# test files so new reflector tests are covered automatically.
+REFLECTOR_TESTS = $(shell grep -ho '^func Test[A-Za-z0-9_]*' server/snykbroker/reflector*_test.go | sed 's/^func //' | paste -sd'|' -)
+
+test-race: mocks
+	go test -race $(RACE_CLEAN_PKGS)
+	go test -race -run '^($(REFLECTOR_TESTS))$$' ./server/snykbroker/
+
+.PHONY: test-race
+
 validate-filters:
 	test/validate_filters.sh
 
