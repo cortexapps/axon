@@ -57,6 +57,12 @@ func TestStart_FastFail(t *testing.T) {
 
 	// test that if the command fails quickly off the bat, we don't retry anymore
 
+	// NewSupervisor doubles this, so 50ms gave the process 100ms to spawn,
+	// run and exit before it stopped counting as an immediate failure — which
+	// a loaded CI runner can exceed just forking bash, failing the test for
+	// reasons unrelated to what it checks. A process meant to run
+	// indefinitely that dies inside a second is still immediate by any
+	// reading, so the wider budget costs the assertion nothing.
 	supervisor := NewSupervisor(
 		"bash",
 		[]string{"-c", "exit 1"},
@@ -64,7 +70,7 @@ func TestStart_FastFail(t *testing.T) {
 			"BROKER_TOKEN":      "test_token",
 			"BROKER_SERVER_URL": "http://example.com",
 		},
-		time.Millisecond*50,
+		time.Millisecond*500,
 	)
 	output := bytes.Buffer{}
 	supervisor.output = &output
