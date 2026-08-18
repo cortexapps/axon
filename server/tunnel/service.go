@@ -220,26 +220,54 @@ func (s *Service) Tunnel(stream pb.TunnelService_TunnelServer) error {
 	}()
 
 	// Read loop for client messages.
+	//
+	// Recv runs in its own goroutine because cancelling ctx cannot interrupt
+	// a Recv already in flight. ctx is derived from stream.Context(), and
+	// cancelling a derived context does not end the RPC — only returning
+	// from this handler does, and that is also what unblocks the pending
+	// Recv. Checking ctx.Done() only between Recv calls, as this loop used
+	// to, meant a stream the server had decided to drop — heartbeat timeout,
+	// registry eviction, dispatcher teardown — stayed open until the client
+	// happened to send something, holding its registration with it.
+	type recvResult struct {
+		msg *pb.ClientFrame
+		err error
+	}
+	recvC := make(chan recvResult)
+	go func() {
+		for {
+			msg, err := stream.Recv()
+			select {
+			case recvC <- recvResult{msg: msg, err: err}:
+			case <-ctx.Done():
+				return
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
 	for {
+		var r recvResult
 		select {
 		case <-ctx.Done():
 			s.cleanupStream(token, streamID, stopwatch)
 			return nil
-		default:
+		case r = <-recvC:
 		}
 
-		msg, err := stream.Recv()
-		if err != nil {
+		if r.err != nil {
 			s.logger.Info("Client stream closed",
 				zap.String("streamId", streamID),
 				zap.String("tenantId", identity.TenantID),
-				zap.Error(err),
+				zap.Error(r.err),
 			)
 			s.cleanupStream(token, streamID, stopwatch)
 			return nil
 		}
 
-		switch m := msg.Msg.(type) {
+		switch m := r.msg.Msg.(type) {
 		case *pb.ClientFrame_Heartbeat:
 			lastHeartbeat.Store(time.Now().UnixNano())
 			s.metrics.HeartbeatReceived.Inc(1)

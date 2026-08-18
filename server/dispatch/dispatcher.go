@@ -151,6 +151,51 @@ type call struct {
 	recvDone   bool // agent sent its terminal frame (End or Cancel)
 	cancelSent bool // we sent CallCancel
 	finished   bool // cleanup ran
+	// chansClosed guards trailersC/errC. Delivery and close both take mu
+	// and consult it, so a terminal frame arriving as the call finishes
+	// cannot send on a closed channel.
+	chansClosed bool
+}
+
+// deliverTrailers hands the response trailers to the consumer, if the call
+// is still live. Non-blocking: the channel has room for the one value it
+// ever carries, and a consumer that walked away must not wedge the reader.
+func (c *call) deliverTrailers(trailers map[string]string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.chansClosed {
+		return
+	}
+	select {
+	case c.trailersC <- trailers:
+	default:
+	}
+}
+
+// deliverError hands an abort error to the consumer under the same guard.
+func (c *call) deliverError(err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.chansClosed {
+		return
+	}
+	select {
+	case c.errC <- err:
+	default:
+	}
+}
+
+// closeChans closes both delivery channels exactly once. Callers waiting on
+// them read the close as "nothing more is coming".
+func (c *call) closeChans() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.chansClosed {
+		return
+	}
+	c.chansClosed = true
+	close(c.trailersC)
+	close(c.errC)
 }
 
 // Dispatch sends a request through an idle tunnel stream for the token and
@@ -371,7 +416,7 @@ func (d *Dispatcher) HandleFrame(streamID string, frame *pb.CallFrame) {
 			d.cancelCall(c, "protocol error: End before Start", false)
 			return
 		}
-		c.trailersC <- body.End.Trailers
+		c.deliverTrailers(body.End.Trailers)
 		c.bodyW.Close()
 		c.stream.LastSuccessAt.Store(time.Now().UnixNano())
 		d.maybeFinish(c)
@@ -420,10 +465,7 @@ func (d *Dispatcher) InflightCount() int {
 // deliverErr delivers an error to the call's errC without blocking
 // (capacity 1; later errors are dropped).
 func (d *Dispatcher) deliverErr(c *call, err error) {
-	select {
-	case c.errC <- err:
-	default:
-	}
+	c.deliverError(err)
 }
 
 // cancelCall aborts a call: stops the body pump, optionally notifies the
@@ -473,8 +515,7 @@ func (d *Dispatcher) finish(c *call, closeChans bool) {
 	c.stream.Release()
 	d.metrics.DispatchInflight.Update(float64(d.InflightCount()))
 	if closeChans {
-		close(c.trailersC)
-		close(c.errC)
+		c.closeChans()
 	}
 }
 
