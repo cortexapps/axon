@@ -19,6 +19,10 @@ RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/
 
 COPY --from=builder /axon-tunnel-server /usr/local/bin/axon-tunnel-server
 
+# Running in a container means running as a deployed service, so log as one:
+# ENV=production
+ENV ENV=production
+
 EXPOSE 50052 8080
 
 ENTRYPOINT ["/usr/local/bin/axon-tunnel-server"]

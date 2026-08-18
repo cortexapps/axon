@@ -66,6 +66,9 @@ services:
       MAX_STREAMS_PER_TOKEN: ${MAX_STREAMS_PER_TOKEN:-64}
       DISPATCH_TIMEOUT: 60s
       HEARTBEAT_INTERVAL: 10s
+      # The image defaults to ENV=production (JSON, info). A failed run dumps
+      # these logs, so keep the console encoder and debug level here.
+      ENV: development
     depends_on:
       dispatcher-mock:
         condition: service_healthy
