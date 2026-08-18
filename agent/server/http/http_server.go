@@ -35,9 +35,10 @@ type RegisterableHandler interface {
 type ServerOption func(*serverOptions)
 
 type serverOptions struct {
-	name     string
-	registry *prometheus.Registry
-	port     int
+	name         string
+	registry     *prometheus.Registry
+	port         int
+	loopbackOnly bool
 }
 
 func WithName(name string) ServerOption {
@@ -55,6 +56,15 @@ func WithRegistry(registry *prometheus.Registry) ServerOption {
 func WithPort(port int) ServerOption {
 	return func(s *serverOptions) {
 		s.port = port
+	}
+}
+
+// WithLoopbackOnly binds to 127.0.0.1 rather than every interface. Required
+// for any server that injects credentials: reachable off-host, it is an open
+// proxy that attaches one for whoever asks.
+func WithLoopbackOnly() ServerOption {
+	return func(s *serverOptions) {
+		s.loopbackOnly = true
 	}
 }
 
@@ -120,7 +130,8 @@ func NewHttpServer(p HttpServerParams, opts ...ServerOption) Server {
 			},
 			[]string{"method", "path", "status"},
 		),
-		config: p.Config,
+		config:       p.Config,
+		loopbackOnly: serverOpts.loopbackOnly,
 	}
 
 	server.mux.Use(server.requestMiddleware)
@@ -165,6 +176,7 @@ type httpServer struct {
 	requestCounter *prometheus.CounterVec
 	requestLatency *prometheus.HistogramVec
 	config         config.AgentConfig
+	loopbackOnly   bool
 }
 
 func (h *httpServer) RegisterHandler(handler RegisterableHandler) {
@@ -265,7 +277,13 @@ func (h *httpServer) Start() (int, error) {
 		panic("Server already started")
 	}
 
-	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", h.port))
+	// Explicit 127.0.0.1, not "localhost": that also resolves to ::1, where
+	// nothing is listening.
+	host := ""
+	if h.loopbackOnly {
+		host = "127.0.0.1"
+	}
+	ln, err := net.Listen("tcp", fmt.Sprintf("%s:%d", host, h.port))
 	if err != nil {
 		panic(err)
 	}

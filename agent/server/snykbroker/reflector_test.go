@@ -95,14 +95,14 @@ func TestGetProxyAndProxyURI(t *testing.T) {
 	require.Equal(t, target, proxyEntry.TargetURI)
 
 	uri := env.Reflector.ProxyURI(target)
-	require.Contains(t, uri, "localhost")
+	require.Contains(t, uri, "127.0.0.1")
 }
 
 func TestDefaultProxyURI(t *testing.T) {
 	env := newTestReflectorEnv(t)
 	target := env.Server.URL
 	uri := env.Reflector.ProxyURI(target, WithDefault(true))
-	require.Equal(t, fmt.Sprintf("http://localhost:%d", env.Reflector.server.Port()), uri)
+	require.Equal(t, fmt.Sprintf("http://127.0.0.1:%d", env.Reflector.server.Port()), uri)
 }
 
 func TestServeHTTP_Proxy(t *testing.T) {
@@ -127,7 +127,7 @@ func TestServeHTTP_Proxy(t *testing.T) {
 func TestServeHTTP_InvalidTarget(t *testing.T) {
 	env := newTestReflectorEnv(t)
 	env.Reflector.Start()
-	req, _ := http.NewRequest("GET", fmt.Sprintf("http://localhost:%d/!99999999!/foo", env.Reflector.server.Port()), nil)
+	req, _ := http.NewRequest("GET", fmt.Sprintf("http://127.0.0.1:%d/!99999999!/foo", env.Reflector.server.Port()), nil)
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	defer resp.Body.Close()
@@ -412,7 +412,7 @@ func TestWebSocketProxyInvalidTarget(t *testing.T) {
 	env.Reflector.Start()
 
 	// Make a WebSocket request to an invalid hash (no registered target)
-	req, _ := http.NewRequest("GET", fmt.Sprintf("http://localhost:%d/!invalid!/ws", env.Reflector.server.Port()), nil)
+	req, _ := http.NewRequest("GET", fmt.Sprintf("http://127.0.0.1:%d/!invalid!/ws", env.Reflector.server.Port()), nil)
 	req.Header.Set("Connection", "Upgrade")
 	req.Header.Set("Upgrade", "websocket")
 
