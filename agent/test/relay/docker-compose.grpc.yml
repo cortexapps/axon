@@ -64,7 +64,12 @@ services:
       CORTEX_TENANT_ID: test-tenant
       TOKEN: ${TOKEN:-0e481b34-76ac-481a-a92f-c94a6cf6f6c1}
     env_file: ${ENVFILE:-noproxy.env}
-    command: relay -f /src/accept-client.json -i github -a axon-test
+    # --verbose because relay_test.grpc.sh asserts on "Tunnel stream
+    # established", which tunnel_client.go logs at debug: opening a stream is
+    # routine, so it is deliberately not Info. The proxy-dial line the test
+    # also greps for is Info, which is why only this assertion broke when the
+    # stream line was demoted.
+    command: relay --verbose -f /src/accept-client.json -i github -a axon-test
     depends_on:
       mitmproxy:
         condition: service_healthy
