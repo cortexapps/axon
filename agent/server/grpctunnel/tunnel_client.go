@@ -1126,9 +1126,6 @@ func (tc *tunnelClient) Close() error {
 	if tc.pool != nil {
 		tc.pool.closeAll()
 	}
-	if tc.pool != nil {
-		tc.pool.closeAll()
-	}
 
 	tc.mu.Lock()
 	tc.streams = nil
