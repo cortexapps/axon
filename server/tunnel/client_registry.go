@@ -173,7 +173,10 @@ func (r *ClientRegistry) Register(token broker.Token, identity ClientIdentity, s
 		existing.Streams[stream.StreamID] = stream
 		stream.onRelease = r.makeOnRelease(key, stream)
 		existing.pushIdle(stream)
-		r.logger.Info("Added stream to existing client entry",
+		// Debug: the entry already existed, so the token's reachability here
+		// has not changed — only its stream count. Registered new client
+		// below is the transition, and stays at Info.
+		r.logger.Debug("Added stream to existing client entry",
 			zap.String("tenantId", identity.TenantID),
 			zap.String("instanceId", identity.InstanceID),
 			zap.String("streamId", stream.StreamID),
@@ -242,7 +245,9 @@ func (r *ClientRegistry) Unregister(token broker.Token, streamID string) bool {
 		return true
 	}
 
-	r.logger.Info("Removed stream from client entry",
+	// Debug: streams remain, so the token is still reachable here. Losing the
+	// last one is the event that matters, and it is logged at Info above.
+	r.logger.Debug("Removed stream from client entry",
 		zap.String("tenantId", entry.Identity.TenantID),
 		zap.String("streamId", streamID),
 		zap.Int("remainingStreams", len(entry.Streams)),
