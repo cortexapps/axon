@@ -20,6 +20,7 @@ import (
 	cortexHttp "github.com/cortexapps/axon/server/http"
 	"github.com/cortexapps/axon/server/snykbroker"
 	"github.com/cortexapps/axon/server/snykbroker/acceptfile"
+	"github.com/cortexapps/axon/util"
 	"github.com/gorilla/mux"
 	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/fx"
@@ -1191,11 +1192,14 @@ func (tc *tunnelClient) buildTransportCredentials() (credentials.TransportCreden
 
 	tlsConfig := &tls.Config{}
 
-	if tc.config.HttpCaCertFilePath != "" {
-		caCert, err := os.ReadFile(tc.config.HttpCaCertFilePath)
-		if err != nil {
-			return nil, fmt.Errorf("read CA cert %q: %w", tc.config.HttpCaCertFilePath, err)
-		}
+	// Shared with the HTTP client's transport: CA_CERT_PATH may be a file or
+	// a directory of *.pem, and reading it two different ways is how the
+	// tunnel ended up rejecting a path the rest of the agent accepted.
+	caCert, err := util.ReadCACertPEM(tc.config.HttpCaCertFilePath)
+	if err != nil {
+		return nil, err
+	}
+	if len(caCert) > 0 {
 		caCertPool := x509.NewCertPool()
 		if !caCertPool.AppendCertsFromPEM(caCert) {
 			return nil, fmt.Errorf("CA cert %q contains no parseable certificates", tc.config.HttpCaCertFilePath)
