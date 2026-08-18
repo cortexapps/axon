@@ -104,6 +104,9 @@ func main() {
 	httpMux := http.NewServeMux()
 	httpMux.Handle("/metrics", m.Handler())
 	httpMux.Handle("/broker/", httpAdapter)
+	// The dispatcher's connection-status probe lives at the root, not under
+	// /broker/. Both forms reach the same handler in the adapter.
+	httpMux.Handle("/connection-status/", httpAdapter)
 	health := func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		acquireWaits, acquireWaitMs := dispatcher.AcquireStats()
