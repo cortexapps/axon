@@ -10,21 +10,13 @@ import (
 )
 
 // testLogWriter forwards zap output to the test log, then goes quiet once the
-// test finishes.
+// test finishes. Request goroutines outlive the test that started them, and
+// writing to a finished test races tRunner marking it done. Waiting for them
+// instead does not work: every layer logs after the one below it has already
+// signalled completion.
 //
-// Goroutines started by a request outlive the test that started them: a tunnel
-// copy goroutine logs from copyWithIdleTimeout, and requestMiddleware logs its
-// "<== HTTP request" line only after ServeHTTP returns. Writing to a finished
-// test races tRunner marking it done, which the race detector reports as a
-// failure. In production the logger outlives every tunnel, so this is a harness
-// lifetime mismatch rather than an agent bug.
-//
-// Waiting for the goroutines instead does not work: each layer finishes logging
-// after the layer below it has already signalled completion, so any counter is
-// released while the layers above it are still logging.
-//
-// The mutex covers the check and the write together, so a log call cannot pass
-// the check and then land after the test has been marked done.
+// The mutex spans the check and the write, so a call cannot pass the check and
+// then land after the test is done.
 type testLogWriter struct {
 	mu       sync.Mutex
 	t        testing.TB
@@ -46,9 +38,8 @@ func (w *testLogWriter) stop() {
 	w.finished = true
 }
 
-// newTestLogger returns a logger that is safe to call from goroutines which
-// outlive the test. Use it instead of zaptest.NewLogger anywhere a request or
-// tunnel goroutine can still be running at teardown.
+// newTestLogger returns a logger safe to call from goroutines that outlive the
+// test. Use it instead of zaptest.NewLogger wherever one can.
 func newTestLogger(t testing.TB) *zap.Logger {
 	t.Helper()
 	w := &testLogWriter{t: t}
