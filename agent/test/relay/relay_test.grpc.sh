@@ -150,9 +150,9 @@ if [ "$PROXY" == "1" ]; then
     echo "Checking gRPC outbound connection through the HTTP proxy..."
     axon_logs=$(docker compose $COMPOSE_FILES logs axon-relay 2>&1)
 
-    if ! echo "$axon_logs" | grep -q "Using HTTP proxy for gRPC connection"; then
+    if ! echo "$axon_logs" | grep -q "gRPC connection dialed through HTTP proxy"; then
         echo "FAIL: Agent did not route its gRPC dial through the HTTP proxy"
-        echo "  Expected 'Using HTTP proxy for gRPC connection' in the agent logs."
+        echo "  Expected 'gRPC connection dialed through HTTP proxy' in the agent logs."
         echo "  Without it, any stream below connected by some other path."
         echo "=== Axon Relay Logs (last 50) ==="
         echo "$axon_logs" | tail -50
