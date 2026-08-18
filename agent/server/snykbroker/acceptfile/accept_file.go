@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"sync"
 
 	"github.com/cortexapps/axon/config"
 	axonHttp "github.com/cortexapps/axon/server/http"
@@ -20,6 +21,11 @@ type AcceptFile struct {
 	content []byte
 	config  config.AgentConfig
 	logger  *zap.Logger
+
+	// schemeWarned remembers which origins we have already reported as
+	// missing a scheme. Origin() runs on every routed request, so without
+	// this the same line is emitted once per request forever.
+	schemeWarned sync.Map
 }
 
 // NewAcceptFile creates a new AcceptFile instance, taking the raw content of the accept file
@@ -227,7 +233,9 @@ func (r AcceptFileRuleWrapper) Origin() string {
 		r.acceptFile.logger.Panic("failed to parse origin URL", zap.String("origin", rawOrigin), zap.Error(err))
 	}
 	if asUrl.Scheme == "" {
-		r.acceptFile.logger.Warn("origin URL has no scheme, defaulting to https", zap.String("origin", rawOrigin))
+		if _, seen := r.acceptFile.schemeWarned.LoadOrStore(rawOrigin, struct{}{}); !seen {
+			r.acceptFile.logger.Debug("origin URL has no scheme, defaulting to https", zap.String("origin", rawOrigin))
+		}
 		asUrl.Scheme = "https"
 		return asUrl.String()
 	}

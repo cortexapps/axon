@@ -245,6 +245,21 @@ func (tc *tunnelClient) runCall(ctx context.Context, sc *streamCtx, callID strin
 
 	tc.requestsTotal.WithLabelValues(method, fmt.Sprintf("%d", resp.StatusCode)).Inc()
 
+	// One line per proxied request, at INFO: this is the record of what the
+	// agent actually did on someone's behalf, and it is the first thing
+	// anyone asks for when a call is slow or comes back wrong. Deferred so
+	// it is still written when the response body or a send fails partway
+	// through, with the latency that had elapsed by then.
+	defer func() {
+		tc.logger.Info("Request completed",
+			zap.String("callId", callID),
+			zap.String("method", method),
+			zap.String("targetURL", breq.URL.String()),
+			zap.Int("status", resp.StatusCode),
+			zap.Int64("durationMs", time.Since(startTime).Milliseconds()),
+		)
+	}()
+
 	// Response start.
 	headers := make(map[string]string, len(resp.Header)+1)
 	for k, v := range resp.Header {

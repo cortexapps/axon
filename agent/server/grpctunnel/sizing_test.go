@@ -295,3 +295,92 @@ func TestHandleTokenCap_KeepsTheLowestSeenCeiling(t *testing.T) {
 
 	assert.Equal(t, int32(3), tc.serverMaxStreams.Load())
 }
+
+// One stream per pooled connection is an anchor and never retires. A
+// connection that empties deregisters the agent from that server in the
+// dispatcher's index, and its keepalive pings become pings with no data,
+// which is what a load balancer answers with GOAWAY. These pin the floor
+// that prevents both.
+
+func TestAnchors_OnePerPooledConnection(t *testing.T) {
+	tc := newSizingClient(t)
+	tc.pool = newConnPool(4)
+
+	assert.Equal(t, 4, tc.anchorSlots(), "one anchor per pooled connection")
+}
+
+func TestAnchors_NeverRetire(t *testing.T) {
+	tc := newSizingClient(t)
+	tc.pool = newConnPool(4)
+
+	// A target well below the worker count: every worker that can retire
+	// should want to.
+	tc.mu.Lock()
+	tc.runningWorkers = 6
+	tc.mu.Unlock()
+	tc.targetSlots.Store(1)
+
+	for id := 1; id <= 4; id++ {
+		assert.False(t, tc.tryRetireWorker(id), "worker %d anchors a connection", id)
+	}
+	assert.True(t, tc.tryRetireWorker(5), "workers past the pool size are elastic")
+}
+
+func TestAnchors_FloorTheTarget(t *testing.T) {
+	tc := newSizingClient(t)
+	tc.pool = newConnPool(4)
+	seedStreams(tc, 2, "srv-a")
+
+	tc.resize()
+
+	// The reserve alone would ask for 2, leaving two connections with no
+	// stream on them.
+	assert.Equal(t, int32(4), tc.targetSlots.Load(),
+		"the target never drops below one stream per connection")
+}
+
+func TestAnchors_YieldToTheServerAnnouncedCap(t *testing.T) {
+	tc := newSizingClient(t)
+	tc.pool = newConnPool(4)
+	tc.serverMaxStreams.Store(2)
+
+	assert.Equal(t, 2, tc.anchorSlots(),
+		"a server that will not grant 4 streams cannot be given 4 anchors")
+
+	seedStreams(tc, 2, "srv-a")
+	tc.resize()
+	assert.Equal(t, int32(2), tc.targetSlots.Load(), "the cap still wins")
+}
+
+func TestRetireExcess_SparesAnchors(t *testing.T) {
+	tc := newSizingClient(t)
+	tc.pool = newConnPool(2)
+
+	cancelled := map[string]bool{}
+	mk := func(name string, anchor bool) *tunnelStream {
+		ts := &tunnelStream{
+			streamID: name,
+			anchor:   anchor,
+			cancel:   func() { cancelled[name] = true },
+		}
+		// Idle for longer than a tick, so retirement is otherwise eligible.
+		ts.lastCallAt.Store(time.Now().Add(-2 * sizeInterval).UnixNano())
+		return ts
+	}
+
+	tc.mu.Lock()
+	tc.streams = map[*tunnelStream]struct{}{
+		mk("anchor-a", true): {},
+		mk("anchor-b", true): {},
+		mk("elastic", false): {},
+	}
+	tc.runningWorkers = 3
+	tc.mu.Unlock()
+	tc.targetSlots.Store(2)
+
+	tc.retireExcess()
+
+	assert.True(t, cancelled["elastic"], "the elastic stream retires")
+	assert.False(t, cancelled["anchor-a"], "anchors are not cancellable")
+	assert.False(t, cancelled["anchor-b"], "anchors are not cancellable")
+}
