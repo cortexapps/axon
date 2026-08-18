@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.uber.org/zap"
 )
 
 const (
@@ -58,14 +59,27 @@ type Config struct {
 	MaxStreamsPerToken int
 }
 
-func (c Config) Print() {
-	fmt.Println("Server Configuration:")
-	fmt.Printf("\tgRPC Port: %d\n", c.GrpcPort)
-	fmt.Printf("\tHTTP Port: %d\n", c.HttpPort)
-	fmt.Printf("\tBroker Server URL: %s\n", c.BrokerServerURL)
-	fmt.Printf("\tServer ID: %s\n", c.ServerID)
-	fmt.Printf("\tHeartbeat Interval: %v\n", c.HeartbeatInterval)
-	fmt.Printf("\tDispatch Timeout: %v\n", c.DispatchTimeout)
+// Fields renders the configuration for logging. It goes through the logger
+// rather than fmt so the startup config obeys the configured encoder — printing
+// it directly would put plain text in the log stream of a server whose every
+// other line is JSON.
+func (c Config) Fields() []zap.Field {
+	return []zap.Field{
+		zap.Int("grpc_port", c.GrpcPort),
+		zap.Int("http_port", c.HttpPort),
+		zap.String("broker_server_url", c.BrokerServerURL),
+		zap.String("server_id", c.ServerID),
+		zap.Duration("heartbeat_interval", c.HeartbeatInterval),
+		zap.Duration("dispatch_timeout", c.DispatchTimeout),
+		zap.Duration("re_registration_interval", c.ReRegistrationInterval),
+		zap.Int("max_frame_bytes", c.MaxFrameBytes),
+		zap.Int("max_streams_per_token", c.MaxStreamsPerToken),
+		// Whether the gRPC listener serves TLS decides whether GCLB can reach
+		// it at all, so it belongs in the line you check first.
+		zap.Bool("grpc_tls_enabled", c.GrpcTLSCertFile != ""),
+		zap.String("grpc_tls_cert_file", c.GrpcTLSCertFile),
+		zap.String("grpc_tls_key_file", c.GrpcTLSKeyFile),
+	}
 }
 
 func NewConfigFromEnv() Config {

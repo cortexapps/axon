@@ -24,26 +24,59 @@ import (
 	"google.golang.org/grpc/keepalive"
 )
 
+// envProduction is the ENV value that selects structured JSON logging. The
+// Dockerfile defaults ENV to this, so any containerized run is structured
+// unless it deliberately overrides it.
+const envProduction = "production"
+
+// newLoggerConfig mirrors the agent's zap setup (agent/cmd/stack.go): JSON in
+// production, human-readable console otherwise. env is the ENV variable, and
+// anything other than "production" — including unset — means dev, so a local
+// run gets readable output without configuring anything.
+func newLoggerConfig(env string, logLevel string) (zap.Config, error) {
+	cfg := zap.NewDevelopmentConfig()
+	if env == envProduction {
+		cfg = zap.NewProductionConfig()
+		cfg.EncoderConfig.TimeKey = "time"
+		cfg.EncoderConfig.EncodeTime = func(t time.Time, enc zapcore.PrimitiveArrayEncoder) {
+			enc.AppendString(t.UTC().Format("2006-01-02T15:04:05.000Z"))
+		}
+		cfg.EncoderConfig.NameKey = "name"
+	}
+
+	// Each config carries its own default level (info for production, debug
+	// for development); LOG_LEVEL overrides it, which is the only way to get
+	// debug out of a deployed server without a rebuild.
+	if logLevel != "" {
+		level, err := zapcore.ParseLevel(logLevel)
+		if err != nil {
+			return cfg, fmt.Errorf("invalid LOG_LEVEL %q: %w", logLevel, err)
+		}
+		cfg.Level = zap.NewAtomicLevelAt(level)
+	}
+
+	return cfg, nil
+}
+
+func newLogger() (*zap.Logger, error) {
+	cfg, err := newLoggerConfig(os.Getenv("ENV"), os.Getenv("LOG_LEVEL"))
+	if err != nil {
+		return nil, err
+	}
+	return cfg.Build()
+}
+
 func main() {
 	cfg := config.NewConfigFromEnv()
 
-	// Set up structured JSON logging.
-	zapCfg := zap.NewProductionConfig()
-	zapCfg.EncoderConfig.TimeKey = "time"
-	zapCfg.EncoderConfig.EncodeTime = func(t time.Time, enc zapcore.PrimitiveArrayEncoder) {
-		enc.AppendString(t.UTC().Format("2006-01-02T15:04:05.000Z"))
-	}
-	if os.Getenv("ENV") != "production" {
-		zapCfg = zap.NewDevelopmentConfig()
-	}
-	logger, err := zapCfg.Build()
+	logger, err := newLogger()
 	if err != nil {
 		panic(err)
 	}
 	logger = logger.Named("axon-tunnel-server")
 	defer logger.Sync()
 
-	cfg.Print()
+	logger.Info("Server configuration", cfg.Fields()...)
 
 	// Initialize metrics.
 	m := metrics.New(cfg.ServerID)
