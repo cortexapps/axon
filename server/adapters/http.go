@@ -7,6 +7,8 @@ package adapters
 
 import (
 	"context"
+	"crypto/sha1"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -77,6 +79,53 @@ func (h *HttpAdapter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.mux.ServeHTTP(w, r)
 }
 
+// brokerOKFalse and brokerOKTrue are snyk-broker's response bodies, byte for
+// byte. Their exact bytes matter: the dispatcher identifies "this server does
+// not have that token" by comparing the body, so a reformat here (a space
+// after the colon, a trailing newline) silently disables its failover.
+const (
+	brokerOKFalse = `{"ok":false}`
+	brokerOKTrue  = `{"ok":true}`
+)
+
+// expressWeakETag reproduces the ETag that Express — and therefore
+// snyk-broker — puts on a JSON response body, via the `etag` package's
+// default weak algorithm:
+//
+//	W/"<byte length in hex>-<first 27 chars of base64(sha1(body))>"
+//
+// This is not cosmetic. RequestForwardingService.isBrokerUnknownTokenResponse
+// treats a 404 as "wrong server, sweep to the next one" only when the ETag
+// matches as well as the body, so without this header the tunnel's
+// unknown-token response is indistinguishable from a genuine upstream 404 and
+// the dispatcher hands it straight back to the caller instead of retrying
+// elsewhere. Deriving it rather than hardcoding the one known string keeps the
+// two bodies above and their ETags from drifting apart.
+func expressWeakETag(body string) string {
+	sum := sha1.Sum([]byte(body))
+	hash := base64.StdEncoding.EncodeToString(sum[:])
+	if len(hash) > 27 {
+		hash = hash[:27]
+	}
+	return fmt.Sprintf(`W/"%x-%s"`, len(body), hash)
+}
+
+// writeBrokerJSON writes one of snyk-broker's canonical JSON responses with
+// the headers Express would have attached, so the dispatcher cannot tell the
+// two transports apart.
+func writeBrokerJSON(w http.ResponseWriter, status int, body string) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	// Assigned into the map rather than via Set, which would canonicalise the
+	// key to "Etag". Header names are case-insensitive and the dispatcher's
+	// okhttp lookup honours that, so this is belt and braces — but Express
+	// sends "ETag", and anything downstream doing a case-sensitive comparison
+	// should see what it would have seen from snyk-broker.
+	w.Header()["ETag"] = []string{expressWeakETag(body)}
+	w.WriteHeader(status)
+	w.Write([]byte(body))
+}
+
 // getConnectionStatus reports whether a broker token has a registered tunnel client.
 //
 // Reference: https://github.com/snyk/broker/blob/master/lib/hybrid-sdk/server/routesHandlers/connectionStatusHandler.ts
@@ -93,15 +142,12 @@ func (h *HttpAdapter) getConnectionStatus(w http.ResponseWriter, r *http.Request
 	}
 	connected := h.registry.GetIdentity(token) != nil
 
-	w.Header().Set("Content-Type", "application/json")
 	if connected {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"ok":true}`))
+		writeBrokerJSON(w, http.StatusOK, brokerOKTrue)
 		return
 	}
 	w.Header().Set("x-broker-failure", "no-connection")
-	w.WriteHeader(http.StatusNotFound)
-	w.Write([]byte(`{"ok":false}`))
+	writeBrokerJSON(w, http.StatusNotFound, brokerOKFalse)
 }
 
 // handleBrokerDispatch handles HTTP requests at /broker/<token>/<path>,
@@ -173,7 +219,7 @@ func (h *HttpAdapter) handleBrokerDispatch(w http.ResponseWriter, r *http.Reques
 	start := time.Now()
 	resp, err := h.dispatcher.Dispatch(ctx, token, req)
 	if err != nil {
-		h.writeDispatchError(w, err)
+		h.writeDispatchError(w, err, token)
 		return
 	}
 	defer resp.Body.Close()
@@ -230,7 +276,7 @@ func (h *HttpAdapter) handleBrokerDispatch(w http.ResponseWriter, r *http.Reques
 }
 
 // writeDispatchError maps Dispatch errors to HTTP responses.
-func (h *HttpAdapter) writeDispatchError(w http.ResponseWriter, err error) {
+func (h *HttpAdapter) writeDispatchError(w http.ResponseWriter, err error, token broker.Token) {
 	h.metrics.DispatchErrors.Inc(1)
 
 	var cancelErr *dispatch.CancelError
@@ -243,8 +289,22 @@ func (h *HttpAdapter) writeDispatchError(w http.ResponseWriter, err error) {
 		writeFailedDispatch(w, h.logger, status, cancelErr.Reason)
 
 	case errors.Is(err, dispatch.ErrNoTunnel):
-		h.logger.Warn("No tunnel available for token")
-		http.Error(w, "no tunnel available", http.StatusBadGateway)
+		// This server holds no stream for the token, which is exactly the
+		// case snyk-broker answers with its unknown-token 404 — and the only
+		// response the dispatcher will retry against another instance. A 502
+		// here reads as "the upstream failed", so the dispatcher returned it
+		// to the caller and the request died on whichever instance it landed
+		// on, even with a healthy instance one entry further down the list.
+		//
+		// Routine rather than exceptional: it is how a caller gets moved off
+		// an instance that has lost its streams, so it is logged at debug —
+		// the same level the dispatcher logs the resulting 404 at — and the
+		// token is included, because with several agents per server the
+		// message is useless without knowing which one missed.
+		h.logger.Debug("No tunnel available for token; answering unknown-token 404",
+			zap.String("token", token.Hashed()),
+		)
+		writeBrokerJSON(w, http.StatusNotFound, brokerOKFalse)
 
 	case errors.Is(err, context.DeadlineExceeded):
 		http.Error(w, "gateway timeout", http.StatusGatewayTimeout)
