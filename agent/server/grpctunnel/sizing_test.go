@@ -1,6 +1,8 @@
 package grpctunnel
 
 import (
+	"sort"
+	"sync"
 	"testing"
 	"time"
 
@@ -21,21 +23,62 @@ func newSizingClient(t *testing.T) *tunnelClient {
 }
 
 // seedStreams gives the client n connected streams spread over the named
-// servers, round-robin, the way the balancer places them.
+// servers, round-robin, the way the balancer places them. They are seeded
+// quiet — connected, but with no call inside the window — because that is what
+// "the agent has n streams" means to sizing now. Use markUsed to say that some
+// of them have carried traffic.
 func seedStreams(tc *tunnelClient, n int, servers ...string) {
 	if len(servers) == 0 {
 		servers = []string{"srv-a"}
 	}
+	quiet := time.Now().Add(-10 * streamIdleWindow).UnixNano()
 	tc.mu.Lock()
 	tc.streams = make(map[*tunnelStream]struct{})
 	for i := 0; i < n; i++ {
 		ts := &tunnelStream{id: i, cancel: func() {}, serverID: servers[i%len(servers)]}
-		ts.lastCallAt.Store(time.Now().UnixNano())
+		ts.lastCallAt.Store(quiet)
 		tc.streams[ts] = struct{}{}
 	}
 	tc.runningWorkers = n
 	tc.mu.Unlock()
 	tc.refreshObservedServers()
+}
+
+// markUsed says that n of the client's streams have just carried a call, which
+// is the signal sizing actually reads. It marks the most recently used streams
+// first, because that is how the work lands: the server hands each call to the
+// newest idle stream it has, so repeated traffic reuses the same ones instead
+// of touching a different stream every time. Returns how many it could mark.
+func markUsed(tc *tunnelClient, n int) int {
+	now := time.Now().UnixNano()
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+
+	hottest := make([]*tunnelStream, 0, len(tc.streams))
+	for st := range tc.streams {
+		hottest = append(hottest, st)
+	}
+	sort.Slice(hottest, func(i, j int) bool {
+		return hottest[i].lastCallAt.Load() > hottest[j].lastCallAt.Load()
+	})
+	if n > len(hottest) {
+		n = len(hottest)
+	}
+	for _, st := range hottest[:n] {
+		st.lastCallAt.Store(now)
+	}
+	return n
+}
+
+// goQuiet backdates every stream past the window, standing in for traffic
+// stopping and streamIdleWindow elapsing.
+func goQuiet(tc *tunnelClient) {
+	quiet := time.Now().Add(-10 * streamIdleWindow).UnixNano()
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+	for st := range tc.streams {
+		st.lastCallAt.Store(quiet)
+	}
 }
 
 func TestSizing_HoldsTheReserveWhenIdle(t *testing.T) {
@@ -50,9 +93,9 @@ func TestSizing_HoldsTheReserveWhenIdle(t *testing.T) {
 
 func TestSizing_OpensAStreamPerCallOnTopOfTheReserve(t *testing.T) {
 	tc := newSizingClient(t)
-	seedStreams(tc, 2, "srv-a")
+	seedStreams(tc, 5, "srv-a")
+	require.Equal(t, 5, markUsed(tc, 5))
 
-	tc.busySlots.Store(5)
 	tc.resize()
 
 	// 5 in flight + 2 reserve. The reserve stays whole under load; that is
@@ -60,27 +103,80 @@ func TestSizing_OpensAStreamPerCallOnTopOfTheReserve(t *testing.T) {
 	assert.Equal(t, int32(7), tc.targetSlots.Load())
 }
 
-func TestSizing_GivesStreamsBackAsCallsFinish(t *testing.T) {
+func TestSizing_GivesStreamsBackOnceTheBurstHasAged(t *testing.T) {
 	tc := newSizingClient(t)
 	seedStreams(tc, 20, "srv-a")
 
-	tc.busySlots.Store(18)
+	require.Equal(t, 18, markUsed(tc, 18))
 	tc.resize()
 	require.Equal(t, int32(20), tc.targetSlots.Load())
 
-	// The burst passes.
-	tc.busySlots.Store(0)
+	// The burst passes. The streams it needed are kept, because reopening one
+	// costs a round trip and a dispatcher notification and the next request is
+	// probably seconds away.
+	tc.resize()
+	assert.Equal(t, int32(20), tc.targetSlots.Load(),
+		"the streams that served the burst are still inside the window")
+
+	// Once they fall out of it, the target drops straight to the reserve.
+	goQuiet(tc)
+	tc.resize()
+	assert.Equal(t, int32(idleStreamsPerServer), tc.targetSlots.Load())
+}
+
+// The regression this whole asymmetry exists for. Sizing on instantaneous
+// busy meant one stream opened and one retired per call: in staging, 349
+// opens and 316 closes in forty minutes at a few requests a minute, each open
+// paying a round trip and making the server notify the dispatcher, which
+// writes redis — for a stream thrown away seconds later.
+func TestSizing_DoesNotOpenAndRetireAStreamPerCall(t *testing.T) {
+	tc := newSizingClient(t)
+	seedStreams(tc, 4, "srv-a")
+
+	tc.resize()
+	require.Equal(t, int32(idleStreamsPerServer), tc.targetSlots.Load(),
+		"quiet to start with")
+
+	// One call arrives and finishes, repeatedly, the way ordinary traffic does.
+	// Each lands on the stream the last one used, so only that stream is ever
+	// warm and the target must not move after the first.
+	var targets []int32
+	for i := 0; i < 5; i++ {
+		require.Equal(t, 1, markUsed(tc, 1))
+		tc.resize()
+		targets = append(targets, tc.targetSlots.Load())
+
+		// The completion resize, which used to be the one that gave a stream
+		// back and made the next call reopen it.
+		tc.resize()
+		targets = append(targets, tc.targetSlots.Load())
+	}
+
+	// The first call raises the target once. Nothing after that moves it, so
+	// the stream opened for the first call serves all five.
+	for i, got := range targets {
+		assert.Equal(t, int32(1+idleStreamsPerServer), got,
+			"target moved at step %d (%v); every change here is a stream opened or closed", i, targets)
+	}
+}
+
+func TestSizing_GrowthIsStillImmediate(t *testing.T) {
+	tc := newSizingClient(t)
+	seedStreams(tc, 9, "srv-a")
 	tc.resize()
 
-	assert.Equal(t, int32(idleStreamsPerServer), tc.targetSlots.Load(),
-		"converges straight back to the reserve, not gradually")
+	// The window applies to giving streams back, never to needing them: a
+	// caller must not wait on the sizing tick that follows the next one.
+	require.Equal(t, 9, markUsed(tc, 9))
+	tc.resize()
+
+	assert.Equal(t, int32(9+idleStreamsPerServer), tc.targetSlots.Load())
 }
 
 func TestSizing_NeverBelowTheReserve(t *testing.T) {
 	tc := newSizingClient(t)
 	seedStreams(tc, 1, "srv-a")
 
-	tc.busySlots.Store(0)
 	tc.resize()
 
 	assert.Equal(t, int32(idleStreamsPerServer), tc.targetSlots.Load())
@@ -90,9 +186,9 @@ func TestSizing_NeverBelowTheReserve(t *testing.T) {
 // idle streams, and the server's dispatch turns that into caller latency.
 func TestSizing_StopsAtTheStreamCap(t *testing.T) {
 	tc := newSizingClient(t)
-	seedStreams(tc, 4, "srv-a")
+	seedStreams(tc, maxStreams*2, "srv-a")
+	require.Equal(t, maxStreams*2, markUsed(tc, maxStreams*2))
 
-	tc.busySlots.Store(maxStreams * 2)
 	tc.resize()
 
 	assert.Equal(t, int32(maxStreams), tc.targetSlots.Load())
@@ -100,10 +196,10 @@ func TestSizing_StopsAtTheStreamCap(t *testing.T) {
 
 func TestSizing_RespectsTheServerAnnouncedCap(t *testing.T) {
 	tc := newSizingClient(t)
-	seedStreams(tc, 4, "srv-a")
+	seedStreams(tc, 50, "srv-a")
 	tc.serverMaxStreams.Store(6)
+	require.Equal(t, 50, markUsed(tc, 50))
 
-	tc.busySlots.Store(50)
 	tc.resize()
 
 	assert.Equal(t, int32(6), tc.targetSlots.Load())
@@ -119,7 +215,6 @@ func TestSizing_ServerCapBeatsTheIdleReserve(t *testing.T) {
 	require.Equal(t, 3*idleStreamsPerServer, tc.idleReserve())
 
 	tc.serverMaxStreams.Store(2)
-	tc.busySlots.Store(0)
 	tc.resize()
 
 	assert.Equal(t, int32(2), tc.targetSlots.Load(),
@@ -276,8 +371,8 @@ func TestRetireExcess_NoopWhenAtTarget(t *testing.T) {
 func TestHandleTokenCap_RecordsTheEnforcedCeiling(t *testing.T) {
 	tc := newSizingClient(t)
 	seedStreams(tc, 5, "srv-a")
+	require.Equal(t, 5, markUsed(tc, 5))
 
-	tc.busySlots.Store(20)
 	tc.handleTokenCap(1)
 
 	assert.Equal(t, int32(5), tc.serverMaxStreams.Load(),
@@ -363,8 +458,10 @@ func TestRetireExcess_SparesAnchors(t *testing.T) {
 			anchor:   anchor,
 			cancel:   func() { cancelled[name] = true },
 		}
-		// Idle for longer than a tick, so retirement is otherwise eligible.
-		ts.lastCallAt.Store(time.Now().Add(-2 * sizeInterval).UnixNano())
+		// Quiet for longer than the idle window, so retirement is otherwise
+		// eligible: past a tick is only the safety threshold now, and a stream
+		// used inside the window is wanted regardless.
+		ts.lastCallAt.Store(time.Now().Add(-2 * streamIdleWindow).UnixNano())
 		return ts
 	}
 
@@ -383,4 +480,121 @@ func TestRetireExcess_SparesAnchors(t *testing.T) {
 	assert.True(t, cancelled["elastic"], "the elastic stream retires")
 	assert.False(t, cancelled["anchor-a"], "anchors are not cancellable")
 	assert.False(t, cancelled["anchor-b"], "anchors are not cancellable")
+}
+
+// seedRetirable places one stream per entry in placement, all quiet for longer
+// than the idle window so they are candidates, and returns the streams grouped
+// by server plus a reader for which servers lost one.
+func seedRetirable(tc *tunnelClient, placement []string) (map[string][]*tunnelStream, func() map[string]int) {
+	cancelled := map[string]int{}
+	var mu sync.Mutex
+	byServer := map[string][]*tunnelStream{}
+
+	quiet := time.Now().Add(-10 * streamIdleWindow).UnixNano()
+	tc.mu.Lock()
+	tc.streams = make(map[*tunnelStream]struct{})
+	for i, srv := range placement {
+		srv := srv
+		ts := &tunnelStream{id: i + 1, serverID: srv}
+		ts.cancel = func() {
+			mu.Lock()
+			defer mu.Unlock()
+			cancelled[srv]++
+		}
+		ts.lastCallAt.Store(quiet)
+		tc.streams[ts] = struct{}{}
+		byServer[srv] = append(byServer[srv], ts)
+	}
+	tc.runningWorkers = len(placement)
+	tc.mu.Unlock()
+	tc.refreshObservedServers()
+
+	return byServer, func() map[string]int {
+		mu.Lock()
+		defer mu.Unlock()
+		out := map[string]int{}
+		for k, v := range cancelled {
+			out[k] = v
+		}
+		return out
+	}
+}
+
+func useStream(st *tunnelStream) { st.lastCallAt.Store(time.Now().UnixNano()) }
+
+// The surplus is real but it belongs to a particular server. A server
+// dispatches only onto the streams registered with itself, so its own recent
+// traffic is what says how many it needs — and spending an idle server's
+// streams to pay for a busy one's surplus strips coverage from the first while
+// leaving the second exactly as fat as it was.
+func TestRetire_PrunesFromTheServerHoldingTheSurplus(t *testing.T) {
+	tc := newSizingClient(t)
+	placement := make([]string, 0, 9)
+	for i := 0; i < 8; i++ {
+		placement = append(placement, "srv-a")
+	}
+	placement = append(placement, "srv-b")
+	byServer, cancelled := seedRetirable(tc, placement)
+
+	// srv-a has carried one call recently; srv-b has carried none.
+	useStream(byServer["srv-a"][0])
+
+	tc.resize()
+	tc.retireExcess()
+
+	got := cancelled()
+	assert.Equal(t, 5, got["srv-a"],
+		"srv-a sheds to its own recent use plus its share of the reserve")
+	assert.Zero(t, got["srv-b"], "srv-b was not the one holding the surplus")
+}
+
+// Each server keeps its own share of the reserve, so the next call to reach it
+// does not wait on a stream open — and its last stream, which is its entire
+// ability to reach this agent, is never what pays for someone else's idleness.
+func TestRetire_NeverTakesAServerBelowItsOwnReserve(t *testing.T) {
+	tc := newSizingClient(t)
+	placement := []string{"srv-a", "srv-a", "srv-a", "srv-a", "srv-a", "srv-a", "srv-b", "srv-b"}
+	_, cancelled := seedRetirable(tc, placement)
+
+	tc.resize()
+	tc.retireExcess()
+
+	got := cancelled()
+	assert.Equal(t, 4, got["srv-a"], "down to the reserve, not past it")
+	assert.Zero(t, got["srv-b"], "already at its reserve")
+}
+
+// Coverage is a preference, not a veto. A server announcing a per-token cap
+// below what the fleet would otherwise hold must still be obeyed, or every
+// stream past the limit is rejected in a reconnect loop.
+func TestRetire_BreaksCoverageRatherThanSitAboveTheCap(t *testing.T) {
+	tc := newSizingClient(t)
+	_, cancelled := seedRetirable(tc, []string{"srv-a", "srv-b"})
+	tc.serverMaxStreams.Store(1)
+
+	tc.resize()
+	require.Equal(t, int32(1), tc.targetSlots.Load(), "the cap wins over the reserve")
+	tc.retireExcess()
+
+	total := 0
+	for _, n := range cancelled() {
+		total += n
+	}
+	assert.Equal(t, 1, total, "still comes down to the cap, coverage or not")
+}
+
+// A stream that has not finished connecting belongs to no server's budget, so
+// it protects nothing and is the cheapest thing to give up when the cap forces
+// a choice.
+func TestRetire_SpendsUnconnectedStreamsFirst(t *testing.T) {
+	tc := newSizingClient(t)
+	_, cancelled := seedRetirable(tc, []string{"srv-a", ""})
+	tc.serverMaxStreams.Store(1)
+
+	tc.resize()
+	tc.retireExcess()
+
+	got := cancelled()
+	assert.Zero(t, got["srv-a"], "srv-a keeps the stream that reaches it")
+	assert.Equal(t, 1, got[""], "the unconnected stream goes instead")
 }
