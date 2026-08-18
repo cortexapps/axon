@@ -42,7 +42,12 @@ func newProxyDialer(proxyURL *url.URL, logger *zap.Logger) func(ctx context.Cont
 			return nil, err
 		}
 
-		logger.Debug("HTTP CONNECT tunnel established",
+		// Info, and the only proxy line that is: this fires once per real
+		// CONNECT, i.e. once per pooled connection, and it is the evidence
+		// that outbound traffic actually left through the proxy rather than
+		// by some other path. The per-stream line in buildDialOptions says
+		// only that a proxy is configured.
+		logger.Info("gRPC connection dialed through HTTP proxy",
 			zap.String("proxy", proxyURL.Host),
 			zap.String("target", addr),
 		)
