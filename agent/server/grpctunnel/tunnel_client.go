@@ -33,10 +33,18 @@ import (
 )
 
 const (
-	maxChunkSize              = 1024 * 1024
-	maxGrpcMsgSize            = 8 * 1024 * 1024
-	handshakeTimeout          = 30 * time.Second
-	keepaliveInterval         = 20 * time.Second
+	maxChunkSize     = 1024 * 1024
+	maxGrpcMsgSize   = 8 * 1024 * 1024
+	handshakeTimeout = 30 * time.Second
+	// keepaliveInterval is deliberately long. Behind a load balancer the
+	// client's HTTP/2 peer is the load balancer, not the tunnel server, and
+	// its ping policy is not ours to set: GCLB answers pings it considers
+	// too frequent with GOAWAY ENHANCE_YOUR_CALM / too_many_pings and drops
+	// the connection. What that policy actually rate-limits is pings sent
+	// with no DATA frames flowing, and an anchored connection always carries
+	// a stream with heartbeats on it, so these pings are a backstop for a
+	// dead TCP path rather than the liveness mechanism.
+	keepaliveInterval         = 60 * time.Second
 	keepaliveTimeout          = 10 * time.Second
 	minBackoff                = time.Second
 	maxBackoffDuration        = 30 * time.Second
@@ -150,6 +158,10 @@ type tunnelStream struct {
 	serverID string
 	conn     *grpc.ClientConn
 	cancel   context.CancelFunc
+
+	// anchor marks the one stream that holds its pooled connection open.
+	// Anchors are never retired, so retireExcess must not pick them.
+	anchor bool
 
 	// inflight counts calls currently running on this stream — always 0 or
 	// 1, since a stream carries one call at a time. lastCallAt is the
@@ -601,6 +613,28 @@ func (tc *tunnelClient) streamCap() int {
 	return limit
 }
 
+// anchorSlots is how many workers are anchors: one per pooled connection,
+// bounded by whatever stream cap is in force.
+//
+// An anchor exists so its connection is never left carrying zero streams.
+// That matters for two reasons that turn out to be the same reason. The
+// dispatcher learns a server holds this token from the first stream to
+// register and forgets it when the last one closes, so a connection that
+// empties deregisters the agent from that server — with nothing wrong on
+// either end. And a connection with no streams has no heartbeats, so its
+// keepalive pings are pings with no data, which is the kind a load balancer
+// answers with GOAWAY. Holding one stream per connection removes both.
+func (tc *tunnelClient) anchorSlots() int {
+	if tc.pool == nil {
+		return 0
+	}
+	n := tc.pool.size()
+	if limit := tc.streamCap(); n > limit {
+		n = limit
+	}
+	return n
+}
+
 // resize is the entire sizing rule: hold enough streams for the calls in
 // flight, plus the idle reserve, bounded by the cap.
 //
@@ -612,9 +646,17 @@ func (tc *tunnelClient) resize() {
 	// no separate floor, and none that could override the cap below.
 	desired := int(tc.busySlots.Load()) + tc.idleReserve()
 
+	// Never ask for fewer streams than there are connections to anchor.
+	// Without this the target can sit below the anchor count, and every
+	// tick retireExcess would try to cancel streams that refuse to retire.
+	if anchors := tc.anchorSlots(); desired < anchors {
+		desired = anchors
+	}
+
 	// The cap is clamped last so it always wins. A server announcing a cap
 	// lower than our reserve must still be obeyed, or every stream past its
-	// limit is rejected in a loop.
+	// limit is rejected in a loop. anchorSlots is already bounded by the
+	// same cap, so the floor above cannot survive it.
 	if limit := tc.streamCap(); desired > limit {
 		desired = limit
 	}
@@ -647,7 +689,12 @@ func (tc *tunnelClient) ensureWorkers() {
 // tryRetireWorker reports whether the calling worker should exit because the
 // live worker count exceeds the target; it deregisters the worker when
 // retiring.
-func (tc *tunnelClient) tryRetireWorker() bool {
+func (tc *tunnelClient) tryRetireWorker(id int) bool {
+	// Anchors outlive every sizing decision. Worker ids 1..N map onto pool
+	// connections 0..N-1 exactly, so the first N workers are the anchors.
+	if id <= tc.anchorSlots() {
+		return false
+	}
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
 	if tc.runningWorkers > int(tc.targetSlots.Load()) {
@@ -702,6 +749,9 @@ func (tc *tunnelClient) retireExcess() {
 		if len(doomed) >= excess {
 			break
 		}
+		if s.anchor {
+			continue
+		}
 		if s.inflight.Load() == 0 && s.lastCallAt.Load() < cutoff {
 			doomed = append(doomed, s)
 		}
@@ -720,7 +770,7 @@ func (tc *tunnelClient) manageStream(id int) {
 	first := true
 
 	for tc.running.Load() && tc.parentCtx.Err() == nil {
-		if tc.tryRetireWorker() {
+		if tc.tryRetireWorker(id) {
 			tc.logger.Debug("Tunnel slot retired", zap.Int("slot", id))
 			return
 		}
@@ -748,7 +798,7 @@ func (tc *tunnelClient) manageStream(id int) {
 
 		// A stream cancelled by retireExcess ends with a Canceled error;
 		// retire quietly instead of logging a reconnect warning.
-		if tc.tryRetireWorker() {
+		if tc.tryRetireWorker(id) {
 			tc.logger.Debug("Tunnel slot retired", zap.Int("slot", id))
 			return
 		}
@@ -921,6 +971,7 @@ func (tc *tunnelClient) openSlot(id int) (*streamCtx, error) {
 		serverID: serverHello.ServerId,
 		conn:     conn,
 		cancel:   cancel,
+		anchor:   id <= tc.anchorSlots(),
 	}
 	ts.lastCallAt.Store(time.Now().UnixNano())
 
@@ -1080,9 +1131,13 @@ func (tc *tunnelClient) buildDialOptions(targetAddr string) ([]grpc.DialOption, 
 	opts := []grpc.DialOption{
 		grpc.WithTransportCredentials(creds),
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
-			Time:                keepaliveInterval,
-			Timeout:             keepaliveTimeout,
-			PermitWithoutStream: true,
+			Time:    keepaliveInterval,
+			Timeout: keepaliveTimeout,
+			// Never ping a connection with no streams on it. Such a ping is
+			// exactly the "ping without data" a load balancer punishes, and
+			// with an anchor per connection there is no streamless
+			// connection worth keeping alive anyway.
+			PermitWithoutStream: false,
 		}),
 		grpc.WithDefaultCallOptions(
 			grpc.MaxCallRecvMsgSize(maxGrpcMsgSize),
@@ -1094,7 +1149,11 @@ func (tc *tunnelClient) buildDialOptions(targetAddr string) ([]grpc.DialOption, 
 
 	dialAddr := targetAddr
 	if proxyURL := proxyURLFromEnv(targetAddr, tc.config.GrpcInsecure); proxyURL != nil {
-		tc.logger.Info("Using HTTP proxy for gRPC connection",
+		// Debug, not Info: this runs on every stream open, while the pool
+		// usually hands back a connection that is already up. At Info it
+		// reads as "a new proxy connection was just made", which is false
+		// almost every time it prints. newProxyDialer logs the real dials.
+		tc.logger.Debug("Using HTTP proxy for gRPC connection",
 			zap.String("proxy", proxyURL.Host),
 			zap.String("target", targetAddr),
 		)
