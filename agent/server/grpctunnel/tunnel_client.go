@@ -9,6 +9,7 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -68,6 +69,20 @@ const (
 
 	// sizeInterval is how often the stream count is re-evaluated.
 	sizeInterval = time.Second
+
+	// streamIdleWindow is how long a stream may go without carrying a call
+	// before it counts as surplus. A stream that has carried one inside the
+	// window is kept, whether or not it is busy right now.
+	//
+	// It exists because a stream costs more to open than to hold: the open is
+	// a round trip, and it makes the server notify the dispatcher, which
+	// writes redis. Sizing on instantaneous concurrency meant one open and one
+	// close per call — in staging, 349 opens and 316 closes in forty minutes
+	// at a few requests a minute, each paying that cost for a stream thrown
+	// away seconds later. A minute is long enough that ordinary traffic reuses
+	// a stream instead of reopening it, and short enough that a burst does not
+	// pin capacity for the rest of the day.
+	streamIdleWindow = time.Minute
 )
 
 var errPoolClosed = errors.New("connection pool closed")
@@ -636,16 +651,24 @@ func (tc *tunnelClient) anchorSlots() int {
 	return n
 }
 
-// resize is the entire sizing rule: hold enough streams for the calls in
-// flight, plus the idle reserve, bounded by the cap.
+// resize is the sizing rule: hold a stream for every stream that has carried
+// a call inside streamIdleWindow, plus the idle reserve, bounded by the cap.
 //
-// Growth and shrink both fall out of it, so there is no watermark, no growth
-// step and no cooldown to tune. A stream exists because a call needs one or
-// because the reserve wants one ready; nothing else opens or closes them.
+// Growth is immediate — a call sets its stream's timestamp as it starts, and
+// resize runs at admission, so the tick that sees the load opens the streams
+// and the reserve is never what a caller waits on. Shrink is what waits, and
+// it waits on the streams themselves rather than on a global counter: sizing
+// both directions on instantaneous concurrency meant every call raised the
+// target and every completion lowered it, so a stream was opened and retired
+// per request.
+//
+// Recency subsumes concurrency, which is why busySlots does not appear here:
+// a call stamps lastCallAt when it starts, so a stream carrying one is inside
+// the window by definition. One signal, living on the thing it describes.
 func (tc *tunnelClient) resize() {
-	// busySlots is never negative, so this is already at least the reserve —
+	// usedWithin is never negative, so this is already at least the reserve —
 	// no separate floor, and none that could override the cap below.
-	desired := int(tc.busySlots.Load()) + tc.idleReserve()
+	desired := tc.usedWithin(streamIdleWindow) + tc.idleReserve()
 
 	// Never ask for fewer streams than there are connections to anchor.
 	// Without this the target can sit below the anchor count, and every
@@ -667,6 +690,23 @@ func (tc *tunnelClient) resize() {
 
 	tc.targetSlots.Store(int32(desired))
 	tc.ensureWorkers()
+}
+
+// usedWithin counts the streams that carried a call inside the window, or are
+// carrying one now. Takes mu and releases it before returning, so callers may
+// go on to take it again.
+func (tc *tunnelClient) usedWithin(window time.Duration) int {
+	cutoff := time.Now().Add(-window).UnixNano()
+
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+	n := 0
+	for st := range tc.streams {
+		if st.inflight.Load() != 0 || st.lastCallAt.Load() >= cutoff {
+			n++
+		}
+	}
+	return n
 }
 
 // ensureWorkers spawns stream workers until the live worker count meets
@@ -741,27 +781,134 @@ func (tc *tunnelClient) sizeLoop() {
 // narrow in which the server dispatches onto a stream we are cancelling; the
 // dispatcher fails such a call back to its caller.
 func (tc *tunnelClient) retireExcess() {
-	cutoff := time.Now().Add(-sizeInterval).UnixNano()
+	now := time.Now()
+	staleBefore := now.Add(-streamIdleWindow).UnixNano()
+	// A prunable stream must also have been quiet for a full tick, which keeps
+	// narrow the window in which the server dispatches onto a stream we are
+	// cancelling; the dispatcher fails such a call back to its caller.
+	cutoff := now.Add(-sizeInterval).UnixNano()
 
 	tc.mu.Lock()
-	excess := tc.runningWorkers - int(tc.targetSlots.Load())
-	var doomed []*tunnelStream
-	for s := range tc.streams {
-		if len(doomed) >= excess {
-			break
+
+	// Grouped by server, because that is the unit the decision belongs to. A
+	// server dispatches only onto the streams registered with itself, so its
+	// own recent traffic says how many it needs, and its last stream is its
+	// entire ability to reach this agent — retire that and the server
+	// deregisters the token and answers "no tunnel available" for everything
+	// the dispatcher sends there until a stream lands back on it.
+	//
+	// Judging the fleet in aggregate cannot see either fact. The surplus is
+	// real, but it belongs to whichever server has been busy, and spending it
+	// from an idle server strips that server's coverage while leaving the busy
+	// one fat.
+	groups := make(map[string]*serverStreams, len(tc.streams))
+	for st := range tc.streams {
+		g := groups[st.serverID]
+		if g == nil {
+			g = &serverStreams{}
+			groups[st.serverID] = g
 		}
-		if s.anchor {
+		switch {
+		case st.inflight.Load() != 0 || st.lastCallAt.Load() >= staleBefore:
+			g.used++
+		case st.anchor || st.lastCallAt.Load() >= cutoff:
+			g.pinned++
+		default:
+			g.prunable = append(g.prunable, st)
+		}
+	}
+
+	var doomed []*tunnelStream
+	for serverID, g := range groups {
+		sortStalestFirst(g.prunable)
+
+		// Streams with no server yet belong to no server's budget. Leave them
+		// to the connect path; they are only spent below, if the cap forces it.
+		if serverID == "" {
 			continue
 		}
-		if s.inflight.Load() == 0 && s.lastCallAt.Load() < cutoff {
-			doomed = append(doomed, s)
+
+		// What this server needs: what it used, plus its share of the reserve
+		// so the next call does not wait on an open. Never below one, which is
+		// what keeps it able to reach us at all.
+		keep := g.used + idleStreamsPerServer
+		if keep < 1 {
+			keep = 1
+		}
+		prune := g.used + g.pinned + len(g.prunable) - keep
+		if prune > len(g.prunable) {
+			prune = len(g.prunable)
+		}
+		for i := 0; i < prune; i++ {
+			doomed = append(doomed, g.prunable[i])
+			g.prunable[i] = nil
+		}
+	}
+
+	// The cap is the one thing allowed to break coverage: a server announcing
+	// a per-token limit below what the fleet would otherwise hold must still be
+	// obeyed, or every stream past it is rejected in a loop. Unassigned streams
+	// go first — they cost no coverage — then the stalest anywhere.
+	if over := tc.runningWorkers - len(doomed) - int(tc.targetSlots.Load()); over > 0 {
+		var assigned []*tunnelStream
+		for serverID, g := range groups {
+			if serverID == "" {
+				continue
+			}
+			for _, st := range g.prunable {
+				if st != nil {
+					assigned = append(assigned, st)
+				}
+			}
+		}
+		sortStalestFirst(assigned)
+
+		// Unassigned first whatever their age, then the stalest of the rest.
+		rest := groups[""].prunableOrNil()
+		rest = append(rest, assigned...)
+		for i := 0; i < len(rest) && over > 0; i++ {
+			doomed = append(doomed, rest[i])
+			over--
 		}
 	}
 	tc.mu.Unlock()
 
-	for _, s := range doomed {
-		s.cancel()
+	for _, st := range doomed {
+		st.cancel()
 	}
+}
+
+// prunableOrNil returns the group's prunable streams, tolerating a group that
+// does not exist — there may be no unassigned streams at all.
+func (g *serverStreams) prunableOrNil() []*tunnelStream {
+	if g == nil {
+		return nil
+	}
+	out := make([]*tunnelStream, 0, len(g.prunable))
+	for _, st := range g.prunable {
+		if st != nil {
+			out = append(out, st)
+		}
+	}
+	return out
+}
+
+// serverStreams buckets one server's streams by what may be done with them.
+type serverStreams struct {
+	used     int             // carried a call inside the window
+	pinned   int             // anchors, and streams quiet for under a tick
+	prunable []*tunnelStream // the rest, stalest first once sorted
+}
+
+// sortStalestFirst orders streams by how long they have been quiet, longest
+// first, so pruning spends the least useful stream a server has. This is what
+// makes the gradient usable: the server hands work to the most recently used
+// idle stream it has, so the ones at this end of the order are the ones its
+// traffic has stopped reaching for.
+func sortStalestFirst(streams []*tunnelStream) {
+	sort.Slice(streams, func(i, j int) bool {
+		return streams[i].lastCallAt.Load() < streams[j].lastCallAt.Load()
+	})
 }
 
 func (tc *tunnelClient) manageStream(id int) {
