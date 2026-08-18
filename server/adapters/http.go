@@ -58,6 +58,14 @@ func NewHttpAdapter(
 		dispatchTimeout: cfg.DispatchTimeout,
 	}
 	h.mux = http.NewServeMux()
+	// The dispatcher asks at the root: ClientConnectivityService.checkBroker
+	// builds http://{hostPort}/connection-status/{rawToken}, and treats any
+	// non-200 as "this client is not connected here". Serving it only under
+	// /broker/ meant every liveness check 404'd, so verifyClientLiveness and
+	// bootstrapServerIndex removed this server from the token's index no
+	// matter how many clients it was holding. snyk-broker serves the root
+	// path; matching it is what makes the two transports interchangeable.
+	h.mux.HandleFunc("GET /connection-status/{token}", h.getConnectionStatus)
 	h.mux.HandleFunc("GET /broker/connection-status/{token}", h.getConnectionStatus)
 	h.mux.HandleFunc("/broker/", h.handleBrokerDispatch)
 	return h

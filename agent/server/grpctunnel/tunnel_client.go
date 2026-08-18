@@ -768,6 +768,9 @@ func (tc *tunnelClient) manageStream(id int) {
 
 	backoff := minBackoff
 	first := true
+	// Set once a stream has failed, so the reconnection that follows says so
+	// and then goes quiet again.
+	recovering := false
 
 	for tc.running.Load() && tc.parentCtx.Err() == nil {
 		if tc.tryRetireWorker(id) {
@@ -788,7 +791,8 @@ func (tc *tunnelClient) manageStream(id int) {
 		}
 		first = false
 
-		err := tc.runOneStream(id)
+		err := tc.runOneStream(id, recovering)
+		recovering = false
 		if err == nil || tc.parentCtx.Err() != nil {
 			// Clean shutdown or no error path (shouldn't really happen — runOneStream
 			// returns an error whenever the stream ends).
@@ -833,6 +837,7 @@ func (tc *tunnelClient) manageStream(id int) {
 			tc.consecFailures.Store(0)
 		}
 
+		recovering = true
 		tc.logger.Warn("Tunnel slot stream ended; will retry",
 			zap.Int("slot", id), zap.Error(err), zap.Duration("nextBackoff", backoff))
 	}
@@ -861,8 +866,8 @@ func (tc *tunnelClient) handleTokenCap(id int) {
 // runOneStream opens a stream on a pooled connection, handshakes, and runs
 // streamLoop until the stream ends. Returns the terminating error (or nil on
 // clean shutdown).
-func (tc *tunnelClient) runOneStream(id int) error {
-	sc, err := tc.openSlot(id)
+func (tc *tunnelClient) runOneStream(id int, recovering bool) error {
+	sc, err := tc.openSlot(id, recovering)
 	if err != nil {
 		return err
 	}
@@ -881,7 +886,7 @@ func (tc *tunnelClient) runOneStream(id int) error {
 
 // openSlot borrows a pooled connection, opens a stream on it and performs
 // the gRPC handshake.
-func (tc *tunnelClient) openSlot(id int) (*streamCtx, error) {
+func (tc *tunnelClient) openSlot(id int, recovering bool) (*streamCtx, error) {
 	token, serverAddr := tc.getCurrentConfig()
 	if token == "" || serverAddr == "" {
 		return nil, newConnectErr("config", errors.New("no registration token/address"))
@@ -976,7 +981,18 @@ func (tc *tunnelClient) openSlot(id int) (*streamCtx, error) {
 	ts.lastCallAt.Store(time.Now().UnixNano())
 
 	tc.connectionsActive.WithLabelValues(ts.serverID).Inc()
-	tc.logger.Info("Tunnel stream established",
+
+	// Opening a stream is routine — the sizing rule does it whenever a call
+	// needs one — so at Info it is pure noise. Coming back after a failure
+	// is not routine: it is the other half of the warning that was already
+	// logged, and without it the warning has no visible end.
+	log := tc.logger.Debug
+	logMsg := "Tunnel stream established"
+	if recovering {
+		log = tc.logger.Info
+		logMsg = "Tunnel stream re-established after failure"
+	}
+	log(logMsg,
 		zap.String("streamId", ts.streamID),
 		zap.String("serverId", ts.serverID),
 		zap.Int32("heartbeatIntervalMs", serverHello.HeartbeatIntervalMs),
