@@ -113,7 +113,11 @@ func (s *Service) Tunnel(stream pb.TunnelService_TunnelServer) error {
 		InstanceID:  hello.InstanceId,
 	}
 
-	s.logger.Info("Client connecting",
+	// Debug, not Info: a stream opens whenever a call needs one, so at Info
+	// this is the loudest line in the service and says nothing an operator
+	// acts on. The transition worth seeing is the token gaining or losing
+	// connectivity here, which ClientRegistry logs at Info.
+	s.logger.Debug("Client connecting",
 		zap.String("tenantId", identity.TenantID),
 		zap.String("integration", identity.Integration),
 		zap.String("alias", identity.Alias),
@@ -331,7 +335,9 @@ func (s *Service) notifyClientConnected(ctx context.Context, token broker.Token,
 		})
 		if err == nil {
 			s.registry.SetBrokerServerRegistered(token)
-			s.logger.Info("BROKER_SERVER client-connected succeeded",
+			// One per stream open, so Debug for the same reason as "Client
+			// connecting" above. A failure to notify is still logged loudly below.
+			s.logger.Debug("BROKER_SERVER client-connected succeeded",
 				zap.String("clientId", clientID),
 			)
 			return
