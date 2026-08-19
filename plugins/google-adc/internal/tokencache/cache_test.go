@@ -24,10 +24,9 @@ const (
 	oneHour         = time.Hour
 )
 
-// childEnv switches the test binary into the helper mode used by the
-// cross-process tests. A subprocess is the only way to exercise flock: two
-// goroutines share a file descriptor table, so an in-process test would pass even
-// with no locking at all.
+// Switch the test binary into the helper mode the cross-process tests use. A
+// subprocess is the only way to exercise flock: two goroutines share a file
+// descriptor table, so an in-process test would pass with no locking at all.
 const (
 	childEnv     = "TOKENCACHE_TEST_CHILD_DIR"
 	childCounter = "TOKENCACHE_TEST_CHILD_COUNTER"
@@ -42,8 +41,8 @@ func TestMain(m *testing.M) {
 }
 
 // runChild performs one GetOrMint and prints the value, recording the mint by
-// appending a byte to a shared file. A single O_APPEND write of one byte is
-// atomic, so the file length is an exact count of mints across processes.
+// appending one byte to a shared file. A single O_APPEND write of one byte is
+// atomic, so the file length counts mints across processes exactly.
 func runChild(dir string) int {
 	counter := os.Getenv(childCounter)
 	delay, _ := time.ParseDuration(os.Getenv(childDelay))
@@ -63,8 +62,8 @@ func runChild(dir string) int {
 		if _, err := file.Write([]byte{'x'}); err != nil {
 			return "", time.Time{}, err
 		}
-		// Held long enough that the other processes are certainly waiting on the
-		// lock rather than finishing before they contend.
+		// Long enough that the other processes are waiting on the lock rather than
+		// finishing before they contend.
 		time.Sleep(delay)
 		return "Bearer minted-by-a-child", time.Now().Add(oneHour), nil
 	})
@@ -108,8 +107,7 @@ func TestSecondCallIsServedFromCache(t *testing.T) {
 	require.Equal(t, int32(1), calls.Load())
 }
 
-// The property that motivates the whole package: the value outlives the process
-// that minted it, so a later one finds it. A fresh Cache over the same directory
+// The property that motivates the package. A fresh Cache over the same directory
 // stands in for the next subprocess.
 func TestValueSurvivesTheProcessThatMintedIt(t *testing.T) {
 	dir := t.TempDir()
@@ -125,9 +123,8 @@ func TestValueSurvivesTheProcessThatMintedIt(t *testing.T) {
 	require.Equal(t, int32(1), calls.Load(), "the second cache minted again instead of reading the file")
 }
 
-// A token inside the refresh margin is still valid, and is deliberately not
-// served: the margin exists so the caller never receives one that expires while
-// the upstream request is in flight.
+// A token inside the margin is still valid, and is deliberately not served: the
+// margin exists so the caller never receives one that expires mid-request.
 func TestValueInsideTheRefreshMarginIsNotServed(t *testing.T) {
 	cache := newTestCache(t, t.TempDir())
 
@@ -144,7 +141,6 @@ func TestValueInsideTheRefreshMarginIsNotServed(t *testing.T) {
 	require.Equal(t, int32(1), calls.Load())
 }
 
-// Just outside the margin is served, which is what keeps the mint rate down.
 func TestValueOutsideTheRefreshMarginIsServed(t *testing.T) {
 	cache := newTestCache(t, t.TempDir())
 
@@ -164,9 +160,8 @@ func TestValueOutsideTheRefreshMarginIsServed(t *testing.T) {
 	require.Equal(t, int32(0), calls.Load())
 }
 
-// A cache written for one identity must never be served for another. Without the
-// fingerprint check, changing GOOGLE_APPLICATION_CREDENTIALS would keep using the
-// previous identity until its token expired, and the symptom would be an IAM
+// Without the fingerprint check, changing GOOGLE_APPLICATION_CREDENTIALS would
+// keep using the previous identity until its token expired, and present as an IAM
 // error on a service account nobody thought was in play.
 func TestADifferentIdentityDoesNotReadTheSameCache(t *testing.T) {
 	dir := t.TempDir()
@@ -190,9 +185,8 @@ func TestADifferentIdentityDoesNotReadTheSameCache(t *testing.T) {
 		"two identities sharing one path would rewrite each other's cache on every request")
 }
 
-// A credential with no stated expiry is not written at all. Persisting one would
-// mean choosing a lifetime the issuer declined to state, and a token on disk with
-// a guessed bound is worse than minting per process.
+// Persisting a credential with no stated expiry would mean choosing a lifetime the
+// issuer declined to state, which is worse than minting per process.
 func TestAValueWithNoExpiryIsNotCached(t *testing.T) {
 	cache := newTestCache(t, t.TempDir())
 	mint, calls := mintOnce("Bearer no-expiry", 0)
@@ -207,8 +201,8 @@ func TestAValueWithNoExpiryIsNotCached(t *testing.T) {
 	require.NoFileExists(t, cache.Path())
 }
 
-// A value already inside the refresh margin is not written. read would reject it,
-// so writing it would leave a credential on disk that nothing can use.
+// read would reject it, so writing it would leave a credential on disk that
+// nothing can use.
 func TestAValueInsideTheMarginIsNotWritten(t *testing.T) {
 	cache := newTestCache(t, t.TempDir())
 
@@ -231,8 +225,8 @@ func TestCorruptCacheIsReplacedRatherThanReported(t *testing.T) {
 	require.Equal(t, "Bearer after-corruption", value)
 	require.Equal(t, int32(1), calls.Load())
 
-	// And the replacement is readable, so one bad file does not poison every
-	// later request.
+	// And the replacement is readable, so one bad file does not poison every later
+	// request.
 	again, err := cache.GetOrMint(context.Background(), mint)
 	require.NoError(t, err)
 	require.Equal(t, "Bearer after-corruption", again)
@@ -260,8 +254,8 @@ func TestCacheFileIsOwnerOnlyAndLeavesNoTemporaries(t *testing.T) {
 	}
 }
 
-// Goroutine-level concurrency. Necessary but not sufficient - see the
-// cross-process test, which is the one that actually exercises the lock.
+// Necessary but not sufficient - TestConcurrentProcessesMintOnce is the one that
+// exercises the lock.
 func TestConcurrentCallersInOneProcessMintOnce(t *testing.T) {
 	cache := newTestCache(t, t.TempDir())
 
@@ -291,10 +285,9 @@ func TestConcurrentCallersInOneProcessMintOnce(t *testing.T) {
 	require.Equal(t, int32(1), calls.Load())
 }
 
-// The reason flock is here. Eight processes start at once on an empty cache; one
-// mints and the rest read what it wrote. Without the lock, or with a
-// truncate-in-place write, this fails - either with eight mints or with a caller
-// that read an empty file.
+// Eight processes start at once on an empty cache; one mints and the rest read
+// what it wrote. Without the lock, or with a truncate-in-place write, this fails
+// with either eight mints or a caller that read an empty file.
 func TestConcurrentProcessesMintOnce(t *testing.T) {
 	dir := t.TempDir()
 	counter := filepath.Join(dir, "mints")
@@ -336,9 +329,8 @@ func TestConcurrentProcessesMintOnce(t *testing.T) {
 		"%d processes minted; the lock did not collapse them into one exchange", len(minted))
 }
 
-// A caller waiting on another process's mint must still honour its own deadline.
-// A blocking flock would not: it cannot be interrupted, so a cancelled request
-// would sit here until the holder finished.
+// A blocking flock cannot be interrupted, so a cancelled request would sit here
+// until the holder finished.
 func TestWaitingForTheLockHonoursTheContext(t *testing.T) {
 	dir := t.TempDir()
 	cache := newTestCache(t, dir)
@@ -355,8 +347,8 @@ func TestWaitingForTheLockHonoursTheContext(t *testing.T) {
 	<-held
 	defer close(release)
 
-	// A second Cache over the same paths contends for the same lock file, which
-	// is what a second process would do.
+	// A second Cache over the same paths contends for the same lock file, as a
+	// second process would.
 	waiter := newTestCache(t, dir)
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
@@ -371,8 +363,8 @@ func TestWaitingForTheLockHonoursTheContext(t *testing.T) {
 }
 
 // MkdirAll succeeds on a directory that already exists whatever its mode, so a
-// cache pointed at a world-writable directory has to be refused rather than
-// assumed private: anything else on the host could pre-create the cache path.
+// world-writable one has to be refused: anything else on the host could
+// pre-create the cache path.
 func TestNewRefusesAWorldWritableDirectory(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.Chmod(dir, 0777))
@@ -390,7 +382,6 @@ func TestNewAcceptsAPrivateDirectory(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// The directory is created when missing, and created private.
 func TestNewCreatesAPrivateDirectory(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "created", "nested")
 
@@ -412,8 +403,8 @@ func TestNewRejectsUnsafePathElements(t *testing.T) {
 	require.Error(t, err)
 }
 
-// The stored form is checked directly, because a later change to it has to stay
-// readable by a running agent that is mid-refresh.
+// A later change to the stored form has to stay readable by a running agent that
+// is mid-refresh.
 func TestStoredEntryShape(t *testing.T) {
 	cache := newTestCache(t, t.TempDir())
 	expiry := time.Now().Add(oneHour).Round(time.Second)

@@ -19,8 +19,7 @@ import (
 	"go.uber.org/zap/zapcore"
 )
 
-// newCapturingLogger returns a logger and a reader over everything it emitted,
-// for the tests that assert a value never appeared in a log line.
+// newCapturingLogger returns a logger and a reader over everything it emitted.
 func newCapturingLogger() (*zap.Logger, func() string) {
 	buf := &syncBuffer{}
 	logger := zap.New(zapcore.NewCore(
@@ -48,8 +47,8 @@ func (b *syncBuffer) contents() string {
 	return b.sb.String()
 }
 
-// The metadata deployment is the ordinary GKE Workload Identity case: no
-// credential file exists, and the token comes from the metadata server.
+// The ordinary GKE Workload Identity case: no credential file, token from the
+// metadata server.
 func TestMetadataPathMintsAToken(t *testing.T) {
 	var mu sync.Mutex
 	var flavor, scopes string
@@ -71,14 +70,11 @@ func TestMetadataPathMintsAToken(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	// Without this header the real metadata server refuses the request, so a
-	// fake that does not check it would pass while production failed.
+	// The real metadata server refuses a request without this header.
 	require.Equal(t, "Google", flavor)
 	require.Equal(t, ScopeCloudPlatform, scopes)
 }
 
-// The whole reason this provider runs in process. If the token were not reused,
-// every relayed request would mint one.
 func TestTokenIsReusedAcrossCalls(t *testing.T) {
 	fakeMetadataServer.install(t, respondWithToken("reused-token", 3600))
 
@@ -94,8 +90,7 @@ func TestTokenIsReusedAcrossCalls(t *testing.T) {
 	require.Equal(t, 1, fakeMetadataServer.mintCount())
 }
 
-// A cold start is the one moment every caller wants a token at once. The library
-// serializes them, so nothing here has to.
+// The library serializes concurrent cold callers, so nothing here has to.
 func TestConcurrentColdCallsMintOnce(t *testing.T) {
 	fakeMetadataServer.install(t, respondWithToken("single-mint-token", 3600))
 
@@ -123,24 +118,15 @@ func TestConcurrentColdCallsMintOnce(t *testing.T) {
 	require.Equal(t, 1, fakeMetadataServer.mintCount())
 }
 
-// Pins two library behaviours the provider relies on and deliberately does not
-// configure: the refresh margin is 225 seconds, and the refresh is
-// asynchronous. A token valid for 200 seconds is inside the margin, so it is
-// due for refresh while still usable - and the caller that triggers the refresh
-// gets the old value straight away rather than waiting for the new one.
-//
-// If a future library version shortened the margin to, say, 10 seconds, the
-// second call here would return the second token and this test would fail. That
-// is the point: the margin is what keeps a refresh from colliding with the
-// 30-second read timeout above this path.
+// Pins two library behaviours the provider relies on and does not configure: a
+// 225-second refresh margin, and an asynchronous refresh. A library version that
+// shortened the margin would fail the second assertion below.
 func TestRefreshMarginIsAsynchronousAndWideEnough(t *testing.T) {
 	var mu sync.Mutex
 	minted := 0
 
-	// The first token is inside the refresh margin, so it is stale on arrival.
-	// The replacement is not, so the provider quiesces once the refresh lands -
-	// which both keeps this test's own background work bounded and lets the
-	// final count prove no refresh was still in flight when it returned.
+	// The first token is stale on arrival, the replacement is not, so the provider
+	// quiesces once the refresh lands.
 	fakeMetadataServer.install(t, func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		minted++
@@ -161,8 +147,7 @@ func TestRefreshMarginIsAsynchronousAndWideEnough(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "Bearer token-a", first)
 
-	// Still token-a: 200 seconds is inside the 225-second margin, so this call
-	// finds the token due for refresh - and gets the old value straight away
+	// Still token-a: the refresh is asynchronous, so this call gets the old value
 	// rather than waiting for the new one.
 	second, err := provider.Execute(context.Background())
 	require.NoError(t, err)
@@ -173,14 +158,11 @@ func TestRefreshMarginIsAsynchronousAndWideEnough(t *testing.T) {
 		return err == nil && value == "Bearer token-b"
 	}, 5*time.Second, 10*time.Millisecond, "the background refresh never replaced the token")
 
-	// Exactly two: the fresh replacement stopped the refreshing, so nothing is
-	// left running to disturb a later test.
 	require.Equal(t, 2, fakeMetadataServer.mintCount())
 }
 
 // Workload identity federation: the customer runs outside GCE, and a credential
-// configuration file names where the exchange happens and where the subject
-// token comes from.
+// configuration file names where the exchange happens.
 func TestExternalFederationExchangesAtTheConfiguredTokenURL(t *testing.T) {
 	var mu sync.Mutex
 	var exchanges int
@@ -219,20 +201,15 @@ func TestExternalFederationExchangesAtTheConfiguredTokenURL(t *testing.T) {
 	require.Equal(t, 1, exchanges)
 	require.True(t, sawSubjectToken, "the subject token from credential_source was not exchanged")
 
-	// The metadata server must not have been consulted: a credential file wins,
-	// and a deployment that silently fell back to the node identity would be
-	// using the wrong identity entirely.
+	// A credential file wins over the metadata server. Falling back to the node
+	// identity would use the wrong identity entirely.
 	require.Equal(t, 0, fakeMetadataServer.mintCount())
 }
 
-// Workload identity federation with service account impersonation: the shape a
-// customer under a no-static-credentials policy hands over, because the
-// configuration file carries no secret. It names the pool, where to read this
-// workload's own token, and which service account to impersonate.
-//
-// The chain has two legs. The subject token is exchanged at STS for a federated
-// token, and that federated token authorizes a generateAccessToken call on the
-// target service account. What goes upstream is the second token, not the first.
+// Workload identity federation with service account impersonation, the shape a
+// customer under a no-static-credentials policy hands over. The subject token is
+// exchanged at STS for a federated token, which then authorizes a
+// generateAccessToken call. What goes upstream is the second token.
 func TestFederationWithImpersonationReturnsTheImpersonatedToken(t *testing.T) {
 	var mu sync.Mutex
 	var stsExchanges, impersonations int
@@ -281,9 +258,8 @@ func TestFederationWithImpersonationReturnsTheImpersonatedToken(t *testing.T) {
 	value, err := provider.Execute(context.Background())
 	require.NoError(t, err)
 
-	// The impersonated token, not the federated one. Sending the federated token
-	// upstream would be acting as the pool identity rather than as the service
-	// account the customer granted access to.
+	// Sending the federated token upstream would act as the pool identity rather
+	// than as the service account the customer granted access to.
 	require.Equal(t, "Bearer impersonated-token-value", value)
 
 	mu.Lock()
@@ -294,18 +270,14 @@ func TestFederationWithImpersonationReturnsTheImpersonatedToken(t *testing.T) {
 		"the impersonation call was not authorized with the federated token")
 
 	// Under impersonation the library pins the STS exchange to cloud-platform and
-	// applies the requested scope to this call instead. So ScopeCloudPlatform is
-	// what bounds the token that actually goes upstream, and narrowing it later
-	// takes effect here.
+	// applies the requested scope to this call instead, so this is what bounds the
+	// token that goes upstream.
 	require.Contains(t, impersonationBody, ScopeCloudPlatform,
 		"the requested scope did not reach the impersonation call")
 
 	require.Equal(t, 0, fakeMetadataServer.mintCount())
 }
 
-// The bound has to be on the client, not on the caller's context, because the
-// library refreshes on a detached context. This asserts both that the real value
-// is 10 seconds and that the bound actually fires.
 func TestMintTimeoutBoundsAnUnresponsiveEndpoint(t *testing.T) {
 	require.Equal(t, 10*time.Second, mintTimeout,
 		"the mint timeout must stay below the read timeout above this path and above the metadata retry window")
@@ -324,7 +296,7 @@ func TestMintTimeoutBoundsAnUnresponsiveEndpoint(t *testing.T) {
 }
 
 // An identity provider reports a failed exchange by echoing the request back.
-// Neither the returned error nor the log may carry what it echoed.
+// Neither the error nor the log may carry what it echoed.
 func TestProviderErrorsAndLogsAreRedacted(t *testing.T) {
 	const subjectToken = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJheG9uIn0.ZmFrZS1zaWduYXR1cmU"
 	const leakedAccessToken = "ya29.leaked-access-token-value"
@@ -358,9 +330,8 @@ func TestProviderErrorsAndLogsAreRedacted(t *testing.T) {
 	require.Contains(t, err.Error(), "invalid_request")
 }
 
-// A missing or unreadable configuration is a deployment fault, and it must be
-// reported at construction so the agent fails at startup rather than on the
-// first relayed request.
+// A deployment fault must be reported at construction, so the agent fails at
+// startup rather than on the first relayed request.
 func TestUnavailableCredentialsAreTypedSeparately(t *testing.T) {
 	detectFailed := func(*credentials.DetectOptions) (*auth.Credentials, error) {
 		return nil, errors.New(`credentials: could not find default credentials, read "ya29.secret-in-a-message"`)
@@ -373,9 +344,8 @@ func TestUnavailableCredentialsAreTypedSeparately(t *testing.T) {
 	require.NotContains(t, err.Error(), "ya29.secret-in-a-message")
 }
 
-// The two failure kinds must stay distinguishable, because a mint failure and a
-// Google authorization failure lead to opposite fixes: one is the agent's
-// deployment, the other is the customer's IAM.
+// The two failure kinds lead to opposite fixes: one is the agent's deployment,
+// the other is the customer's IAM.
 func TestMintFailureIsNotACredentialConfigurationFailure(t *testing.T) {
 	sts := newSTSServer(t, func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "denied", http.StatusForbidden)
@@ -391,8 +361,6 @@ func TestMintFailureIsNotACredentialConfigurationFailure(t *testing.T) {
 	require.NotErrorIs(t, err, ErrCredentialsUnavailable)
 }
 
-// The scope is one constant so that narrowing it after the pilot is a one-line
-// change rather than a search across call sites.
 func TestScopeIsCloudPlatform(t *testing.T) {
 	require.Equal(t, "https://www.googleapis.com/auth/cloud-platform", ScopeCloudPlatform)
 }

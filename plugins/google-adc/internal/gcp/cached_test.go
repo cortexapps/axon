@@ -14,9 +14,8 @@ import (
 	"go.uber.org/zap"
 )
 
-// useCacheDir points the file cache at a directory this test owns. Without it the
-// tests would share the real temporary directory, and a token one test wrote
-// would be read by another.
+// useCacheDir points the file cache at a directory this test owns, so tests do
+// not read each other's tokens out of the real temporary directory.
 func useCacheDir(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -34,8 +33,8 @@ func TestCachedProviderMintsOnceAcrossInstances(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "Bearer cached-across-instances", value)
 
-	// A second provider stands in for the next subprocess invocation: same cache
-	// directory, no shared memory.
+	// Stands in for the next subprocess invocation: same cache directory, no
+	// shared memory.
 	second, err := NewCachedProvider(zap.NewNop())
 	require.NoError(t, err)
 	again, err := second.Execute(context.Background())
@@ -46,9 +45,8 @@ func TestCachedProviderMintsOnceAcrossInstances(t *testing.T) {
 		"the second provider minted again instead of reading the cache")
 }
 
-// The cache-hit path must not consult the metadata server at all. If it did, the
-// subprocess would still pay a network round trip per request and the file would
-// be buying nothing.
+// If the cache-hit path consulted the metadata server, the subprocess would still
+// pay a round trip per request and the file would buy nothing.
 func TestCacheHitDoesNotContactTheMetadataServer(t *testing.T) {
 	useCacheDir(t)
 	fakeMetadataServer.install(t, respondWithToken("warm-token", 3600))
@@ -59,8 +57,8 @@ func TestCacheHitDoesNotContactTheMetadataServer(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, fakeMetadataServer.mintCount())
 
-	// From here the metadata server refuses everything, including the detection
-	// probe. A provider that reads the cache never notices.
+	// From here everything is refused, including the detection probe. A provider
+	// that reads the cache never notices.
 	fakeMetadataServer.refuseEverything(t)
 
 	cold, err := NewCachedProvider(zap.NewNop())
@@ -73,9 +71,8 @@ func TestCacheHitDoesNotContactTheMetadataServer(t *testing.T) {
 		"the cache hit reached the metadata server")
 }
 
-// The expiry the issuer stated is what bounds the cached value, not a fixed age.
-// A token the metadata server says lives 200 seconds is inside the refresh margin
-// and must not be served.
+// The issuer's stated expiry bounds the cached value, not a fixed age. 200
+// seconds is inside the refresh margin.
 func TestTheIssuersExpiryBoundsTheCache(t *testing.T) {
 	useCacheDir(t)
 	fakeMetadataServer.install(t, respondWithToken("short-lived", 200))
@@ -109,8 +106,6 @@ func TestCredentialFileIsOwnerOnly(t *testing.T) {
 	require.Equal(t, os.FileMode(0600), info.Mode().Perm())
 }
 
-// The fingerprint keys the cache on the identity, so rotating the credential
-// configuration does not keep serving the previous one.
 func TestChangingTheCredentialConfigurationChangesTheFingerprint(t *testing.T) {
 	dir := t.TempDir()
 
@@ -119,8 +114,7 @@ func TestChangingTheCredentialConfigurationChangesTheFingerprint(t *testing.T) {
 	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", first)
 	before := IdentityFingerprint(ScopeCloudPlatform)
 
-	// Same path, different contents: the rotation that a path-keyed cache would
-	// miss entirely.
+	// Same path, different contents: the rotation a path-keyed cache would miss.
 	require.NoError(t, os.WriteFile(first, []byte(`{"type":"external_account","audience":"two"}`), 0600))
 	require.NotEqual(t, before, IdentityFingerprint(ScopeCloudPlatform),
 		"rewriting the credential file in place did not invalidate the cache key")
@@ -142,7 +136,6 @@ func TestFingerprintIsASafePathElement(t *testing.T) {
 	require.Regexp(t, `^[0-9a-f]+$`, fingerprint)
 }
 
-// The plugin's contract: stdout is exactly the credential.
 func TestRunPluginWritesOnlyTheCredential(t *testing.T) {
 	useCacheDir(t)
 	fakeMetadataServer.install(t, respondWithToken("plugin-token", 3600))
@@ -155,9 +148,8 @@ func TestRunPluginWritesOnlyTheCredential(t *testing.T) {
 		"a trailing newline would be concatenated into the header value")
 }
 
-// Probe mode reports on the configuration without minting. A startup check that
-// minted would consume a token on every relay restart, and would fail startup for
-// a transient network fault.
+// A startup check that minted would consume a token on every relay restart, and
+// would fail startup for a transient network fault.
 func TestProbeDoesNotMint(t *testing.T) {
 	useCacheDir(t)
 	fakeMetadataServer.install(t, respondWithToken("probe-token", 3600))
@@ -182,8 +174,6 @@ func TestRunPluginFailsClosedWhenTheExchangeFails(t *testing.T) {
 	require.Empty(t, out.String(), "a failed mint still wrote something to stdout")
 }
 
-// The cache must not turn a failure into a stale success, and must not persist
-// anything on a failed exchange.
 func TestAFailedMintWritesNoCache(t *testing.T) {
 	dir := useCacheDir(t)
 	fakeMetadataServer.install(t, func(w http.ResponseWriter, r *http.Request) {
@@ -203,8 +193,8 @@ func TestAFailedMintWritesNoCache(t *testing.T) {
 	}
 }
 
-// NewCachedProvider must not detect credentials, or the cache-hit path would pay
-// for detection before it ever reads the file.
+// Detecting in the constructor would make the cache-hit path pay for detection
+// before it ever reads the file.
 func TestConstructionDoesNotDetect(t *testing.T) {
 	useCacheDir(t)
 	fakeMetadataServer.refuseEverything(t)
@@ -213,9 +203,9 @@ func TestConstructionDoesNotDetect(t *testing.T) {
 	require.NoError(t, err, "construction reached the credential configuration")
 }
 
+// If the library changes its unexported defaultExpiryDelta,
+// TestRefreshMarginIsAsynchronousAndWideEnough fails and this constant has to
+// move with it.
 func TestRefreshMarginMatchesTheLibraryDefault(t *testing.T) {
-	// Restated from the library's unexported defaultExpiryDelta. If the library
-	// changes it, TestRefreshMarginIsAsynchronousAndWideEnough fails and this
-	// constant has to move with it.
 	require.Equal(t, 225*time.Second, RefreshMargin)
 }

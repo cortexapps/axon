@@ -28,9 +28,7 @@ const (
 	IntegrationBitbucket  Integration = "bitbucket"
 	IntegrationPrometheus Integration = "prometheus"
 	IntegrationHarness    Integration = "harness"
-	// Google APIs reached with a credential the agent mints in the customer's
-	// network. The name matches the server-side enum, which is Google rather
-	// than GCP.
+	// Named for the server-side enum, which is Google rather than GCP.
 	IntegrationGoogle Integration = "google"
 )
 

@@ -20,28 +20,21 @@ import (
 // Application Default Credentials the machine has and make real requests to
 // Google, so they are opt-in:
 //
-//	make builtin-plugins
+//	make plugins
 //	AXON_GOOGLE_LIVE_TEST=1 go test ./server/snykbroker/ -run Live -v
 //
-// They cover the whole agent-side path with nothing faked: the shipped accept
-// file, the name resolving to the built binary, the
-// render step registering a wildcard origin with the reflector, per-request
-// retargeting, the subprocess mint, the file cache, and a real Google API
-// answering. Nothing here needs brain-backend, a relay token, the snyk-broker, or
-// a tunnel - the reflector is an http.Handler and is driven directly.
+// Nothing is faked and nothing needs brain-backend, a relay token, the
+// snyk-broker, or a tunnel: the reflector is an http.Handler and is driven
+// directly.
 //
-// They are guarded by an environment variable rather than a build tag so they
-// still compile and are type-checked in the normal build. A live test that has
-// quietly stopped compiling is a live test nobody runs.
+// Guarded by an environment variable rather than a build tag, so they still
+// compile in the normal build. A live test that has quietly stopped compiling is
+// a live test nobody runs.
 const liveTestEnv = "AXON_GOOGLE_LIVE_TEST"
 
-// liveGoogleHost is one label under googleapis.com, so the shipped wildcard
-// origin covers it without any accept-file change.
-//
-// Its list-projects call needs only an authenticated identity. It is not asserted
-// to succeed: what the test needs to know is that Google accepted the credential,
-// and a 403 for a disabled API or a missing role still proves that. A 401 does
-// not.
+// One label under googleapis.com, so the shipped wildcard origin covers it. Its
+// list-projects call needs only an authenticated identity, and is not asserted to
+// succeed: a 403 still proves Google accepted the credential, a 401 does not.
 const (
 	liveGoogleHost = "cloudresourcemanager.googleapis.com"
 	liveGooglePath = "/v1/projects"
@@ -55,7 +48,7 @@ func requireLiveGoogle(t *testing.T) {
 }
 
 // shippedPluginDir returns the directory `make plugins` installs google-adc into,
-// to be used as the accept file's PluginDirs. In the image the same binary sits in
+// for the accept file's PluginDirs. In the image the same binary sits in
 // /agent/plugins alongside the shipped shell plugins.
 func shippedPluginDir(t *testing.T) string {
 	t.Helper()
@@ -70,9 +63,8 @@ func shippedPluginDir(t *testing.T) string {
 	return dir
 }
 
-// credentialCacheDirEnv duplicates the plugin's own AXON_CREDENTIAL_CACHE_DIR. The
-// plugin is a separate module, so this is a process contract rather than a
-// constant that can be imported.
+// Duplicates the plugin's own constant: it is a separate module, so this is a
+// process contract rather than something importable.
 const credentialCacheDirEnv = "AXON_CREDENTIAL_CACHE_DIR"
 
 // useIsolatedCredentialCache keeps the test off any cache a running agent owns,
@@ -163,31 +155,28 @@ func TestLiveGoogleAcceptsTheInjectedCredential(t *testing.T) {
 
 	rec := requestGoogle(t, env)
 
-	// Surfaced only when an assertion fails. A successful list-projects response
-	// carries real project and organisation identifiers, which do not belong in a
-	// passing test's output.
+	// Surfaced only on failure: a successful list-projects response carries real
+	// project and organisation identifiers.
 	diagnostic := truncate(rec.Body.String(), 400)
 	t.Logf("%s answered %d", liveGoogleHost, rec.Code)
 
-	// 401 covers two cases the agent cannot currently tell apart: Google refused
-	// the token, or the plugin failed and the resolver forwarded the unexpanded
-	// placeholder as the header value. Distinguishing them needs the resolver to
-	// fail the request instead of logging and continuing, which is not this change.
+	// 401 covers two cases the agent cannot yet tell apart: Google refused the
+	// token, or the plugin failed and the resolver forwarded the unexpanded
+	// placeholder. Separating them needs the resolver to fail the request instead
+	// of logging and continuing, which is not this change.
 	require.NotEqual(t, http.StatusUnauthorized, rec.Code,
 		"Google refused the authorization header the agent injected: %s", diagnostic)
 	require.NotEqual(t, http.StatusForbidden, rec.Code,
 		"Google accepted the identity but refused the call; check the IAM binding or whether "+
 			"cloudresourcemanager is enabled: %s", diagnostic)
 
-	// A credential was minted and kept, which is what the next request will read.
 	tokens := cachedTokens(t, cacheDir)
 	require.Len(t, tokens, 1, "expected exactly one cached credential")
 	require.NotEmpty(t, tokens[0])
 }
 
-// The point of the file cache: a second request does not mint again. Asserted on
-// the cached value rather than on timing, since Google will not tell us how many
-// tokens it issued.
+// Asserted on the cached value rather than on timing, since Google will not say
+// how many tokens it issued.
 func TestLiveGoogleReusesTheCachedToken(t *testing.T) {
 	requireLiveGoogle(t)
 	env, _, cacheDir := liveGoogleEnv(t)
@@ -215,9 +204,8 @@ func TestLiveGoogleReusesTheCachedToken(t *testing.T) {
 	require.Equal(t, writtenAt, info.ModTime(), "the cache was rewritten, so a later request minted again")
 }
 
-// With a real token in play, this is the assertion worth making live: the value
-// the agent injected is nowhere in the logs, at debug level, across a request that
-// succeeded and a destination that was rejected.
+// The value the agent injected is nowhere in the logs, at debug level, across a
+// request that succeeded and a destination that was rejected.
 func TestLiveGoogleCredentialIsNeverLogged(t *testing.T) {
 	requireLiveGoogle(t)
 	env, logged, cacheDir := liveGoogleEnv(t)
@@ -227,8 +215,8 @@ func TestLiveGoogleCredentialIsNeverLogged(t *testing.T) {
 	tokens := cachedTokens(t, cacheDir)
 	require.Len(t, tokens, 1)
 
-	// The whole header value, and the bare token without its type: a log that
-	// printed only the second half would still have leaked the credential.
+	// Both the whole header value and the bare token: a log that printed only the
+	// second half would still have leaked the credential.
 	credential := tokens[0]
 	bare := credential
 	if _, after, found := strings.Cut(credential, " "); found {
@@ -236,7 +224,7 @@ func TestLiveGoogleCredentialIsNeverLogged(t *testing.T) {
 	}
 	require.NotEmpty(t, bare)
 
-	// Also drive a rejected destination, which is the path that logs the most.
+	// A rejected destination is the path that logs the most.
 	uri, err := env.reflector.getUriForTarget("https://*.googleapis.com")
 	require.NoError(t, err)
 	rejected := httptest.NewRequest("GET", proxyPath(t, uri)+liveGooglePath, nil)

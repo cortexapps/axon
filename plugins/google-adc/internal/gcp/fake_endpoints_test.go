@@ -14,20 +14,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// metadataTokenPath is the suffix the library requests, spelled out here so a
-// change to it fails a test rather than silently falling through to a 404 that
-// looks like a network problem.
+// The suffix the library requests, spelled out so a change to it fails a test
+// rather than falling through to a 404 that looks like a network problem.
 const metadataTokenPath = "/computeMetadata/v1/instance/service-accounts/default/token"
 
 // fakeMetadata stands in for the GCE metadata server.
 //
-// One server serves the whole test binary because the library memoizes its
-// "am I on GCE?" answer in a sync.Once, and the GCE_METADATA_HOST check that
-// makes the answer yes sits inside that Once. A test that started its own
-// server would be deciding, for every later test, whether the metadata path
-// exists at all - and the outcome would depend on file and function ordering.
-//
-// So the address is fixed in TestMain and each test installs its own handler.
+// One server serves the whole test binary, because the library memoizes its
+// "am I on GCE?" answer in a sync.Once around the GCE_METADATA_HOST check. So
+// the address is fixed in TestMain and each test installs its own handler.
 type fakeMetadata struct {
 	mu      sync.Mutex
 	handler http.HandlerFunc
@@ -51,9 +46,8 @@ func (f *fakeMetadata) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	handler(w, r)
 }
 
-// mintCount reports how many token requests the server has seen. Tests assert
-// on this rather than on timing, which is the only way "the token was reused"
-// is observable from outside the library.
+// mintCount is the only way "the token was reused" is observable from outside
+// the library.
 func (f *fakeMetadata) mintCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -74,10 +68,8 @@ func (f *fakeMetadata) install(t *testing.T, handler http.HandlerFunc) {
 	})
 }
 
-// refuseEverything installs a handler that mints nothing, and resets the
-// counter so a later assertion of zero is about this test rather than about
-// whatever ran before it. Use it where consulting the metadata server would
-// mean the agent picked the wrong identity.
+// refuseEverything installs a handler that mints nothing. Use it where consulting
+// the metadata server would mean the agent picked the wrong identity.
 func (f *fakeMetadata) refuseEverything(t *testing.T) {
 	t.Helper()
 	f.install(t, func(w http.ResponseWriter, r *http.Request) {
@@ -106,14 +98,10 @@ func TestMain(m *testing.M) {
 	server := httptest.NewServer(fakeMetadataServer)
 	host := server.Listener.Addr().String()
 
-	// Detection prefers a credential file over the metadata server, and one of
-	// the places it looks is the gcloud well-known path under $HOME. On a
-	// developer machine that file usually exists, so without this the tests
-	// authenticate with a real identity and call Google - slow, dependent on who
-	// is running them, and no longer testing the metadata path at all.
-	//
-	// Pointing HOME at an empty directory is blunt, but it is the only lever the
-	// library offers: the well-known path is computed, not configurable.
+	// Detection prefers a credential file, including the gcloud well-known path
+	// under $HOME, which usually exists on a developer machine. Pointing HOME at an
+	// empty directory is blunt, but the well-known path is computed, not
+	// configurable.
 	sandbox, err := os.MkdirTemp("", "axon-gcp-adc-test-home")
 	if err != nil {
 		panic(err)
@@ -128,8 +116,7 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 
-	// Set before any test runs, and never unset: the library reads it once, on
-	// the first OnGCE call in the process.
+	// Never unset: the library reads it once, on the first OnGCE call.
 	if err := os.Setenv("GCE_METADATA_HOST", host); err != nil {
 		panic(err)
 	}
@@ -140,9 +127,8 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// writeCredentialConfig writes an external-account credential configuration
-// pointing at the given token endpoint, and returns its path. This is the
-// workload-identity-federation shape a customer outside GCE deploys.
+// writeCredentialConfig writes the workload-identity-federation configuration a
+// customer outside GCE deploys, and returns its path.
 func writeCredentialConfig(t *testing.T, tokenURL string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -168,10 +154,9 @@ func writeCredentialConfig(t *testing.T, tokenURL string) string {
 	return configPath
 }
 
-// writeImpersonationConfig writes an external-account configuration that
-// impersonates a service account after federating, and returns its path. This is
-// the shape produced by a workload identity pool plus a dedicated service
-// account: no key material, only endpoints and an audience.
+// writeImpersonationConfig writes the configuration a workload identity pool plus
+// a dedicated service account produces: no key material, only endpoints and an
+// audience.
 func writeImpersonationConfig(t *testing.T, tokenURL, impersonationURL string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -198,16 +183,15 @@ func writeImpersonationConfig(t *testing.T, tokenURL, impersonationURL string) s
 	return configPath
 }
 
-// useCredentialConfig points detection at a credential configuration file.
-// GOOGLE_APPLICATION_CREDENTIALS is checked before the metadata probe, so a
-// federation test is unaffected by the metadata host TestMain installed.
+// useCredentialConfig points detection at a credential configuration file, which
+// is checked before the metadata host TestMain installed.
 func useCredentialConfig(t *testing.T, path string) {
 	t.Helper()
 	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", path)
 }
 
-// newSTSServer starts a fake token-exchange endpoint and returns its URL, for
-// the credential configuration to name as its token_url.
+// newSTSServer starts a fake token-exchange endpoint and returns its URL, for a
+// credential configuration to name as its token_url.
 func newSTSServer(t *testing.T, handler http.HandlerFunc) string {
 	t.Helper()
 	server := httptest.NewServer(handler)
@@ -215,8 +199,8 @@ func newSTSServer(t *testing.T, handler http.HandlerFunc) string {
 	return server.URL + "/token"
 }
 
-// newSilentEndpoint returns a URL that accepts connections and then says
-// nothing, which is how a timeout is provoked without touching a real network.
+// newSilentEndpoint returns a URL that accepts connections and then says nothing,
+// which provokes a timeout without touching a real network.
 func newSilentEndpoint(t *testing.T) string {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -225,8 +209,8 @@ func newSilentEndpoint(t *testing.T) string {
 	var mu sync.Mutex
 	var accepted []net.Conn
 
-	// Registered before the goroutine starts: a Cleanup call from a goroutine
-	// that outlives the test would panic.
+	// Registered before the goroutine starts: a Cleanup call from a goroutine that
+	// outlives the test would panic.
 	t.Cleanup(func() {
 		ln.Close()
 		mu.Lock()

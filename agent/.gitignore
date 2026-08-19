@@ -2,7 +2,7 @@ __debug*
 .generated/
 *_mock.go
 axon-agent
-# Compiled accept-file plugins, built by `make plugins` from ../plugins/*.
+# Built by `make plugins` from ../plugins.
 plugins/google-adc
 *.pyc
 # mitmproxy: ignore generated/derived files, track CA files

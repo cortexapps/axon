@@ -13,9 +13,7 @@ ENV GOPATH="/root/go"
 ENV GOPROXY="https://proxy.golang.org,direct"
 ENV PATH="${GOROOT}/bin:${GOPATH}/bin:${PATH}"
 
-# Compiled plugins are separate Go modules, built before the agent so a change to
-# agent code does not invalidate this layer. Keeping them out of the agent's module
-# keeps their dependencies out of the agent binary.
+# Built before the agent so a change to agent code does not invalidate this layer.
 COPY plugins/. /build-plugins/.
 RUN cd /build-plugins/google-adc && go build -o /plugins/google-adc .
 
@@ -90,9 +88,7 @@ COPY agent/server/snykbroker/accept_files /agent/accept_files
 ENV ACCEPTFILE_DIR=/agent/accept_files
 
 COPY agent/server/snykbroker/plugins /agent/plugins
-# The compiled plugins join the shipped scripts. Nothing distinguishes them at
-# runtime: an accept file names them the same way and the agent finds them by name
-# in this directory.
+# Joins the shipped scripts; nothing distinguishes them at runtime.
 COPY --from=builder /plugins/google-adc /agent/plugins/google-adc
 ENV BUILTIN_PLUGIN_DIR=/agent/plugins
 

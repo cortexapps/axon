@@ -12,15 +12,12 @@ import (
 
 // googleTemplateOrigin returns the origin the shipped google template resolves to.
 //
-// Origin() rather than the rendered JSON: the rendered file keeps ${GOOGLE_API} for
-// the broker to expand, exactly as every other template does, so the raw output
-// says nothing about which host family was authorized. Origin() is the value the
-// reflector builds its proxy target from, which makes it the one that decides the
-// destination.
+// Origin() rather than the rendered JSON, because the rendered file keeps
+// ${GOOGLE_API} for the broker to expand. Origin() is what the reflector builds
+// its proxy target from.
 //
-// A stub stands in for google-adc so the result does not depend on what identity
-// the machine running the test has, or on whether the binary has been built.
-// Headers() locates the plugin, and panics if it cannot, so the stub has to exist.
+// The google-adc stub is required: Headers() locates the plugin and panics if it
+// cannot, and a real binary would tie the result to the machine's identity.
 func googleTemplateOrigin(t *testing.T) string {
 	t.Helper()
 
@@ -44,24 +41,20 @@ func googleTemplateOrigin(t *testing.T) string {
 	return ""
 }
 
-// One wildcard rule covers every Google API host: all 42 client constructions in
-// Cortex resolve to a hostname exactly one label under googleapis.com.
+// One wildcard rule covers every Google API host Cortex calls: they all resolve to
+// a hostname exactly one label under googleapis.com. That this parses as a
+// one-label wildcard family is pinned in TestParseOriginAcceptsWildcardFamilies.
 func TestGoogleTemplateAuthorizesTheGoogleAPIFamilyByDefault(t *testing.T) {
-	// That this origin parses as a one-label wildcard family is pinned where the
-	// parser lives, in TestParseOriginAcceptsWildcardFamilies.
 	require.Equal(t, "https://*.googleapis.com", googleTemplateOrigin(t))
 }
 
-// The override exists so a deployment that must reach a narrower or different host
-// family does not have to replace the whole file. Documented in README.relay.md
-// alongside the template.
+// So a deployment reaching a narrower or different host family does not have to
+// replace the whole file. Documented in README.relay.md.
 func TestGoogleTemplateOriginCanBeOverridden(t *testing.T) {
 	t.Setenv("GOOGLE_API", "https://*.mycompany-proxy.example.com")
 	require.Equal(t, "https://*.mycompany-proxy.example.com", googleTemplateOrigin(t))
 }
 
-// The template's authorization header comes from the plugin, so a rendered file
-// still carries the placeholder for the agent to expand per request.
 func TestGoogleTemplateUsesThePluginForAuthorization(t *testing.T) {
 	content, err := os.ReadFile(filepath.Join("..", "accept_files", "accept.google.json"))
 	require.NoError(t, err)

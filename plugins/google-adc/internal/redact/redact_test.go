@@ -6,9 +6,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The values here are the shapes a Google token exchange actually returns, and
-// the point of each case is that the secret is absent afterwards rather than
-// that the output takes some particular form.
+// The inputs are shapes a Google token exchange actually returns. Each case
+// asserts the secret is gone, not that the output takes a particular form.
 func TestRedactRemovesCredentialMaterial(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -56,8 +55,8 @@ func TestRedactRemovesCredentialMaterial(t *testing.T) {
 	}
 }
 
-// Redaction that also eats the surrounding structure would make a log line
-// useless, which is the usual reason redaction gets removed later.
+// Redaction that also eats the surrounding structure makes a log line useless,
+// which is the usual reason redaction gets removed later.
 func TestRedactKeepsSurroundingContext(t *testing.T) {
 	out := Redact(`{"error":"invalid_grant","error_description":"bad audience","access_token":"ya29.secret"}`)
 	require.Contains(t, out, "invalid_grant")

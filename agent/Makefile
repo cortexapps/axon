@@ -44,12 +44,10 @@ setup:
 		fi; \
 	fi
 
-# Compiled plugins live in their own modules under ../plugins, so their
-# dependencies stay out of the agent binary. They are ordinary accept-file
-# plugins: built into a directory on PLUGIN_DIRS and found there by name.
-#
-# PLUGIN_SRC_DIR is overridable because the Docker build copies the agent tree on
-# its own, without a sibling ../plugins.
+# Compiled plugins are separate Go modules, so their dependencies stay out of the
+# agent binary. They build into a directory on PLUGIN_DIRS and are found by name.
+# PLUGIN_SRC_DIR is overridable for the Docker build, which has no sibling
+# ../plugins.
 PLUGIN_SRC_DIR ?= ../plugins
 PLUGIN_OUT_DIR ?= $(CURDIR)/plugins
 

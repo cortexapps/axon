@@ -275,10 +275,8 @@ func writeTempFile(t *testing.T, contents string) string {
 	return f.Name()
 }
 
-// The google integration ships a template rather than requiring every deployment
-// to write one. Read here rather than rendered, because rendering constructs the
-// credential provider, and whether that succeeds depends on the machine running
-// the test.
+// Read rather than rendered: rendering constructs the credential provider, and
+// whether that succeeds depends on the machine running the test.
 func TestGoogleDefaultAcceptFileTemplate(t *testing.T) {
 	setAcceptFileDir(t)
 
@@ -288,17 +286,15 @@ func TestGoogleDefaultAcceptFileTemplate(t *testing.T) {
 	contents, err := ii.getAcceptFileContents()
 	require.NoError(t, err)
 
-	// One wildcard rule covers every Google API host Cortex calls: they all sit
-	// exactly one label under googleapis.com.
+	// Every Google API host Cortex calls sits exactly one label under
+	// googleapis.com, so one wildcard rule covers all of them.
 	require.Contains(t, contents, `"origin": "${GOOGLE_API:https://*.googleapis.com}"`)
 
-	// The credential comes from the built-in google-adc source, named in the accept
-	// file so it is visible to whoever reads the deployed policy.
 	require.Contains(t, contents, `"authorization": "${plugin:google-adc}"`)
 
-	// No service allowlist. The accept file is the destination policy and the
-	// customer's IAM is the permission policy; a second list here would look
-	// authoritative while sitting on the wrong side of the trust boundary.
+	// The accept file is the destination policy and the customer's IAM is the
+	// permission policy. A service list here would look authoritative while sitting
+	// on the wrong side of the trust boundary.
 	require.NotContains(t, contents, "allowlist")
 }
 
