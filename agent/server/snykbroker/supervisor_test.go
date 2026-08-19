@@ -3,11 +3,33 @@ package snykbroker
 import (
 	"bytes"
 	"regexp"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 )
+
+// syncBuffer is a bytes.Buffer safe to read while the supervisor's line pumps
+// are still writing. Those pumps outlive Wait() — it returns when the run loop
+// gives up, not when the last line has been drained — so an unguarded buffer
+// races with any assertion on its contents.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
 
 func TestStart_SuccessExit(t *testing.T) {
 
@@ -20,7 +42,7 @@ func TestStart_SuccessExit(t *testing.T) {
 		},
 		time.Millisecond*10,
 	)
-	output := bytes.Buffer{}
+	output := syncBuffer{}
 	supervisor.output = &output
 
 	err := supervisor.Start(1, 1)
@@ -38,7 +60,7 @@ func TestStart_Restart(t *testing.T) {
 		},
 		time.Millisecond*10,
 	)
-	output := bytes.Buffer{}
+	output := syncBuffer{}
 	supervisor.output = &output
 
 	err := supervisor.Start(1, 1)
@@ -72,7 +94,7 @@ func TestStart_FastFail(t *testing.T) {
 		},
 		time.Millisecond*500,
 	)
-	output := bytes.Buffer{}
+	output := syncBuffer{}
 	supervisor.output = &output
 
 	err := supervisor.Start(2, 1)
@@ -94,7 +116,7 @@ func TestStart_MaxRetries(t *testing.T) {
 		},
 		time.Second,
 	)
-	output := bytes.Buffer{}
+	output := syncBuffer{}
 	supervisor.output = &output
 	supervisor.panicOnMaxRetries = false
 	supervisor.fastFailTime = 1 * time.Millisecond

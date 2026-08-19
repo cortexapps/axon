@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -30,8 +31,7 @@ var reFileVar = regexp.MustCompile(`\$\{([A-Z][A-Z0-9_]*)(?::[^}]*)?\}`)
 //
 //	go test ./server/snykbroker/acceptfile/ -run TestRenderGolden -update-golden
 func TestRenderGolden(t *testing.T) {
-	files, err := filepath.Glob(filepath.Join("..", "accept_files", "accept.*.json"))
-	require.NoError(t, err)
+	files := builtinAcceptFiles(t)
 	require.NotEmpty(t, files, "no built-in accept files found")
 
 	for _, file := range files {
@@ -74,4 +74,33 @@ func TestRenderGolden(t *testing.T) {
 				"rendered output changed for %s; if intentional, re-run with -update-golden and include the diff in review", file)
 		})
 	}
+}
+
+// builtinAcceptFiles lists the accept files that ship in the repo.
+//
+// It asks git rather than globbing the directory: an accept file is "built-in"
+// because it is committed, not because it happens to sit on this disk. A
+// developer's untracked scratch accept file would otherwise fail this test with
+// a missing golden it has no business needing. Outside a git checkout (vendored
+// source, some release builds) there is nothing to ask, so fall back to the
+// glob — every file present there is tracked by definition.
+func builtinAcceptFiles(t *testing.T) []string {
+	t.Helper()
+	dir := filepath.Join("..", "accept_files")
+
+	out, err := exec.Command("git", "-C", dir, "ls-files", "--", "accept.*.json").Output()
+	if err != nil {
+		globbed, gerr := filepath.Glob(filepath.Join(dir, "accept.*.json"))
+		require.NoError(t, gerr)
+		return globbed
+	}
+
+	var files []string
+	for _, name := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if name == "" {
+			continue
+		}
+		files = append(files, filepath.Join(dir, name))
+	}
+	return files
 }
