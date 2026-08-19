@@ -44,7 +44,23 @@ setup:
 		fi; \
 	fi
 
-build:
+# Compiled plugins live in their own modules under ../plugins, so their
+# dependencies stay out of the agent binary. They are ordinary accept-file
+# plugins: built into a directory on PLUGIN_DIRS and found there by name.
+#
+# PLUGIN_SRC_DIR is overridable because the Docker build copies the agent tree on
+# its own, without a sibling ../plugins.
+PLUGIN_SRC_DIR ?= ../plugins
+PLUGIN_OUT_DIR ?= $(CURDIR)/plugins
+
+plugins:
+	@if [ ! -d "$(PLUGIN_SRC_DIR)/google-adc" ]; then \
+		echo "no plugin sources at $(PLUGIN_SRC_DIR); set PLUGIN_SRC_DIR"; exit 1; \
+	fi
+	$(MAKE) -C $(PLUGIN_SRC_DIR)/google-adc build OUT_DIR=$(PLUGIN_OUT_DIR)
+.PHONY: plugins
+
+build: plugins
 	go build -o axon-agent main.go
 
 mockgen:
@@ -84,6 +100,13 @@ test-race: mocks
 	go test -race -run '^($(REFLECTOR_TESTS))$$' ./server/snykbroker/
 
 .PHONY: test-race
+
+# Live check of the Google credential source against whatever Application Default
+# Credentials this machine has. Opt-in: it makes real requests to Google. It needs
+# no brain-backend, relay token, or broker - the reflector is driven directly.
+test-google-live: plugins
+	AXON_GOOGLE_LIVE_TEST=1 go test -count=1 -run TestLiveGoogle -v ./server/snykbroker/
+.PHONY: test-google-live
 
 validate-filters:
 	test/validate_filters.sh

@@ -28,6 +28,10 @@ const (
 	IntegrationBitbucket  Integration = "bitbucket"
 	IntegrationPrometheus Integration = "prometheus"
 	IntegrationHarness    Integration = "harness"
+	// Google APIs reached with a credential the agent mints in the customer's
+	// network. The name matches the server-side enum, which is Google rather
+	// than GCP.
+	IntegrationGoogle Integration = "google"
 )
 
 var subtypes = map[Integration][]string{
@@ -60,7 +64,7 @@ func ParseIntegration(s string) (Integration, error) {
 }
 
 func ValidIntegrations() []Integration {
-	return []Integration{IntegrationCustom, IntegrationGithub, IntegrationJira, IntegrationGitlab, IntegrationBitbucket, IntegrationSonarqube, IntegrationPrometheus, IntegrationHarness}
+	return []Integration{IntegrationCustom, IntegrationGithub, IntegrationJira, IntegrationGitlab, IntegrationBitbucket, IntegrationSonarqube, IntegrationPrometheus, IntegrationHarness, IntegrationGoogle}
 }
 
 type IntegrationInfo struct {
