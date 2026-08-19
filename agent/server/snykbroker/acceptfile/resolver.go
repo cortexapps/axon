@@ -139,6 +139,18 @@ func NewResolverMapFromMap(m map[string]string) ResolverMap {
 	return rm
 }
 
+// Names returns the header names in sorted order. Callers that need a stable
+// hash or a log field want this rather than the map itself, whose values are
+// credentials.
+func (rm ResolverMap) Names() []string {
+	names := make([]string, 0, len(rm))
+	for name := range rm {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
 func (rm ResolverMap) ToStringMap() map[string]string {
 	resolved := make(map[string]string, len(rm))
 	for key, resolver := range rm {
