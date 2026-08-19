@@ -102,8 +102,7 @@ test-race: mocks
 .PHONY: test-race
 
 # Live check of the Google credential source against whatever Application Default
-# Credentials this machine has. Opt-in: it makes real requests to Google. It needs
-# no brain-backend, relay token, or broker - the reflector is driven directly.
+# Credentials this machine has. Opt-in: it makes real requests to Google.
 test-google-live: plugins
 	AXON_GOOGLE_LIVE_TEST=1 go test -count=1 -run TestLiveGoogle -v ./server/snykbroker/
 .PHONY: test-google-live
