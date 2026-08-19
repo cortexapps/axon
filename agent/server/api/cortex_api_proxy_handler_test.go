@@ -170,7 +170,11 @@ func TestServeHTTP_RateLimited_Timeout(t *testing.T) {
 		CortexApiToken:   "test_token",
 	}, zap.NewNop(), nil)
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond*5)
+	// The deadline has to outlast one local round trip but expire inside the
+	// 100ms Retry-After sleep. Too short and it lands mid-round-trip, where the
+	// reverse proxy writes its own 502 and this never reaches the retry loop's
+	// cancellation check at all.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond*50)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, "POST", "/cortex-api/test", bytes.NewBufferString("xxxyyyzzz"))
 	require.NoError(t, err)

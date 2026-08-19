@@ -22,6 +22,14 @@ import (
 // returns a client connection. Caller closes via t.Cleanup.
 func startTestService(t *testing.T, opts ...func(*config.Config)) pb.TunnelServiceClient {
 	t.Helper()
+	client, _ := startTestServiceWithRegistry(t, opts...)
+	return client
+}
+
+// startTestServiceWithRegistry is startTestService plus the registry, for tests
+// that assert on server-side stream bookkeeping.
+func startTestServiceWithRegistry(t *testing.T, opts ...func(*config.Config)) (pb.TunnelServiceClient, *ClientRegistry) {
+	t.Helper()
 	// Nop logger: the service spawns goroutines (BROKER_SERVER notify) that
 	// may log after the test completes, which zaptest treats as a failure.
 	logger := zap.NewNop()
@@ -54,7 +62,7 @@ func startTestService(t *testing.T, opts ...func(*config.Config)) pb.TunnelServi
 		grpcServer.Stop()
 	})
 
-	return pb.NewTunnelServiceClient(conn)
+	return pb.NewTunnelServiceClient(conn), registry
 }
 
 // TestTunnel_EmptyBrokerToken_ReturnsUnauthenticated asserts that an empty
@@ -214,4 +222,54 @@ func TestTunnel_ValidHandshake_Succeeds(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, msg.GetHello())
 	require.Equal(t, "test-server", msg.GetHello().ServerId)
+}
+
+// TestTunnel_HeartbeatTimeout_UnregistersStream is the regression test for the
+// uninterruptible Recv: the heartbeat timeout has to actually reap the stream
+// from the registry, not just stop heartbeating at it.
+//
+// The client here is the shape gRPC keepalive cannot catch. It completes the
+// handshake, keeps draining server frames so the transport stays healthy and
+// answers PINGs, and then never sends a heartbeat again. Nothing at the
+// transport layer will notice, so if cancelling ctx does not interrupt the
+// server's blocked Recv, the stream stays registered and keeps occupying its
+// slot against the per-token cap.
+func TestTunnel_HeartbeatTimeout_UnregistersStream(t *testing.T) {
+	client, registry := startTestServiceWithRegistry(t, func(c *config.Config) {
+		c.HeartbeatInterval = 200 * time.Millisecond
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	stream, err := client.Tunnel(ctx)
+	require.NoError(t, err)
+	require.NoError(t, stream.Send(&pb.ClientFrame{
+		Msg: &pb.ClientFrame_Hello{
+			Hello: &pb.ClientHello{
+				BrokerToken: "wedged-token",
+				TenantId:    "tenant-1",
+				Integration: "github",
+			},
+		},
+	}))
+	msg, err := stream.Recv()
+	require.NoError(t, err)
+	require.NotNil(t, msg.GetHello())
+	require.Equal(t, 1, registry.StreamCount(), "stream should be registered after the handshake")
+
+	// Drain server frames so its sends never block, but never heartbeat back.
+	go func() {
+		for {
+			if _, err := stream.Recv(); err != nil {
+				return
+			}
+		}
+	}()
+
+	// The monitor ticks every 2*HeartbeatInterval and reaps once that much time
+	// has passed with no client frame, so this lands within a few ticks.
+	require.Eventually(t, func() bool { return registry.StreamCount() == 0 },
+		10*time.Second, 50*time.Millisecond,
+		"heartbeat timeout did not unregister the stream")
 }
