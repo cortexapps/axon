@@ -355,21 +355,39 @@ func (tc *tunnelClient) Start() error {
 	if !tc.running.CompareAndSwap(false, true) {
 		return fmt.Errorf("already started")
 	}
+	tc.resetForStart()
+
+	go tc.startAsync()
+	return nil
+}
+
+// resetForStart clears the state that described the connection we are no longer
+// on, so a fresh Start does not inherit it.
+//
+// serverMaxStreams is deliberately kept. The server's per-token cap is fixed
+// for the life of a server process — read from config at startup, never
+// mutated — and every instance in the fleet is configured alike, so it is a
+// property of the fleet rather than of any one connection. Zeroing it here
+// meant streamCap fell back to the local maxStreams ceiling after every
+// reconnect, and a reconnect opens streams as fast as there is work for them:
+// the agent would sail past the real cap before the first ServerHello was read
+// and learn it again from a burst of ResourceExhausted rejections. Keeping it
+// costs nothing in staleness, because a handshake that announces a different
+// cap overwrites it (openSlot, on every handshake) and the value cannot change under
+// a live connection.
+func (tc *tunnelClient) resetForStart() {
 	tc.mu.Lock()
+	defer tc.mu.Unlock()
+
 	tc.streams = make(map[*tunnelStream]struct{})
 	tc.runningWorkers = 0
 	tc.pool = newConnPool(tc.config.TunnelConns)
 	tc.busySlots.Store(0)
-	tc.serverMaxStreams.Store(0)
 	tc.observedServers.Store(0)
 	tc.targetSlots.Store(int32(tc.idleReserve()))
 	ctx, cancel := context.WithCancel(context.Background())
 	tc.parentCtx = ctx
 	tc.cancelAll = cancel
-	tc.mu.Unlock()
-
-	go tc.startAsync()
-	return nil
 }
 
 func (tc *tunnelClient) startAsync() {
@@ -619,12 +637,38 @@ func (tc *tunnelClient) refreshObservedServers() {
 	tc.observedServers.Store(int32(len(seen)))
 }
 
-// streamCap is the ceiling on concurrent streams, lowered to the
-// server-announced per-token cap when there is one.
+// streamCap is the ceiling on concurrent streams, which is also the ceiling on
+// concurrent calls: a stream carries exactly one call at a time.
+//
+// maxStreams and the announced cap are different units, and the difference is
+// the whole point. maxStreams is this agent's own policy — how many calls it
+// will serve at once, anywhere. The announced cap is how many streams a single
+// server instance tolerates from one token, a defensive limit so that one agent
+// cannot stampede one pod. Taking the lower of the two compared those units
+// directly, which let a per-pod guard become the agent's fleet-wide policy: it
+// ran at 64 where its policy is 256, and any reconnect that wanted more met a
+// burst of rejections.
+//
+// What actually bounds us is the per-server limit times the servers we are
+// spread over. With one server that degrades to the announced cap, which is the
+// case the old clamp was really defending; before any handshake has told us how
+// wide the fleet is we assume one server, so the reconnect window stays
+// conservative rather than optimistic.
+//
+// This is an upper bound on what the servers will grant, not a licence to
+// exceed our own policy, so maxStreams still wins when the fleet is wide.
 func (tc *tunnelClient) streamCap() int {
 	limit := maxStreams
-	if announced := int(tc.serverMaxStreams.Load()); announced > 0 && announced < limit {
-		limit = announced
+	announced := int(tc.serverMaxStreams.Load())
+	if announced <= 0 {
+		return limit
+	}
+	servers := int(tc.observedServers.Load())
+	if servers < 1 {
+		servers = 1
+	}
+	if capacity := announced * servers; capacity < limit {
+		limit = capacity
 	}
 	return limit
 }
@@ -992,22 +1036,22 @@ func (tc *tunnelClient) manageStream(id int) {
 	tc.workerExited()
 }
 
-// handleTokenCap reacts to a ResourceExhausted stream rejection by recording
-// the ceiling the server is actually enforcing, so resize stops asking for
-// more streams than it will grant.
+// handleTokenCap reacts to a ResourceExhausted stream rejection.
+//
+// It deliberately does not revise the announced cap. That value is a per-server
+// limit which cannot change under a live connection, so a refusal while we hold
+// fewer streams than it says nothing about our own usage — the likeliest cause
+// is the previous generation's streams still registered on that pod and not yet
+// reaped by heartbeat timeout. Clamping the ceiling down to whatever we happened
+// to hold turned that into a self-inflicted throttle, as low as a single stream,
+// during exactly the window the agent was trying to recover in.
+//
+// A refusal is instead left to be what it already is: per-connection back
+// pressure. The worker that was refused backs off and retries on the manageStream
+// loop, and sizing is recomputed in case the fleet looks different now.
 func (tc *tunnelClient) handleTokenCap(id int) {
-	tc.mu.Lock()
-	connected := len(tc.streams)
-	tc.mu.Unlock()
-	if connected < 1 {
-		connected = 1
-	}
-
-	if cur := tc.serverMaxStreams.Load(); cur == 0 || int(cur) > connected {
-		tc.serverMaxStreams.Store(int32(connected))
-		tc.logger.Info("Server per-token stream cap hit; clamping",
-			zap.Int("slot", id), zap.Int("cap", connected))
-	}
+	tc.logger.Debug("Server refused another stream for this token; backing off",
+		zap.Int("slot", id))
 	tc.resize()
 }
 
