@@ -40,6 +40,16 @@ func TestRelayMode_UnsetReportsTheDefault(t *testing.T) {
 	assert.Equal(t, "snyk-broker", modeFor(t, config.AgentConfig{}))
 }
 
+// The value reported is the effective transport, not the configured string.
+// Only an exact "grpc-tunnel" selects the tunnel — config.IsGRPCTunnel compares
+// exactly — so a near miss like "grpc_tunnel" runs snyk-broker, and reporting
+// it verbatim would put a transport nobody is running into the fleet's mix.
+func TestRelayMode_UnrecognizedReportsTheEffectiveMode(t *testing.T) {
+	assert.Equal(t, "snyk-broker", modeFor(t, config.AgentConfig{
+		RelayMode: "grpc_tunnel",
+	}))
+}
+
 // Always populated, so a fleet view never has a blank column. Outside a
 // container image this is the "dev" fallback rather than a build tag.
 func TestBuildVersion_AlwaysPopulated(t *testing.T) {
