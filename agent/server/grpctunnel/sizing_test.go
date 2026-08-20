@@ -206,19 +206,20 @@ func TestSizing_RespectsTheServerAnnouncedCap(t *testing.T) {
 	assert.Equal(t, 6, tc.streamCap())
 }
 
-// A server may announce a cap below our own idle reserve. The cap has to
-// win: asking for more than it grants gets every extra stream rejected in a
-// reconnect loop.
-func TestSizing_ServerCapBeatsTheIdleReserve(t *testing.T) {
+// The fleet may not grant as much as our own idle reserve would like. Capacity
+// has to win: asking for more than the servers will grant gets every extra
+// stream rejected in a reconnect loop. Three servers granting one stream each
+// is a capacity of three, against a reserve that wants six.
+func TestSizing_FleetCapacityBeatsTheIdleReserve(t *testing.T) {
 	tc := newSizingClient(t)
 	seedStreams(tc, 6, "srv-a", "srv-b", "srv-c")
 	require.Equal(t, 3*idleStreamsPerServer, tc.idleReserve())
 
-	tc.serverMaxStreams.Store(2)
+	tc.serverMaxStreams.Store(1)
 	tc.resize()
 
-	assert.Equal(t, int32(2), tc.targetSlots.Load(),
-		"the reserve must not raise the target back above the announced cap")
+	assert.Equal(t, int32(3), tc.targetSlots.Load(),
+		"the reserve must not raise the target above what the fleet grants")
 }
 
 func TestSizing_IgnoresAServerCapAboveOurOwn(t *testing.T) {
@@ -368,27 +369,22 @@ func TestRetireExcess_NoopWhenAtTarget(t *testing.T) {
 // Server-enforced cap
 // -----------------------------------------------------------------------------
 
-func TestHandleTokenCap_RecordsTheEnforcedCeiling(t *testing.T) {
+// A refusal does not revise what the server told us. The announced cap is a
+// per-server limit and it cannot change under a live connection, so being
+// refused while we hold fewer streams than that says nothing about our own
+// usage — the likeliest cause is the previous generation's streams still
+// registered on that pod, not yet reaped by heartbeat timeout. Clamping the
+// ceiling to what we happen to hold used to throttle a recovering agent to a
+// single stream during exactly the window it was trying to recover in.
+func TestHandleTokenCap_DoesNotLowerTheAnnouncedCeiling(t *testing.T) {
 	tc := newSizingClient(t)
-	seedStreams(tc, 5, "srv-a")
-	require.Equal(t, 5, markUsed(tc, 5))
+	tc.serverMaxStreams.Store(64)
+	seedStreams(tc, 3, "srv-a")
 
 	tc.handleTokenCap(1)
 
-	assert.Equal(t, int32(5), tc.serverMaxStreams.Load(),
-		"remembers what the server actually granted")
-	assert.Equal(t, int32(5), tc.targetSlots.Load(),
-		"and stops asking for more")
-}
-
-func TestHandleTokenCap_KeepsTheLowestSeenCeiling(t *testing.T) {
-	tc := newSizingClient(t)
-	tc.serverMaxStreams.Store(3)
-	seedStreams(tc, 9, "srv-a")
-
-	tc.handleTokenCap(1)
-
-	assert.Equal(t, int32(3), tc.serverMaxStreams.Load())
+	assert.Equal(t, int32(64), tc.serverMaxStreams.Load(),
+		"a refusal below the announced cap must not become a new, lower ceiling")
 }
 
 // One stream per pooled connection is an anchor and never retires. A
@@ -564,23 +560,27 @@ func TestRetire_NeverTakesAServerBelowItsOwnReserve(t *testing.T) {
 	assert.Zero(t, got["srv-b"], "already at its reserve")
 }
 
-// Coverage is a preference, not a veto. A server announcing a per-token cap
-// below what the fleet would otherwise hold must still be obeyed, or every
-// stream past the limit is rejected in a reconnect loop.
-func TestRetire_BreaksCoverageRatherThanSitAboveTheCap(t *testing.T) {
+// Capacity is the per-server limit times the servers we are spread over, so it
+// is never smaller than the number of servers: the cap can no longer force the
+// agent below one stream per server, and the old conflict between coverage and
+// the cap is structurally gone. Coverage is still a preference rather than a
+// veto — retireExcess breaks it when the target demands — but the cap is not
+// what demands it any more.
+func TestRetire_CapNeverForcesCoverageLoss(t *testing.T) {
 	tc := newSizingClient(t)
 	_, cancelled := seedRetirable(tc, []string{"srv-a", "srv-b"})
 	tc.serverMaxStreams.Store(1)
 
 	tc.resize()
-	require.Equal(t, int32(1), tc.targetSlots.Load(), "the cap wins over the reserve")
+	require.Equal(t, int32(2), tc.targetSlots.Load(),
+		"two servers granting one stream each is a capacity of two")
 	tc.retireExcess()
 
 	total := 0
 	for _, n := range cancelled() {
 		total += n
 	}
-	assert.Equal(t, 1, total, "still comes down to the cap, coverage or not")
+	assert.Zero(t, total, "both servers keep their stream; nothing is above capacity")
 }
 
 // A stream that has not finished connecting belongs to no server's budget, so
@@ -597,4 +597,105 @@ func TestRetire_SpendsUnconnectedStreamsFirst(t *testing.T) {
 	got := cancelled()
 	assert.Zero(t, got["srv-a"], "srv-a keeps the stream that reaches it")
 	assert.Equal(t, 1, got[""], "the unconnected stream goes instead")
+}
+
+// The server's per-token cap is fixed for the life of a server process: it is
+// read from config at startup, SetMaxStreamsPerToken is called once, and the
+// ServerHello reads it straight from that config. Every pod in the fleet gets
+// the same value, so the cap is knowledge about the fleet rather than about one
+// connection — and a reconnect is exactly the wrong moment to forget it.
+//
+// Start used to zero it. With no announced cap, streamCap falls back to
+// maxStreams (256), so every reconnect reopened a window where the agent
+// believed its ceiling was four times the real one. A reconnect stampede fills
+// that window with concurrent stream opens before the first ServerHello is
+// read, sails past 64, and takes a burst of ResourceExhausted rejections —
+// which is how the agent came to "discover" a cap it had already been told.
+func TestResetForStart_KeepsTheAnnouncedCap(t *testing.T) {
+	tc := newSizingClient(t)
+	tc.serverMaxStreams.Store(64)
+	require.Equal(t, 64, tc.streamCap())
+
+	tc.resetForStart()
+
+	require.Equal(t, 64, tc.streamCap(),
+		"the announced cap must survive a reconnect, or the agent rediscovers it by being refused")
+}
+
+// A cap the agent has never been told is still unknown; the local ceiling
+// applies until some ServerHello says otherwise.
+func TestResetForStart_UnknownCapStaysUnknown(t *testing.T) {
+	tc := newSizingClient(t)
+	tc.resetForStart()
+	require.Equal(t, maxStreams, tc.streamCap())
+}
+
+// Everything that describes the connection we just lost must still be cleared —
+// keeping the cap is a deliberate exception, not a licence to inherit state.
+func TestResetForStart_ClearsPerConnectionState(t *testing.T) {
+	tc := newSizingClient(t)
+	seedStreams(tc, 4, "srv-a", "srv-b")
+	tc.busySlots.Store(3)
+	tc.observedServers.Store(2)
+
+	tc.resetForStart()
+
+	tc.mu.Lock()
+	streams := len(tc.streams)
+	workers := tc.runningWorkers
+	tc.mu.Unlock()
+	assert.Equal(t, 0, streams, "streams from the previous connection must be dropped")
+	assert.Equal(t, 0, workers)
+	assert.Equal(t, int32(0), tc.busySlots.Load())
+	assert.Equal(t, int32(0), tc.observedServers.Load())
+}
+
+// -----------------------------------------------------------------------------
+// Stream cap: our own policy vs the servers' defensive limit
+// -----------------------------------------------------------------------------
+
+// maxStreams and the announced cap are different units. maxStreams is this
+// agent's policy — how many calls it will serve at once, anywhere, since a
+// stream carries exactly one call. The announced cap is how many streams one
+// server instance tolerates from one token, a defensive limit so a single agent
+// cannot stampede one pod. Taking the lower of the two compared those units
+// directly and let one pod's guard become the agent's fleet-wide policy: the
+// agent ran at 64 where its policy is 256. Capacity is the per-server limit
+// times the servers we are actually spread over.
+func TestStreamCap_ScalesWithTheServersWeAreSpreadOver(t *testing.T) {
+	tc := newSizingClient(t)
+	seedStreams(tc, 3, "srv-a", "srv-b", "srv-c")
+	tc.serverMaxStreams.Store(64)
+
+	assert.Equal(t, 192, tc.streamCap(), "three servers granting 64 each is 192")
+}
+
+// With a single server, capacity is just its cap — the case the old clamp was
+// always really defending.
+func TestStreamCap_OneServerIsTheAnnouncedCap(t *testing.T) {
+	tc := newSizingClient(t)
+	seedStreams(tc, 5, "srv-a")
+	tc.serverMaxStreams.Store(64)
+
+	assert.Equal(t, 64, tc.streamCap())
+}
+
+// Before any stream has finished handshaking we do not know how wide the fleet
+// is, so assume the narrowest one that can be true. That keeps the reconnect
+// window conservative rather than optimistic.
+func TestStreamCap_UnknownServerCountAssumesOneServer(t *testing.T) {
+	tc := newSizingClient(t)
+	tc.serverMaxStreams.Store(64)
+
+	assert.Equal(t, 64, tc.streamCap())
+}
+
+// Fleet capacity is an upper bound on what the servers will grant, never a
+// licence to exceed our own concurrency policy.
+func TestStreamCap_NeverExceedsOurOwnPolicy(t *testing.T) {
+	tc := newSizingClient(t)
+	seedStreams(tc, 8, "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8")
+	tc.serverMaxStreams.Store(64)
+
+	assert.Equal(t, maxStreams, tc.streamCap(), "8 x 64 exceeds our own ceiling")
 }
