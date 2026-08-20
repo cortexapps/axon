@@ -1,0 +1,30 @@
+{
+  "name": "path prefixes, origin base paths, percent-encoding",
+  "env": {
+    "GITLAB_API": "https://gitlab.example",
+    "HOSTED_API": "https://git.example/api/v3"
+  },
+  "acceptFile": {
+    "private": [
+      { "method": "any", "path": "/api/v4/*", "origin": "${GITLAB_API}" },
+      { "method": "any", "path": "/repos/*", "origin": "${HOSTED_API}" }
+    ]
+  },
+  "cases": [
+    {
+      "name": "encoded slash in path segment survives to the wire",
+      "request": { "method": "GET", "path": "/api/v4/projects/group%2Fproject" },
+      "expect": { "matched": true, "url": "https://gitlab.example/api/v4/projects/group%2Fproject" }
+    },
+    {
+      "name": "origin base path is prepended",
+      "request": { "method": "GET", "path": "/repos/foo/bar" },
+      "expect": { "matched": true, "url": "https://git.example/api/v3/repos/foo/bar" }
+    },
+    {
+      "name": "encoded query is preserved verbatim",
+      "request": { "method": "GET", "path": "/api/v4/search?scope=projects&search=a%2Fb" },
+      "expect": { "matched": true, "url": "https://gitlab.example/api/v4/search?scope=projects&search=a%2Fb" }
+    }
+  ]
+}

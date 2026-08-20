@@ -1,0 +1,202 @@
+syntax = "proto3";
+package cortex.axon.tunnel.v2;
+
+option go_package = "github.com/cortexapps/axon-server/tunnelpb";
+
+// TunnelService provides a bidirectional streaming tunnel between Axon
+// agents (clients) running inside customer networks and the Cortex-side
+// tunnel server.
+//
+// The wire carries call-oriented frames whose semantics are HTTP/2's
+// semantic layer (HEADERS / DATA / TRAILERS / RESET) without HTTP/2 as the
+// transport. Adapters on the server side translate caller protocols
+// (HTTP/1.1 today, gRPC in the future) into calls; backends on the agent
+// side translate calls into upstream requests. See
+// docs/design/grpc-tunnel-v2.md.
+service TunnelService {
+  // Tunnel establishes one long-lived bidirectional stream.
+  // The client sends ClientHello first and the server answers with
+  // ServerHello; after the handshake both sides exchange heartbeats and
+  // call frames. An agent may open multiple concurrent streams (slots);
+  // in the slot-pool model each stream carries at most one call at a time.
+  rpc Tunnel(stream ClientFrame) returns (stream ServerFrame);
+}
+
+// Client → Server envelope.
+message ClientFrame {
+  oneof msg {
+    ClientHello hello     = 1;
+    Heartbeat   heartbeat = 2;
+    CallFrame   call      = 3;
+  }
+}
+
+// Server → Client envelope.
+message ServerFrame {
+  oneof msg {
+    ServerHello hello     = 1;
+    Heartbeat   heartbeat = 2;
+    CallFrame   call      = 3;
+  }
+}
+
+// ClientHello is the first message sent by the client after opening a
+// stream.
+//
+// Trust model today: possession of broker_token is the credential. The
+// token's meaning — which (tenant, integration, alias) it belongs to — was
+// fixed server-side inside Cortex when the authenticated registration flow
+// minted it, and the Cortex dispatcher addresses tunnel servers by token
+// only. Every field below other than broker_token and cortex_api_token is
+// client-supplied, informational metadata for logging and metrics; servers
+// MUST NOT use it for authorization, routing, or stream-acceptance
+// decisions.
+//
+// Where this is going: cortex_api_token is sent so the server can eventually
+// authenticate the agent directly and read the tenant from the token itself.
+// That removes the reason the registration round-trip exists — it exists only
+// to resolve a tenant from that token — and makes broker_token an internal
+// detail rather than the credential. Nothing validates cortex_api_token yet;
+// it is on the wire so that server-side work can be built and tested against
+// real agents.
+message ClientHello {
+  // Cortex-API-issued token, used for dispatch routing. Same token the
+  // snyk-broker transport uses. The sole credential on this handshake.
+  string broker_token = 1;
+  // Client software version. Informational.
+  string client_version = 2;
+  // Tenant identifier as configured on the agent. Informational —
+  // logging/metrics only; the authoritative tenant is bound to
+  // broker_token server-side.
+  string tenant_id = 3;
+  // Integration type, e.g. "github", "jira". Informational.
+  string integration = 4;
+  // Integration alias name. Informational.
+  string alias = 5;
+  // Unique agent instance ID (from config.InstanceId). Informational.
+  string instance_id = 6;
+  // Field 7 was an earlier cortex_api_token, removed when it shipped a live
+  // credential for a validation flow that did not exist. Field 9 reintroduces
+  // it deliberately, for the flow described above; 7 stays reserved so an
+  // agent on the old schema cannot have its bytes read as the new field.
+  reserved 7;
+  // Arbitrary metadata. Informational.
+  map<string, string> metadata = 8;
+  // The Cortex API token this agent is configured with, for server-side
+  // authentication once that exists. Empty when the agent was given a broker
+  // token directly and never registered.
+  //
+  // This is a live, higher-privilege credential: it authenticates to the
+  // Cortex API, not just to relay dispatch. It must never be logged, echoed
+  // in errors, or included in metrics. Handle it like broker_token, which is
+  // likewise absent from every log line the server writes.
+  string cortex_api_token = 9;
+}
+
+// ServerHello is the response to ClientHello.
+message ServerHello {
+  // Server hostname (HOSTNAME env var, or UUID fallback). The client uses
+  // this for metrics tagging and to cap streams per server instance.
+  string server_id = 1;
+  // Server-generated UUID for this specific stream. Used in BROKER_SERVER
+  // client-connected/deleted notifications to distinguish multiple streams
+  // for the same token.
+  string stream_id = 2;
+  // Interval at which the server sends heartbeats. The client should
+  // respond within 2x this interval.
+  int32 heartbeat_interval_ms = 3;
+  // Maximum CallData payload size the server accepts. The client caps its
+  // outgoing frames accordingly. 0 means the default (1 MiB).
+  int32 max_frame_bytes = 4;
+  // Maximum concurrent streams the server allows per broker token,
+  // across all of the token's agents. The client clamps its slot-pool
+  // maximum accordingly. 0 means no announced cap.
+  int32 max_streams = 5;
+}
+
+// Heartbeat is sent by both sides to verify tunnel liveness while a stream
+// is idle. While a call is active on a stream, heartbeat-timeout
+// enforcement is relaxed: frame trafic proves liveness and transport-level
+// gRPC keepalive covers dead TCP.
+message Heartbeat {
+  // Unix timestamp in milliseconds.
+  int64 timestamp_ms = 1;
+}
+
+// CallFrame carries one event for one logical call. The direction of the
+// enclosing envelope tells you who sent it: the server sends the request
+// (Start/Data/End), the agent sends the response (Start/Data/End) with the
+// same call_id. Either side may send Cancel at any time.
+message CallFrame {
+  string call_id = 1;
+  oneof body {
+    CallStart  start  = 10;
+    CallData   data   = 11;
+    CallEnd    end    = 12;
+    CallCancel cancel = 13;
+  }
+}
+
+// CallStart opens a call (request direction) or begins a response
+// (response direction). It carries metadata only; body bytes follow in
+// CallData frames.
+message CallStart {
+  // HTTP/2-shaped pseudo-headers.
+  // Request direction, required: ":method", ":path". Optional:
+  // ":authority", ":scheme".
+  // Response direction, required: ":status".
+  map<string, string> pseudo_headers = 1;
+  // Regular headers, lowercased keys. Multi-valued headers are joined with
+  // ", " per RFC 9110.
+  map<string, string> headers = 2;
+  // Maximum time in milliseconds the sender will wait for the call to
+  // complete. 0 means no explicit timeout (the receiver applies its own
+  // ceiling). Request direction only.
+  int32 timeout_ms = 3;
+  // Opaque routing hint filled in by the server-side adapter and consumed
+  // by the agent-side dispatcher. Never interpreted by the tunnel service.
+  // Empty for the HTTP adapter (the agent matches on :path).
+  bytes routing_hint = 4;
+
+  // Optional hint about the call shape. Lets the agent pick a backend
+  // without content-type sniffing. Absence means UNARY.
+  Kind kind = 5;
+  enum Kind {
+    UNARY         = 0;
+    SERVER_STREAM = 1;
+    CLIENT_STREAM = 2;
+    BIDI          = 3;
+  }
+}
+
+// CallData carries body bytes. Frames are ordered per call_id on a given
+// stream; payload size must not exceed ServerHello.max_frame_bytes.
+message CallData {
+  bytes payload = 1;
+}
+
+// CallEnd terminates a call direction normally. At most one End is sent
+// per call per direction.
+message CallEnd {
+  // HTTP trailers or gRPC status trailers (grpc-status, grpc-message,
+  // grpc-status-details-bin). Empty for a plain HTTP/1 response with no
+  // trailers.
+  map<string, string> trailers = 1;
+}
+
+// CallCancel aborts a call. Unlike CallEnd it is a call-level control
+// frame, not a direction terminal: either side may send it at any point
+// in the call's life, including after its own CallEnd (e.g. the server
+// cancels a live response when its caller walks away). Receivers treat it
+// idempotently: stop producing frames for the call and release its
+// resources.
+//
+// When the agent sends it before its response CallStart, code carries an
+// HTTP status hint the server-side HTTP adapter uses for the error
+// response (e.g. 404 no matching accept-file rule, 502 upstream
+// unreachable, 503 agent at in-flight cap). 0 means unspecified (the
+// adapter picks).
+message CallCancel {
+  string reason = 1;
+  int32  code   = 2;
+}

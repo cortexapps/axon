@@ -1,0 +1,66 @@
+{
+  "name": "auth schemes and header injection",
+  "env": {
+    "UPSTREAM": "https://upstream.example",
+    "API_TOKEN": "tok-123",
+    "BASIC_USER": "svc-user",
+    "BASIC_PASS": "svc-pass"
+  },
+  "acceptFile": {
+    "private": [
+      {
+        "method": "GET",
+        "path": "/bearer/*",
+        "origin": "${UPSTREAM}",
+        "auth": { "scheme": "bearer", "token": "${API_TOKEN}" }
+      },
+      {
+        "method": "GET",
+        "path": "/basic/*",
+        "origin": "${UPSTREAM}",
+        "auth": { "scheme": "basic", "username": "${BASIC_USER}", "password": "${BASIC_PASS}" }
+      },
+      {
+        "method": "GET",
+        "path": "/headers/*",
+        "origin": "${UPSTREAM}",
+        "headers": { "X-Injected": "from-rule", "X-Team": "axon" }
+      }
+    ]
+  },
+  "cases": [
+    {
+      "name": "bearer token from env",
+      "request": { "method": "GET", "path": "/bearer/thing" },
+      "expect": {
+        "matched": true,
+        "url": "https://upstream.example/bearer/thing",
+        "headers": { "authorization": "Bearer tok-123" }
+      }
+    },
+    {
+      "name": "basic auth from env",
+      "request": { "method": "GET", "path": "/basic/thing" },
+      "expect": {
+        "matched": true,
+        "headers": { "authorization": "Basic c3ZjLXVzZXI6c3ZjLXBhc3M=" }
+      }
+    },
+    {
+      "name": "rule headers injected and override caller",
+      "request": {
+        "method": "GET",
+        "path": "/headers/thing",
+        "headers": { "x-injected": "from-caller", "x-caller": "kept" }
+      },
+      "expect": {
+        "matched": true,
+        "headers": {
+          "x-injected": "from-rule",
+          "x-team": "axon",
+          "x-caller": "kept"
+        }
+      }
+    }
+  ]
+}

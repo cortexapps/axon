@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"sync"
 
 	"github.com/cortexapps/axon/config"
 	axonHttp "github.com/cortexapps/axon/server/http"
@@ -20,6 +21,11 @@ type AcceptFile struct {
 	content []byte
 	config  config.AgentConfig
 	logger  *zap.Logger
+
+	// schemeWarned remembers which origins we have already reported as
+	// missing a scheme. Origin() runs on every routed request, so without
+	// this the same line is emitted once per request forever.
+	schemeWarned sync.Map
 }
 
 // NewAcceptFile creates a new AcceptFile instance, taking the raw content of the accept file
@@ -47,6 +53,11 @@ func NewAcceptFile(content []byte, cfg config.AgentConfig, logger *zap.Logger) (
 
 	af.wrapper = newAcceptFileWrapper(processedContent, af)
 	return af, nil
+}
+
+// Wrapper returns the typed wrapper for accessing accept file rules.
+func (a *AcceptFile) Wrapper() acceptFileWrapper {
+	return a.wrapper
 }
 
 type RenderContext struct {
@@ -145,28 +156,28 @@ func newAcceptFileWrapper(content []byte, af *AcceptFile) acceptFileWrapper {
 	return acceptFileWrapper{dict: dict, acceptFile: af}
 }
 
-func (w acceptFileWrapper) PrivateRules() []acceptFileRuleWrapper {
+func (w acceptFileWrapper) PrivateRules() []AcceptFileRuleWrapper {
 	return w.rules(RULES_PRIVATE)
 }
 
-func (w acceptFileWrapper) PublicRules() []acceptFileRuleWrapper {
+func (w acceptFileWrapper) PublicRules() []AcceptFileRuleWrapper {
 	return w.rules(RULES_PUBLIC)
 }
 
-func (w acceptFileWrapper) rules(routeType string) []acceptFileRuleWrapper {
+func (w acceptFileWrapper) rules(routeType string) []AcceptFileRuleWrapper {
 	routesEntry, ok := w.dict[routeType].([]interface{})
 	if !ok {
 		routesEntry = []any{}
 		w.dict[routeType] = routesEntry
 	}
 
-	routes := make([]acceptFileRuleWrapper, len(routesEntry))
+	routes := make([]AcceptFileRuleWrapper, len(routesEntry))
 	for i, route := range routesEntry {
 		routeDict, ok := route.(map[string]any)
 		if !ok {
 			return nil
 		}
-		routes[i] = acceptFileRuleWrapper{
+		routes[i] = AcceptFileRuleWrapper{
 			dict:       routeDict,
 			acceptFile: w.acceptFile,
 		}
@@ -175,10 +186,10 @@ func (w acceptFileWrapper) rules(routeType string) []acceptFileRuleWrapper {
 }
 
 // AddRule adds a new route to the accept file for the specified route type.
-func (w acceptFileWrapper) AddRule(routeType string, entry acceptFileRule) acceptFileRuleWrapper {
+func (w acceptFileWrapper) AddRule(routeType string, entry acceptFileRule) AcceptFileRuleWrapper {
 
 	// with a little extra work here we could probably just directly use
-	// the entry structure above, but the acceptFileRuleWrapper takes a dict so we need
+	// the entry structure above, but the AcceptFileRuleWrapper takes a dict so we need
 	// to convert it to a map[string]any first, so we round trip it through JSON.
 
 	routeAsJson, err := json.Marshal(entry)
@@ -193,7 +204,7 @@ func (w acceptFileWrapper) AddRule(routeType string, entry acceptFileRule) accep
 	existingRoutes := w.dict[routeType].([]any)
 	w.dict[routeType] = append([]any{routeDict}, existingRoutes...)
 	// without the back-reference every accessor that logs would nil-deref
-	return acceptFileRuleWrapper{dict: routeDict, acceptFile: w.acceptFile}
+	return AcceptFileRuleWrapper{dict: routeDict, acceptFile: w.acceptFile}
 }
 
 func (w acceptFileWrapper) toJSON() ([]byte, error) {
@@ -204,12 +215,14 @@ func (w acceptFileWrapper) toJSON() ([]byte, error) {
 	return jsonData, nil
 }
 
-type acceptFileRuleWrapper struct {
+// AcceptFileRuleWrapper provides strongly typed access to a single accept file rule
+// parsed from the raw JSON dictionary.
+type AcceptFileRuleWrapper struct {
 	dict       map[string]any
 	acceptFile *AcceptFile
 }
 
-func (r acceptFileRuleWrapper) Origin() string {
+func (r AcceptFileRuleWrapper) Origin() string {
 	rawOrigin, ok := r.dict["origin"].(string)
 	if !ok {
 		return ""
@@ -220,7 +233,9 @@ func (r acceptFileRuleWrapper) Origin() string {
 		r.acceptFile.logger.Panic("failed to parse origin URL", zap.String("origin", rawOrigin), zap.Error(err))
 	}
 	if asUrl.Scheme == "" {
-		r.acceptFile.logger.Warn("origin URL has no scheme, defaulting to https", zap.String("origin", rawOrigin))
+		if _, seen := r.acceptFile.schemeWarned.LoadOrStore(rawOrigin, struct{}{}); !seen {
+			r.acceptFile.logger.Debug("origin URL has no scheme, defaulting to https", zap.String("origin", rawOrigin))
+		}
 		asUrl.Scheme = "https"
 		return asUrl.String()
 	}
@@ -228,7 +243,7 @@ func (r acceptFileRuleWrapper) Origin() string {
 
 }
 
-func (r acceptFileRuleWrapper) Path() string {
+func (r AcceptFileRuleWrapper) Path() string {
 	path, ok := r.dict["path"].(string)
 	if !ok {
 		return ""
@@ -236,11 +251,40 @@ func (r acceptFileRuleWrapper) Path() string {
 	return path
 }
 
-func (r acceptFileRuleWrapper) SetOrigin(origin string) {
+func (r AcceptFileRuleWrapper) SetOrigin(origin string) {
 	r.dict["origin"] = origin
 }
 
-func (r acceptFileRuleWrapper) Headers() ResolverMap {
+func (r AcceptFileRuleWrapper) Method() string {
+	method, ok := r.dict["method"].(string)
+	if !ok {
+		return ""
+	}
+	return method
+}
+
+func (r AcceptFileRuleWrapper) Auth() *AcceptFileRuleAuth {
+	authDict, ok := r.dict["auth"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	auth := &AcceptFileRuleAuth{}
+	if scheme, ok := authDict["scheme"].(string); ok {
+		auth.Scheme = scheme
+	}
+	if username, ok := authDict["username"].(string); ok {
+		auth.Username = username
+	}
+	if password, ok := authDict["password"].(string); ok {
+		auth.Password = password
+	}
+	if token, ok := authDict["token"].(string); ok {
+		auth.Token = token
+	}
+	return auth
+}
+
+func (r AcceptFileRuleWrapper) Headers() ResolverMap {
 	headers, ok := r.dict["headers"].(map[string]any)
 	if !ok {
 		return nil
@@ -255,6 +299,50 @@ func (r acceptFileRuleWrapper) Headers() ResolverMap {
 	return result
 }
 
+// ValidHeaderRequirement represents a header validation rule from the "valid" field.
+type ValidHeaderRequirement struct {
+	Header string
+	Values []string
+}
+
+// Valid returns the header validation requirements for this rule.
+// If the rule has a "valid" field, incoming requests must have headers matching these requirements.
+func (r AcceptFileRuleWrapper) Valid() []ValidHeaderRequirement {
+	validArr, ok := r.dict["valid"].([]any)
+	if !ok {
+		return nil
+	}
+
+	var requirements []ValidHeaderRequirement
+	for _, item := range validArr {
+		itemDict, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		header, _ := itemDict["header"].(string)
+		if header == "" {
+			continue
+		}
+
+		var values []string
+		if valuesArr, ok := itemDict["values"].([]any); ok {
+			for _, v := range valuesArr {
+				if str, ok := v.(string); ok {
+					values = append(values, str)
+				}
+			}
+		}
+
+		requirements = append(requirements, ValidHeaderRequirement{
+			Header: header,
+			Values: values,
+		})
+	}
+
+	return requirements
+}
+
 // Here are our JSON structed types that represent the accept file rules.
 // that we can use for things that we are generating such that we don't need to worry
 // about additional fields that might be in the accept file that we don't know about.
@@ -263,13 +351,38 @@ type acceptFileRule struct {
 	Method  string              `json:"method"`
 	Path    string              `json:"path"`
 	Origin  string              `json:"origin"`
-	Auth    *acceptFileRuleAuth `json:"auth,omitempty"`
+	Auth    *AcceptFileRuleAuth `json:"auth,omitempty"`
 	Headers map[string]string   `json:"headers,omitempty"`
 }
 
-type acceptFileRuleAuth struct {
+type AcceptFileRuleAuth struct {
 	Scheme   string `json:"scheme"`
 	Username string `json:"username,omitempty"`
 	Password string `json:"password,omitempty"`
 	Token    string `json:"token,omitempty"`
+}
+
+// Rule represents a routing rule from the accept file.
+type Rule struct {
+	Method  string
+	Path    string
+	Origin  string
+	Headers ResolverMap
+}
+
+// GetPrivateRules returns the private routing rules from the accept file.
+func (a *AcceptFile) GetPrivateRules() []Rule {
+	wrapper := newAcceptFileWrapper(a.content, a)
+	wrappedRules := wrapper.PrivateRules()
+
+	rules := make([]Rule, len(wrappedRules))
+	for i, r := range wrappedRules {
+		rules[i] = Rule{
+			Method:  r.Method(),
+			Path:    r.Path(),
+			Origin:  r.Origin(),
+			Headers: r.Headers(),
+		}
+	}
+	return rules
 }

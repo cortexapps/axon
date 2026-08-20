@@ -1,0 +1,18 @@
+{
+  "public": [
+    {
+      "method": "any",
+      "path": "/*"
+    }
+  ],
+  "private": [
+    {
+      "method": "any",
+      "path": "/echo/*",
+      "origin": "${ECHO_ORIGIN}",
+      "headers": {
+        "x-load-injected": "yes"
+      }
+    }
+  ]
+}

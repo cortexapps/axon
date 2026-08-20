@@ -59,6 +59,13 @@ func (m RelayReflectorMode) IsEnabled() bool {
 	return m != RelayReflectorDisabled
 }
 
+type RelayMode string
+
+const (
+	RelayModeSnykBroker RelayMode = "snyk-broker"
+	RelayModeGrpcTunnel RelayMode = "grpc-tunnel"
+)
+
 type AgentConfig struct {
 	GrpcPort              int
 	CortexApiBaseUrl      string
@@ -87,10 +94,52 @@ type AgentConfig struct {
 	HttpRelayReflectorMode    RelayReflectorMode
 	ReflectorWebSocketUpgrade bool
 	RelayIdleTimeout          time.Duration
+
+	// RelayMode selects the tunnel implementation: "snyk-broker" or "grpc-tunnel".
+	RelayMode string
+	// TunnelConns is how many gRPC connections the agent opens outbound, and
+	// the only tunnel dial there is. Each is load-balanced round-robin
+	// across every server instance, so this is a blast-radius decision:
+	// losing one costs 1/TunnelConns of capacity for as long as it takes to
+	// redial, and never all of it.
+	//
+	// Everything else about the tunnel sizes itself. Streams are opened on
+	// demand as calls arrive and given back as they finish, so concurrency
+	// is whatever the agent can actually serve rather than a number anyone
+	// has to pick.
+	TunnelConns int
+	// UpstreamMaxConnsPerHost bounds concurrent connections the agent opens
+	// to any single upstream host, and sets the idle-connection pool size to
+	// match so concurrent calls reuse connections instead of handshaking.
+	//
+	// Unlike the tunnel, this bounds something we do not control: the
+	// upstream is the customer's own service, whose capacity we can neither
+	// discover nor safely exceed.
+	UpstreamMaxConnsPerHost int
+	// MaxInflightRequests caps concurrent in-flight requests dispatched into the
+	// agent across all streams. Requests over the cap queue until capacity
+	// frees or their deadline expires (then fail with a 503-coded cancel).
+	MaxInflightRequests int
+	// MaxRequestTimeout is the absolute ceiling on any single request, even when
+	// the server provides TimeoutMs=0. Prevents goroutine accumulation during
+	// slow-loris downstream incidents.
+	MaxRequestTimeout time.Duration
+	// RegistrationRefreshInterval controls how often the agent re-registers with
+	// the Cortex API to pick up rotated tokens. 0 disables periodic refresh.
+	RegistrationRefreshInterval time.Duration
+	// GrpcInsecure disables TLS on the gRPC tunnel connection (separate from HttpDisableTLS).
+	GrpcInsecure bool
+	// GrpcTunnelServer is the address of the gRPC tunnel server (host:port).
+	GrpcTunnelServer string
 }
 
 func (ac AgentConfig) HttpBaseUrl() string {
 	return fmt.Sprintf("http://localhost:%d", ac.HttpServerPort)
+}
+
+// IsGRPCTunnel returns true if the relay mode is grpc-tunnel.
+func (ac AgentConfig) IsGRPCTunnel() bool {
+	return ac.RelayMode == "grpc-tunnel"
 }
 
 func (ac AgentConfig) Print() {
@@ -143,6 +192,17 @@ func getInstanceId() string {
 		panic(fmt.Errorf("error reading instance id: %v", err))
 	}
 	return string(id)
+}
+
+// envFirst returns the first non-empty value among the given environment
+// variable names.
+func envFirst(names ...string) string {
+	for _, n := range names {
+		if v := os.Getenv(n); v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func NewAgentEnvConfig() AgentConfig {
@@ -310,6 +370,70 @@ func NewAgentEnvConfig() AgentConfig {
 			panic(err)
 		}
 		cfg.RelayIdleTimeout = rit
+	}
+
+	// AXON_RELAY_TRANSPORT is the documented name (design doc §10);
+	// RELAY_MODE is accepted as an alias.
+	cfg.RelayMode = "snyk-broker"
+	if relayMode := envFirst("AXON_RELAY_TRANSPORT", "RELAY_MODE"); relayMode != "" {
+		cfg.RelayMode = relayMode
+	}
+
+	cfg.TunnelConns = 4
+	if v := os.Getenv("AXON_GRPC_TUNNEL_CONNS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			panic(err)
+		}
+		if n < 1 {
+			panic("AXON_GRPC_TUNNEL_CONNS must be >= 1")
+		}
+		cfg.TunnelConns = n
+	}
+
+	cfg.UpstreamMaxConnsPerHost = 128
+	if v := os.Getenv("AXON_UPSTREAM_MAX_CONNS_PER_HOST"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			panic(err)
+		}
+		if n < 1 {
+			panic("AXON_UPSTREAM_MAX_CONNS_PER_HOST must be >= 1")
+		}
+		cfg.UpstreamMaxConnsPerHost = n
+	}
+
+	if grpcInsecure := envFirst("AXON_GRPC_TUNNEL_INSECURE", "GRPC_INSECURE"); grpcInsecure == "true" {
+		cfg.GrpcInsecure = true
+	}
+
+	cfg.GrpcTunnelServer = os.Getenv("GRPC_TUNNEL_SERVER")
+
+	cfg.MaxInflightRequests = 256
+	if maxInflight := os.Getenv("MAX_INFLIGHT_REQUESTS"); maxInflight != "" {
+		v, err := strconv.Atoi(maxInflight)
+		if err != nil {
+			panic(err)
+		}
+		cfg.MaxInflightRequests = v
+	}
+
+	cfg.MaxRequestTimeout = 5 * time.Minute
+	if maxReqTimeout := envFirst("AXON_GRPC_TUNNEL_MAX_REQUEST_TIMEOUT", "MAX_REQUEST_TIMEOUT"); maxReqTimeout != "" {
+		v, err := time.ParseDuration(maxReqTimeout)
+		if err != nil {
+			panic(err)
+		}
+		cfg.MaxRequestTimeout = v
+	}
+
+	cfg.RegistrationRefreshInterval = 12 * time.Hour
+	if refresh := os.Getenv("REGISTRATION_REFRESH_INTERVAL"); refresh != "" {
+		v, err := time.ParseDuration(refresh)
+		if err != nil {
+			panic(err)
+		}
+		cfg.RegistrationRefreshInterval = v
 	}
 
 	return cfg

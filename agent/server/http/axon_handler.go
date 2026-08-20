@@ -97,6 +97,19 @@ func getBuildVersion() string {
 	return "dev"
 }
 
+// relayMode reports the transport this agent relays over. It answers with the
+// effective transport rather than echoing the configured string: an unset mode
+// means the snyk-broker default rather than "unknown", and only an exact
+// "grpc-tunnel" selects the tunnel, so anything else — a typo included — is
+// running snyk-broker and is reported as such. Deciding this through the same
+// predicate the relay itself switches on keeps the two from drifting.
+func (h *axonHandler) relayMode() string {
+	if h.config.IsGRPCTunnel() {
+		return string(config.RelayModeGrpcTunnel)
+	}
+	return string(config.RelayModeSnykBroker)
+}
+
 func (h *axonHandler) healthcheck(w http.ResponseWriter, r *http.Request) {
 	result := map[string]interface{}{
 		"OK": true,
@@ -107,17 +120,23 @@ func (h *axonHandler) healthcheck(w http.ResponseWriter, r *http.Request) {
 func (h *axonHandler) info(w http.ResponseWriter, r *http.Request) {
 
 	result := &struct {
-		Integration string   `json:"integration"`
-		Alias       string   `json:"alias"`
-		Handlers    []string `json:"handlers"`
-		InstanceID  string   `json:"instance_id"`
+		Integration  string   `json:"integration"`
+		Alias        string   `json:"alias"`
+		Handlers     []string `json:"handlers"`
+		InstanceID   string   `json:"instance_id"`
 		BuildVersion string   `json:"build_version"`
+		// Which relay transport this agent is running: "snyk-broker" or
+		// "grpc-tunnel". Reported so the fleet's transport mix is visible
+		// from the backend rather than inferred from which server an agent
+		// happens to be connected to.
+		RelayMode string `json:"relay_mode"`
 	}{
-		InstanceID:  h.config.InstanceId,
-		Integration: h.config.Integration,
-		Alias:       h.config.IntegrationAlias,
-		Handlers:    []string{},
+		InstanceID:   h.config.InstanceId,
+		Integration:  h.config.Integration,
+		Alias:        h.config.IntegrationAlias,
+		Handlers:     []string{},
 		BuildVersion: getBuildVersion(),
+		RelayMode:    h.relayMode(),
 	}
 
 	handlers, err := h.fetchHandlers(r)

@@ -68,6 +68,11 @@ func newCapturingLogger(t *testing.T) (*zap.Logger, func() string) {
 	return logger, w.contents
 }
 
+// syncBuffer is a bytes.Buffer safe to read while writers are still going.
+// Its writers outlive the test that started them — the supervisor's line
+// pumps keep draining after Wait() returns, and request goroutines keep
+// logging after the reflector test finishes — so an unguarded buffer races
+// with any assertion on its contents.
 type syncBuffer struct {
 	mu  sync.Mutex
 	buf bytes.Buffer
