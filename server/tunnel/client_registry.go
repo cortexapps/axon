@@ -64,10 +64,40 @@ func (s *StreamHandle) Busy() bool {
 // notifications, never authorization or routing decisions; the broker
 // token is the sole credential and dispatch key.
 type ClientIdentity struct {
-	TenantID    string
-	Integration string
-	Alias       string
-	InstanceID  string
+	TenantID      string
+	Integration   string
+	Alias         string
+	InstanceID    string
+	ClientVersion string
+}
+
+// LogFields renders the client's attribution for a log line.
+//
+// tokenHash is always present: BROKER_SERVER logs the same hash as its
+// connection id, so it is the only field that joins a line here to the
+// dispatcher's view of the same token.
+//
+// The client-supplied fields are omitted when empty rather than written as "",
+// so a missing value can be queried as missing. tenant_id matters most: the
+// agent sources it solely from CORTEX_TENANT_ID, which is set nowhere outside
+// the local test compose files, so it arrives empty in real deployments.
+// Emitting "" there would attribute every such line to one non-existent
+// tenant and make a blank column indistinguishable from a real empty id.
+func (i ClientIdentity) LogFields(token broker.Token) []zap.Field {
+	fields := make([]zap.Field, 0, 6)
+	fields = append(fields, zap.String("tokenHash", token.Hashed()))
+	for _, opt := range []struct{ key, value string }{
+		{"tenantId", i.TenantID},
+		{"integration", i.Integration},
+		{"alias", i.Alias},
+		{"instanceId", i.InstanceID},
+		{"clientVersion", i.ClientVersion},
+	} {
+		if opt.value != "" {
+			fields = append(fields, zap.String(opt.key, opt.value))
+		}
+	}
+	return fields
 }
 
 // clientEntry represents all connections for a single broker token.
@@ -149,12 +179,16 @@ func (r *ClientRegistry) SetMaxStreamsPerToken(n int) {
 }
 
 // Register adds a new stream for a broker token, enforcing the per-token
-// stream cap. Identity is client-supplied and informational: a tenant
+// stream cap. It reports whether this stream took the token from zero
+// connections to one, which is the only change BROKER_SERVER needs to hear
+// about — the mirror of the 1->0 edge Unregister returns. Stream count is the
+// counter behind both edges, and both are computed under this lock, so
+// concurrent stream opens cannot both see themselves as the transition. Identity is client-supplied and informational: a tenant
 // mismatch across streams of the same token is logged as likely agent
 // misconfiguration but never rejects the stream — the token, not the
 // claimed identity, is the credential (the first-seen identity remains
 // the entry's display identity).
-func (r *ClientRegistry) Register(token broker.Token, identity ClientIdentity, stream *StreamHandle) error {
+func (r *ClientRegistry) Register(token broker.Token, identity ClientIdentity, stream *StreamHandle) (bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -168,7 +202,7 @@ func (r *ClientRegistry) Register(token broker.Token, identity ClientIdentity, s
 			)
 		}
 		if r.maxStreamsPerToken > 0 && len(existing.Streams) >= r.maxStreamsPerToken {
-			return fmt.Errorf("%w (%d)", ErrTokenStreamCap, r.maxStreamsPerToken)
+			return false, fmt.Errorf("%w (%d)", ErrTokenStreamCap, r.maxStreamsPerToken)
 		}
 		existing.Streams[stream.StreamID] = stream
 		stream.onRelease = r.makeOnRelease(key, stream)
@@ -177,12 +211,12 @@ func (r *ClientRegistry) Register(token broker.Token, identity ClientIdentity, s
 		// has not changed — only its stream count. Registered new client
 		// below is the transition, and stays at Info.
 		r.logger.Debug("Added stream to existing client entry",
-			zap.String("tenantId", identity.TenantID),
-			zap.String("instanceId", identity.InstanceID),
-			zap.String("streamId", stream.StreamID),
-			zap.Int("totalStreams", len(existing.Streams)),
+			append(identity.LogFields(token),
+				zap.String("streamId", stream.StreamID),
+				zap.Int("totalStreams", len(existing.Streams)),
+			)...,
 		)
-		return nil
+		return false, nil
 	}
 
 	entry := &clientEntry{
@@ -195,13 +229,21 @@ func (r *ClientRegistry) Register(token broker.Token, identity ClientIdentity, s
 	r.entries[key] = entry
 
 	r.logger.Info("Registered new client",
-		zap.String("tenantId", identity.TenantID),
-		zap.String("integration", identity.Integration),
-		zap.String("alias", identity.Alias),
-		zap.String("instanceId", identity.InstanceID),
-		zap.String("streamId", stream.StreamID),
+		append(identity.LogFields(token), zap.String("streamId", stream.StreamID))...,
 	)
-	return nil
+	return true, nil
+}
+
+// IsBrokerServerRegistered reports whether the client-connected notification
+// for this token has landed. The flag lives on the client entry, so a token
+// that loses every connection clears it and its reconnect is announced afresh
+// rather than assumed known.
+func (r *ClientRegistry) IsBrokerServerRegistered(token broker.Token) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	entry, ok := r.entries[token.Hashed()]
+	return ok && entry.BrokerServerRegistered.Load()
 }
 
 // makeOnRelease builds the callback that returns a stream to its entry's

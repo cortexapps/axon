@@ -26,7 +26,7 @@ func registerN(t *testing.T, r *ClientRegistry, token broker.Token, n int) []*St
 			Send:     func(*pb.ServerFrame) error { return nil },
 			Cancel:   func() {},
 		}
-		require.NoError(t, r.Register(token, ClientIdentity{TenantID: "t"}, h))
+		mustRegister(t, r, token, ClientIdentity{TenantID: "t"}, h)
 		handles = append(handles, h)
 	}
 	return handles
@@ -174,7 +174,7 @@ func TestIdleStack_StreamCapStillEnforced(t *testing.T) {
 	r.SetMaxStreamsPerToken(2)
 	registerN(t, r, token, 2)
 
-	err := r.Register(token, ClientIdentity{TenantID: "t"}, &StreamHandle{
+	_, err := r.Register(token, ClientIdentity{TenantID: "t"}, &StreamHandle{
 		StreamID: "s-over", Send: func(*pb.ServerFrame) error { return nil }, Cancel: func() {},
 	})
 	require.ErrorIs(t, err, ErrTokenStreamCap)

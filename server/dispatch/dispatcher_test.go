@@ -71,7 +71,7 @@ func newTestDispatcher(t *testing.T) (*Dispatcher, *tunnel.ClientRegistry, broke
 		Send:     fs.send,
 		Cancel:   func() {},
 	}
-	require.NoError(t, registry.Register(token, tunnel.ClientIdentity{TenantID: "t1"}, handle))
+	mustRegister(t, registry, token, tunnel.ClientIdentity{TenantID: "t1"}, handle)
 	return d, registry, token, fs, handle
 }
 
@@ -356,4 +356,10 @@ func TestDispatch_ConsumerCloseCancelsCall(t *testing.T) {
 	fr := fs.next(t)
 	require.NotNil(t, fr.GetCancel(), "expected CallCancel after consumer close, got %v", fr)
 	assert.Eventually(t, func() bool { return d.InflightCount() == 0 }, time.Second, 10*time.Millisecond)
+}
+
+func mustRegister(t *testing.T, r *tunnel.ClientRegistry, token broker.Token, id tunnel.ClientIdentity, h *tunnel.StreamHandle) {
+	t.Helper()
+	_, err := r.Register(token, id, h)
+	require.NoError(t, err)
 }

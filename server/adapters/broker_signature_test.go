@@ -98,10 +98,10 @@ func TestConnectionStatus_CarriesExpressHeaders(t *testing.T) {
 	require.Equal(t, dispatcherBroker404ETag, etagOf(t, w.Header()))
 	require.Equal(t, "no-connection", w.Header().Get("x-broker-failure"))
 
-	require.NoError(t, registry.Register(broker.NewToken(rawToken),
+	mustRegister(t, registry, broker.NewToken(rawToken),
 		tunnel.ClientIdentity{InstanceID: "axon-test", TenantID: "1"},
 		&tunnel.StreamHandle{StreamID: "s1", Send: func(*pb.ServerFrame) error { return nil }},
-	))
+	)
 
 	w = httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/connection-status/"+rawToken, nil))

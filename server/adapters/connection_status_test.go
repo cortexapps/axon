@@ -37,10 +37,10 @@ func TestConnectionStatus_AnsweredAtBothPaths(t *testing.T) {
 	}
 
 	// Register a stream for the token, the way a connected agent does.
-	require.NoError(t, registry.Register(token,
+	mustRegister(t, registry, token,
 		tunnel.ClientIdentity{InstanceID: "axon-test", TenantID: "1"},
 		&tunnel.StreamHandle{StreamID: "stream-1", Send: func(*pb.ServerFrame) error { return nil }},
-	))
+	)
 
 	for _, path := range []string{"/connection-status/", "/broker/connection-status/"} {
 		w := httptest.NewRecorder()
@@ -48,4 +48,10 @@ func TestConnectionStatus_AnsweredAtBothPaths(t *testing.T) {
 		require.Equal(t, http.StatusOK, w.Code, "path %s, client registered", path)
 		require.JSONEq(t, `{"ok":true}`, w.Body.String())
 	}
+}
+
+func mustRegister(t *testing.T, r *tunnel.ClientRegistry, token broker.Token, id tunnel.ClientIdentity, h *tunnel.StreamHandle) {
+	t.Helper()
+	_, err := r.Register(token, id, h)
+	require.NoError(t, err)
 }

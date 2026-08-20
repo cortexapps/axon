@@ -27,13 +27,26 @@ type FrameHandler func(streamID string, frame *pb.CallFrame)
 type StreamCloseHandler func(streamID string)
 
 // Service implements the TunnelService gRPC server.
+// brokerNotifier is the part of broker.Client the notification paths use,
+// named as an interface so tests can drive delivery failures without a
+// BROKER_SERVER.
+type brokerNotifier interface {
+	ClientConnected(ctx context.Context, token broker.Token, clientID string, metadata map[string]string) error
+	ClientDisconnected(ctx context.Context, token broker.Token, clientID string) error
+}
+
 type Service struct {
 	pb.UnimplementedTunnelServiceServer
 
-	config             config.Config
-	logger             *zap.Logger
-	registry           *ClientRegistry
-	brokerClient       *broker.Client
+	config       config.Config
+	logger       *zap.Logger
+	registry     *ClientRegistry
+	brokerClient brokerNotifier
+
+	// Retry spacing for the client-connected loop; fields so tests need not
+	// wait out real backoff.
+	notifyBackoff      time.Duration
+	notifyMaxBackoff   time.Duration
 	metrics            *metrics.Metrics
 	frameHandler       FrameHandler
 	streamCloseHandler StreamCloseHandler
@@ -46,16 +59,18 @@ func NewService(
 	cfg config.Config,
 	logger *zap.Logger,
 	registry *ClientRegistry,
-	brokerClient *broker.Client,
+	brokerClient brokerNotifier,
 	m *metrics.Metrics,
 ) *Service {
 	registry.SetMaxStreamsPerToken(cfg.MaxStreamsPerToken)
 	return &Service{
-		config:       cfg,
-		logger:       logger,
-		registry:     registry,
-		brokerClient: brokerClient,
-		metrics:      m,
+		config:           cfg,
+		logger:           logger,
+		registry:         registry,
+		brokerClient:     brokerClient,
+		notifyBackoff:    5 * time.Second,
+		notifyMaxBackoff: time.Minute,
+		metrics:          m,
 	}
 }
 
@@ -107,10 +122,11 @@ func (s *Service) Tunnel(stream pb.TunnelService_TunnelServer) error {
 	token := broker.NewToken(hello.BrokerToken)
 
 	identity := ClientIdentity{
-		TenantID:    hello.TenantId,
-		Integration: hello.Integration,
-		Alias:       hello.Alias,
-		InstanceID:  hello.InstanceId,
+		TenantID:      hello.TenantId,
+		Integration:   hello.Integration,
+		Alias:         hello.Alias,
+		InstanceID:    hello.InstanceId,
+		ClientVersion: hello.ClientVersion,
 	}
 
 	// Debug, not Info: a stream opens whenever a call needs one, so at Info
@@ -161,11 +177,19 @@ func (s *Service) Tunnel(stream pb.TunnelService_TunnelServer) error {
 	}
 
 	// Register in client registry (now safe — handshake is done).
-	if err := s.registry.Register(token, identity, handle); err != nil {
+	firstConnection, err := s.registry.Register(token, identity, handle)
+	if err != nil {
 		if errors.Is(err, ErrTokenStreamCap) {
+			// Every field here earns its place: without tokenHash the
+			// warning cannot be lined up with the dispatcher's logs for the
+			// same token, and without the agent identifiers it names no agent
+			// at all — which is what made a cap breach in staging
+			// untraceable.
 			s.logger.Warn("Rejecting stream: token at stream cap",
-				zap.String("tenantId", identity.TenantID),
-				zap.Int("cap", s.config.MaxStreamsPerToken),
+				append(identity.LogFields(token),
+					zap.String("streamId", streamID),
+					zap.Int("cap", s.config.MaxStreamsPerToken),
+				)...,
 			)
 			return status.Error(codes.ResourceExhausted, err.Error())
 		}
@@ -178,8 +202,13 @@ func (s *Service) Tunnel(stream pb.TunnelService_TunnelServer) error {
 	// Start stream duration tracking.
 	stopwatch := s.metrics.StreamDuration(identity.TenantID, identity.Integration, identity.Alias)
 
-	// Notify BROKER_SERVER asynchronously (infinite retry).
-	go s.notifyClientConnected(ctx, token, hello.InstanceId, hello.ClientVersion)
+	// Notify BROKER_SERVER only when this stream is the token's 0->1
+	// connection edge, the mirror of the 1->0 edge that drives
+	// client-disconnected. Every other stream is churn BROKER_SERVER does not
+	// need and, at 64 streams per reconnect, could not absorb quietly.
+	if firstConnection {
+		go s.notifyClientConnected(token, hello.InstanceId, hello.ClientVersion)
+	}
 
 	// Start heartbeat sender.
 	heartbeatDone := make(chan struct{})
@@ -321,22 +350,40 @@ func (s *Service) cleanupStream(token broker.Token, streamID string, stopwatch i
 	}
 }
 
-// notifyClientConnected sends client-connected to BROKER_SERVER. The
-// client retries transient failures internally; this outer loop adds
-// unbounded persistence — registration must eventually land as long as
-// the stream lives — with a longer backoff between client-level rounds.
-func (s *Service) notifyClientConnected(ctx context.Context, token broker.Token, clientID, clientVersion string) {
-	backoff := 5 * time.Second
-	maxBackoff := time.Minute
+// notifyClientConnected sends client-connected to BROKER_SERVER and keeps
+// trying until it lands. It is spawned on the token's 0->1 connection edge, so
+// unlike the old per-stream call there is no next stream to carry a retry: the
+// loop is the only thing standing between a transient BROKER_SERVER failure and
+// a token BROKER_SERVER believes is offline until the next re-registration tick.
+//
+// It exits on exactly three conditions: the delivery succeeded, the
+// registration is already complete, or the token has no connections left to
+// announce. Deliberately not bound to the triggering stream's context — the
+// task belongs to the token, and that stream may close while others remain.
+func (s *Service) notifyClientConnected(token broker.Token, clientID, clientVersion string) {
+	backoff := s.notifyBackoff
 
 	for {
+		if s.registry.IsBrokerServerRegistered(token) {
+			return
+		}
+		// No entry means every connection for this token is gone; the
+		// client-disconnected path owns that transition.
+		if s.registry.GetIdentity(token) == nil {
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		err := s.brokerClient.ClientConnected(ctx, token, clientID, map[string]string{
 			"broker_client_version": clientVersion,
 		})
+		cancel()
+
 		if err == nil {
 			s.registry.SetBrokerServerRegistered(token)
-			// One per stream open, so Debug for the same reason as "Client
-			// connecting" above. A failure to notify is still logged loudly below.
+			// One per connection edge now rather than per stream, but still
+			// Debug: the operator-visible transition is "Registered new
+			// client" at Info. A failure is logged loudly below.
 			s.logger.Debug("BROKER_SERVER client-connected succeeded",
 				zap.String("clientId", clientID),
 			)
@@ -348,13 +395,8 @@ func (s *Service) notifyClientConnected(ctx context.Context, token broker.Token,
 			zap.Duration("backoff", backoff),
 		)
 
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(backoff):
-		}
-
-		backoff = min(backoff*2, maxBackoff)
+		time.Sleep(backoff)
+		backoff = min(backoff*2, s.notifyMaxBackoff)
 	}
 }
 
