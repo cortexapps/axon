@@ -1,0 +1,12 @@
+{
+  "private": [
+    {
+      "method": "any",
+      "path": "/*",
+      "origin": "${GOOGLE_API:https://*.googleapis.com}",
+      "headers": {
+        "authorization": "${plugin:google-adc}"
+      }
+    }
+  ]
+}

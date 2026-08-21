@@ -274,3 +274,32 @@ func writeTempFile(t *testing.T, contents string) string {
 	require.NoError(t, err)
 	return f.Name()
 }
+
+// Read rather than rendered: rendering constructs the credential provider, and
+// whether that succeeds depends on the machine running the test.
+func TestGoogleDefaultAcceptFileTemplate(t *testing.T) {
+	setAcceptFileDir(t)
+
+	ii := IntegrationInfo{Integration: IntegrationGoogle}
+	require.NoError(t, ii.Validate())
+
+	contents, err := ii.getAcceptFileContents()
+	require.NoError(t, err)
+
+	// Every Google API host Cortex calls sits exactly one label under
+	// googleapis.com, so one wildcard rule covers all of them.
+	require.Contains(t, contents, `"origin": "${GOOGLE_API:https://*.googleapis.com}"`)
+
+	require.Contains(t, contents, `"authorization": "${plugin:google-adc}"`)
+
+	// The accept file is the destination policy and the customer's IAM is the
+	// permission policy. A service list here would look authoritative while sitting
+	// on the wrong side of the trust boundary.
+	require.NotContains(t, contents, "allowlist")
+}
+
+func TestGoogleIsAValidIntegration(t *testing.T) {
+	parsed, err := ParseIntegration("google")
+	require.NoError(t, err)
+	require.Equal(t, IntegrationGoogle, parsed)
+}

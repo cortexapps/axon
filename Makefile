@@ -25,6 +25,7 @@ setup:
 
 test:
 	$(MAKE) -C agent test
+	$(MAKE) -C plugins/google-adc test test-race
 	@echo "TODO: sdk go test"
 	$(MAKE) -C sdks/go test
 	$(MAKE) -C scaffold test

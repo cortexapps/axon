@@ -28,6 +28,8 @@ const (
 	IntegrationBitbucket  Integration = "bitbucket"
 	IntegrationPrometheus Integration = "prometheus"
 	IntegrationHarness    Integration = "harness"
+	// Named for the server-side enum, which is Google rather than GCP.
+	IntegrationGoogle Integration = "google"
 )
 
 var subtypes = map[Integration][]string{
@@ -60,7 +62,7 @@ func ParseIntegration(s string) (Integration, error) {
 }
 
 func ValidIntegrations() []Integration {
-	return []Integration{IntegrationCustom, IntegrationGithub, IntegrationJira, IntegrationGitlab, IntegrationBitbucket, IntegrationSonarqube, IntegrationPrometheus, IntegrationHarness}
+	return []Integration{IntegrationCustom, IntegrationGithub, IntegrationJira, IntegrationGitlab, IntegrationBitbucket, IntegrationSonarqube, IntegrationPrometheus, IntegrationHarness, IntegrationGoogle}
 }
 
 type IntegrationInfo struct {

@@ -2,6 +2,8 @@ __debug*
 .generated/
 *_mock.go
 axon-agent
+# Built by `make plugins` from ../plugins.
+plugins/google-adc
 *.pyc
 # mitmproxy: ignore generated/derived files, track CA files
 test/relay/.mitmproxy/broker-server-*

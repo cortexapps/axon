@@ -13,6 +13,10 @@ ENV GOPATH="/root/go"
 ENV GOPROXY="https://proxy.golang.org,direct"
 ENV PATH="${GOROOT}/bin:${GOPATH}/bin:${PATH}"
 
+# Built before the agent so a change to agent code does not invalidate this layer.
+COPY plugins/. /build-plugins/.
+RUN cd /build-plugins/google-adc && go build -o /plugins/google-adc .
+
 COPY agent/. /build/.
 RUN make -C /build setup proto
 RUN cd /build && go build -o /agent/cortex-axon-agent
@@ -84,6 +88,8 @@ COPY agent/server/snykbroker/accept_files /agent/accept_files
 ENV ACCEPTFILE_DIR=/agent/accept_files
 
 COPY agent/server/snykbroker/plugins /agent/plugins
+# Joins the shipped scripts; nothing distinguishes them at runtime.
+COPY --from=builder /plugins/google-adc /agent/plugins/google-adc
 ENV BUILTIN_PLUGIN_DIR=/agent/plugins
 
 COPY /scaffold/. /app/scaffold/.

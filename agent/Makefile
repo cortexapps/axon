@@ -44,7 +44,21 @@ setup:
 		fi; \
 	fi
 
-build:
+# Compiled plugins are separate Go modules, so their dependencies stay out of the
+# agent binary. They build into a directory on PLUGIN_DIRS and are found by name.
+# PLUGIN_SRC_DIR is overridable for the Docker build, which has no sibling
+# ../plugins.
+PLUGIN_SRC_DIR ?= ../plugins
+PLUGIN_OUT_DIR ?= $(CURDIR)/plugins
+
+plugins:
+	@if [ ! -d "$(PLUGIN_SRC_DIR)/google-adc" ]; then \
+		echo "no plugin sources at $(PLUGIN_SRC_DIR); set PLUGIN_SRC_DIR"; exit 1; \
+	fi
+	$(MAKE) -C $(PLUGIN_SRC_DIR)/google-adc build OUT_DIR=$(PLUGIN_OUT_DIR)
+.PHONY: plugins
+
+build: plugins
 	go build -o axon-agent main.go
 
 mockgen:
@@ -84,6 +98,12 @@ test-race: mocks
 	go test -race -run '^($(REFLECTOR_TESTS))$$' ./server/snykbroker/
 
 .PHONY: test-race
+
+# Live check of the Google credential source against whatever Application Default
+# Credentials this machine has. Opt-in: it makes real requests to Google.
+test-google-live: plugins
+	AXON_GOOGLE_LIVE_TEST=1 go test -count=1 -run TestLiveGoogle -v ./server/snykbroker/
+.PHONY: test-google-live
 
 validate-filters:
 	test/validate_filters.sh
