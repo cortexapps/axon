@@ -56,19 +56,22 @@ func CreateResolver(value string, logger *zap.Logger, pluginDirs []string) Value
 
 	return ValueResolver{
 		Key: value,
-		Resolve: func() string {
+		Resolve: func() (string, error) {
 
 			execContent := content
 			for _, plugin := range plugins {
 				// replace the plugin variable with the output of the plugin
 				pluginOutput, err := plugin.Plugin.Execute()
 				if err != nil {
+					// Leaving the placeholder in the value would send it upstream as the
+					// credential, and the upstream's refusal would then read as an
+					// authorization failure rather than the provider failure it is.
 					logger.Error("failed to execute plugin", zap.String("plugin", plugin.Plugin.FullPath), zap.Error(err))
-					continue
+					return "", fmt.Errorf("credential provider %q failed: %w", plugin.Plugin.FullPath, err)
 				}
 				execContent = strings.ReplaceAll(execContent, plugin.Content, strings.Trim(pluginOutput, "\n"))
 			}
-			return execContent
+			return execContent, nil
 		},
 	}
 }
@@ -116,14 +119,16 @@ func findPlugins(content string, pluginDirs []string, logger *zap.Logger) []Plug
 }
 
 type ValueResolver struct {
-	Resolve func() string
+	// Resolve runs the plugin behind the value, so it can fail. A failure must
+	// travel rather than degrade to a placeholder that looks like a credential.
+	Resolve func() (string, error)
 	Key     string
 }
 
 func StringValueResolver(value string) ValueResolver {
 	return ValueResolver{
-		Resolve: func() string {
-			return value
+		Resolve: func() (string, error) {
+			return value, nil
 		},
 		Key: value,
 	}
@@ -151,18 +156,22 @@ func (rm ResolverMap) Names() []string {
 	return names
 }
 
-func (rm ResolverMap) ToStringMap() map[string]string {
+func (rm ResolverMap) ToStringMap() (map[string]string, error) {
 	resolved := make(map[string]string, len(rm))
 	for key, resolver := range rm {
-		resolved[key] = resolver.Resolve()
+		value, err := resolver.Resolve()
+		if err != nil {
+			return nil, fmt.Errorf("header %q: %w", key, err)
+		}
+		resolved[key] = value
 	}
-	return resolved
+	return resolved, nil
 }
 
-func (rm ResolverMap) Resolve(key string) string {
+func (rm ResolverMap) Resolve(key string) (string, error) {
 	resolver, ok := rm[key]
 	if !ok {
-		return ""
+		return "", nil
 	}
 	return resolver.Resolve()
 }
