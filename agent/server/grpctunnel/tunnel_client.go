@@ -181,9 +181,36 @@ type tunnelStream struct {
 
 	// inflight counts calls currently running on this stream — always 0 or
 	// 1, since a stream carries one call at a time. lastCallAt is the
-	// UnixNano timestamp of the last call start or completion.
+	// UnixNano timestamp of the last call start or completion, and is zero
+	// until the stream carries its first call.
+	//
+	// openedAt is when the handshake finished, and it is a separate field
+	// because the two answer different questions. Sizing asks whether a
+	// stream has carried a call, so opening one must not answer yes;
+	// retirement asks how long a stream has been quiet, and for a stream
+	// that has never carried a call the answer is "since it opened", not
+	// "since the epoch".
 	inflight   atomic.Int32
 	lastCallAt atomic.Int64
+	openedAt   atomic.Int64
+
+	// retiring marks a stream the agent is cancelling on purpose, set before
+	// the cancel so the worker running it can tell a retirement from a
+	// failure. Without it a deliberate cancel arrived as "context canceled"
+	// and was handled as a broken stream: logged at Warn, counted as a
+	// reconnect, and — the part that actually hurt — allowed to escalate the
+	// worker's backoff, so a slot retired for being surplus came back slower
+	// every time it happened.
+	retiring atomic.Bool
+}
+
+// quietSince is the UnixNano instant this stream last did anything worth
+// counting: carried a call, or failing that, came into existence.
+func (ts *tunnelStream) quietSince() int64 {
+	if last := ts.lastCallAt.Load(); last != 0 {
+		return last
+	}
+	return ts.openedAt.Load()
 }
 
 // streamCtx bundles the per-stream values needed to run streamLoop after a
@@ -821,6 +848,22 @@ func (tc *tunnelClient) sizeLoop() {
 // wants. A healthy stream sits blocked in Recv and would otherwise never
 // notice that the target dropped.
 //
+// How many to cancel and which ones to cancel are separate questions, and
+// keeping them apart is the whole of this function. The count comes from the
+// fleet: streams open, less the target. The choice comes from the per-server
+// budgets, because that is where a surplus can be spent without costing
+// coverage.
+//
+// Letting the per-server budgets decide the count as well is what churned. A
+// pod holding one stream more than its share is the ordinary state of an
+// evenly-sized fleet — placement is the balancer's business, not ours — so
+// there was always something over budget to cancel, and cancelling it left
+// the agent below target, so a replacement opened at once and the balancer
+// was just as free to put it back on the same pod. The result was a worker
+// cancelled and reopened every tick for as long as the agent ran, each cycle
+// paying a round trip, a dispatcher notification and a redis write for no
+// change in the fleet.
+//
 // Only streams idle for a full tick are eligible, which keeps the window
 // narrow in which the server dispatches onto a stream we are cancelling; the
 // dispatcher fails such a call back to its caller.
@@ -834,7 +877,13 @@ func (tc *tunnelClient) retireExcess() {
 
 	tc.mu.Lock()
 
-	// Grouped by server, because that is the unit the decision belongs to. A
+	surplus := tc.runningWorkers - int(tc.targetSlots.Load())
+	if surplus <= 0 {
+		tc.mu.Unlock()
+		return
+	}
+
+	// Grouped by server, because that is the unit the choice belongs to. A
 	// server dispatches only onto the streams registered with itself, so its
 	// own recent traffic says how many it needs, and its last stream is its
 	// entire ability to reach this agent — retire that and the server
@@ -855,20 +904,24 @@ func (tc *tunnelClient) retireExcess() {
 		switch {
 		case st.inflight.Load() != 0 || st.lastCallAt.Load() >= staleBefore:
 			g.used++
-		case st.anchor || st.lastCallAt.Load() >= cutoff:
+		case st.anchor || st.quietSince() >= cutoff:
 			g.pinned++
 		default:
 			g.prunable = append(g.prunable, st)
 		}
 	}
 
-	var doomed []*tunnelStream
+	// The order the surplus is spent in. Streams with no server yet go first:
+	// they protect no coverage, because no dispatcher knows about them. Then
+	// whatever sits above a server's own budget, which is the surplus wherever
+	// the fleet count came from. Only then the stalest anywhere, for the case
+	// the first two do not cover the count — a cap dropping under us, or every
+	// server sitting exactly at budget while the fleet is still over target.
+	var spend, overBudget, rest []*tunnelStream
 	for serverID, g := range groups {
 		sortStalestFirst(g.prunable)
-
-		// Streams with no server yet belong to no server's budget. Leave them
-		// to the connect path; they are only spent below, if the cap forces it.
 		if serverID == "" {
+			spend = append(spend, g.prunable...)
 			continue
 		}
 
@@ -879,62 +932,37 @@ func (tc *tunnelClient) retireExcess() {
 		if keep < 1 {
 			keep = 1
 		}
-		prune := g.used + g.pinned + len(g.prunable) - keep
-		if prune > len(g.prunable) {
-			prune = len(g.prunable)
+		over := g.used + g.pinned + len(g.prunable) - keep
+		if over > len(g.prunable) {
+			over = len(g.prunable)
 		}
-		for i := 0; i < prune; i++ {
-			doomed = append(doomed, g.prunable[i])
-			g.prunable[i] = nil
+		if over < 0 {
+			over = 0
 		}
+		overBudget = append(overBudget, g.prunable[:over]...)
+		rest = append(rest, g.prunable[over:]...)
 	}
+	sortStalestFirst(overBudget)
+	sortStalestFirst(rest)
+	spend = append(spend, overBudget...)
+	spend = append(spend, rest...)
 
-	// The cap is the one thing allowed to break coverage: a server announcing
-	// a per-token limit below what the fleet would otherwise hold must still be
-	// obeyed, or every stream past it is rejected in a loop. Unassigned streams
-	// go first — they cost no coverage — then the stalest anywhere.
-	if over := tc.runningWorkers - len(doomed) - int(tc.targetSlots.Load()); over > 0 {
-		var assigned []*tunnelStream
-		for serverID, g := range groups {
-			if serverID == "" {
-				continue
-			}
-			for _, st := range g.prunable {
-				if st != nil {
-					assigned = append(assigned, st)
-				}
-			}
-		}
-		sortStalestFirst(assigned)
+	if surplus > len(spend) {
+		surplus = len(spend)
+	}
+	doomed := spend[:surplus]
 
-		// Unassigned first whatever their age, then the stalest of the rest.
-		rest := groups[""].prunableOrNil()
-		rest = append(rest, assigned...)
-		for i := 0; i < len(rest) && over > 0; i++ {
-			doomed = append(doomed, rest[i])
-			over--
-		}
+	// Marked under the lock, so the worker running the stream cannot see the
+	// cancel before the reason for it and report a deliberate retirement as a
+	// broken stream.
+	for _, st := range doomed {
+		st.retiring.Store(true)
 	}
 	tc.mu.Unlock()
 
 	for _, st := range doomed {
 		st.cancel()
 	}
-}
-
-// prunableOrNil returns the group's prunable streams, tolerating a group that
-// does not exist — there may be no unassigned streams at all.
-func (g *serverStreams) prunableOrNil() []*tunnelStream {
-	if g == nil {
-		return nil
-	}
-	out := make([]*tunnelStream, 0, len(g.prunable))
-	for _, st := range g.prunable {
-		if st != nil {
-			out = append(out, st)
-		}
-	}
-	return out
 }
 
 // serverStreams buckets one server's streams by what may be done with them.
@@ -951,7 +979,7 @@ type serverStreams struct {
 // traffic has stopped reaching for.
 func sortStalestFirst(streams []*tunnelStream) {
 	sort.Slice(streams, func(i, j int) bool {
-		return streams[i].lastCallAt.Load() < streams[j].lastCallAt.Load()
+		return streams[i].quietSince() < streams[j].quietSince()
 	})
 }
 
@@ -983,8 +1011,26 @@ func (tc *tunnelClient) manageStream(id int) {
 		}
 		first = false
 
-		err := tc.runOneStream(id, recovering)
+		retired, err := tc.runOneStream(id, recovering)
 		recovering = false
+
+		// We cancelled this stream ourselves. Nothing failed, so nothing here
+		// escalates: no warning, no reconnect counted, and above all no
+		// backoff growth — that is what made a slot retired for being surplus
+		// come back slower every time, until it was spending more of its life
+		// waiting than serving.
+		if retired {
+			if tc.tryRetireWorker(id) {
+				tc.logger.Debug("Tunnel slot retired", zap.Int("slot", id))
+				return
+			}
+			// The target moved back up while the cancel was in flight, or this
+			// slot anchors a connection and cannot leave. Reopen from a clean
+			// slate rather than from a failure's backoff.
+			backoff = minBackoff
+			continue
+		}
+
 		if err == nil || tc.parentCtx.Err() != nil {
 			// Clean shutdown or no error path (shouldn't really happen — runOneStream
 			// returns an error whenever the stream ends).
@@ -1057,11 +1103,13 @@ func (tc *tunnelClient) handleTokenCap(id int) {
 
 // runOneStream opens a stream on a pooled connection, handshakes, and runs
 // streamLoop until the stream ends. Returns the terminating error (or nil on
-// clean shutdown).
-func (tc *tunnelClient) runOneStream(id int, recovering bool) error {
+// clean shutdown), and whether the stream ended because retireExcess
+// cancelled it — which reaches the worker as an ordinary Canceled error and
+// is otherwise indistinguishable from the connection breaking.
+func (tc *tunnelClient) runOneStream(id int, recovering bool) (retired bool, err error) {
 	sc, err := tc.openSlot(id, recovering)
 	if err != nil {
-		return err
+		return false, err
 	}
 	tc.addStream(sc.ts)
 	defer func() {
@@ -1073,7 +1121,8 @@ func (tc *tunnelClient) runOneStream(id int, recovering bool) error {
 	// Success — reset the global failure counter.
 	tc.consecFailures.Store(0)
 
-	return tc.streamLoop(sc)
+	err = tc.streamLoop(sc)
+	return sc.ts.retiring.Load(), err
 }
 
 // openSlot borrows a pooled connection, opens a stream on it and performs
@@ -1162,15 +1211,7 @@ func (tc *tunnelClient) openSlot(id int, recovering bool) (*streamCtx, error) {
 	// connection only the first stream takes a slot, since every stream on it
 	// talks to the same backend. That keeps MaxStreamsPerServer meaning "how
 	// many connections may land on one server instance" in every mode.
-	ts := &tunnelStream{
-		id:       id,
-		streamID: serverHello.StreamId,
-		serverID: serverHello.ServerId,
-		conn:     conn,
-		cancel:   cancel,
-		anchor:   id <= tc.anchorSlots(),
-	}
-	ts.lastCallAt.Store(time.Now().UnixNano())
+	ts := newTunnelStream(id, serverHello, conn, cancel, id <= tc.anchorSlots())
 
 	tc.connectionsActive.WithLabelValues(ts.serverID).Inc()
 
@@ -1198,6 +1239,28 @@ func (tc *tunnelClient) openSlot(id int, recovering bool) (*streamCtx, error) {
 		hbMs:          serverHello.HeartbeatIntervalMs,
 		maxFrameBytes: serverHello.MaxFrameBytes,
 	}, nil
+}
+
+// newTunnelStream records a stream the handshake has just established.
+//
+// It stamps openedAt and deliberately leaves lastCallAt at zero. Stamping
+// lastCallAt here made a new stream indistinguishable from one that had just
+// carried a call, for a full streamIdleWindow — so every stream the reserve
+// opened counted itself as used on the next sizing tick, and the target grew
+// by another whole reserve. The ramp fed on itself: it needed no traffic,
+// climbed to the cap at a reserve per second, collapsed when the stamps aged
+// out together, and started again.
+func newTunnelStream(id int, hello *pb.ServerHello, conn *grpc.ClientConn, cancel context.CancelFunc, anchor bool) *tunnelStream {
+	ts := &tunnelStream{
+		id:       id,
+		streamID: hello.StreamId,
+		serverID: hello.ServerId,
+		conn:     conn,
+		cancel:   cancel,
+		anchor:   anchor,
+	}
+	ts.openedAt.Store(time.Now().UnixNano())
+	return ts
 }
 
 // makeSendFunc wraps stream.Send with a mutex (so multiple goroutines can call

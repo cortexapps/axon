@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	pb "github.com/cortexapps/axon/.generated/proto/github.com/cortexapps/axon/tunnelpb"
 	"github.com/cortexapps/axon/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -539,8 +540,13 @@ func TestRetire_PrunesFromTheServerHoldingTheSurplus(t *testing.T) {
 	tc.retireExcess()
 
 	got := cancelled()
-	assert.Equal(t, 5, got["srv-a"],
-		"srv-a sheds to its own recent use plus its share of the reserve")
+	// Four, not five: five is what srv-a holds above its own budget, but the
+	// fleet is only four above target, and the fleet count is what says how
+	// many streams to give back. Shedding the fifth would leave the agent
+	// below target and a replacement would open on the next tick — the churn
+	// that per-server quotas used to cause.
+	assert.Equal(t, 4, got["srv-a"],
+		"the surplus is the fleet's, and srv-a is where it is cheapest to spend")
 	assert.Zero(t, got["srv-b"], "srv-b was not the one holding the surplus")
 }
 
@@ -698,4 +704,140 @@ func TestStreamCap_NeverExceedsOurOwnPolicy(t *testing.T) {
 	tc.serverMaxStreams.Store(64)
 
 	assert.Equal(t, maxStreams, tc.streamCap(), "8 x 64 exceeds our own ceiling")
+}
+
+// -----------------------------------------------------------------------------
+// A stream that has never carried a call
+// -----------------------------------------------------------------------------
+
+// openToTarget stands in for the stream workers: it brings the client up to
+// whatever resize last asked for, placing new streams round-robin across the
+// named servers the way the balancer does. The streams arrive the way the
+// handshake makes them, which is the point of the helper — never having
+// carried a call.
+func openToTarget(tc *tunnelClient, servers ...string) {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+	if tc.streams == nil {
+		tc.streams = map[*tunnelStream]struct{}{}
+	}
+	for i := len(tc.streams); i < int(tc.targetSlots.Load()); i++ {
+		hello := &pb.ServerHello{ServerId: servers[i%len(servers)]}
+		tc.streams[newTunnelStream(i+1, hello, nil, func() {}, false)] = struct{}{}
+	}
+	tc.runningWorkers = len(tc.streams)
+}
+
+// The regression this is all for. With DEBUG on and a fleet of four servers,
+// a quiet agent logged a flood of "Tunnel stream established" climbing by a
+// reserve every second up to the cap, then a flood of retirements a minute
+// later, then did it again.
+//
+// The cause was the handshake stamping lastCallAt, which is the signal for
+// "carried a call". Every stream the reserve opened therefore counted itself
+// as used on the next tick, and the target grew by another whole reserve.
+// The ramp fed on itself, so it needed no traffic at all to run.
+func TestSizing_DoesNotRampWhileIdle(t *testing.T) {
+	tc := newSizingClient(t)
+	tc.pool = newConnPool(1)
+
+	// Enough ticks that a ramp of one reserve each would be unmistakable, and
+	// all of them well inside streamIdleWindow.
+	for tick := 0; tick < 10; tick++ {
+		tc.refreshObservedServers()
+		tc.resize()
+		openToTarget(tc, "srv-a", "srv-b", "srv-c", "srv-d")
+	}
+
+	assert.Equal(t, int32(4*idleStreamsPerServer), tc.targetSlots.Load(),
+		"an idle agent settles on the reserve, however long it stays idle")
+}
+
+// The other half of the same distinction: a stream is surplus once it has
+// been quiet, and a stream that has never carried a call has been quiet since
+// it opened. Its age, not the zero timestamp, is what says how quiet.
+func TestSizing_NeverUsedStreamsAgeOutOfTheTarget(t *testing.T) {
+	tc := newSizingClient(t)
+	tc.pool = newConnPool(1)
+	tc.resize()
+	openToTarget(tc, "srv-a")
+
+	require.Equal(t, int32(idleStreamsPerServer), tc.targetSlots.Load())
+	assert.Equal(t, 0, tc.usedWithin(streamIdleWindow),
+		"opening a stream is not using it")
+}
+
+// A stream the handshake has only just finished must survive its first tick.
+// It is the reserve arriving; cancelling it is the churn the reserve exists
+// to avoid.
+func TestRetireExcess_SparesStreamsThatJustOpened(t *testing.T) {
+	tc := newSizingClient(t)
+	tc.pool = newConnPool(1)
+
+	cancelled := 0
+	tc.mu.Lock()
+	tc.streams = map[*tunnelStream]struct{}{}
+	for i := 0; i < 6; i++ {
+		ts := newTunnelStream(i+1, &pb.ServerHello{ServerId: "srv-a"}, nil,
+			func() { cancelled++ }, false)
+		tc.streams[ts] = struct{}{}
+	}
+	tc.runningWorkers = 6
+	tc.mu.Unlock()
+	tc.refreshObservedServers()
+
+	// A target below what is open: without the grace period every one of
+	// these is a candidate the instant it connects.
+	tc.targetSlots.Store(int32(idleStreamsPerServer))
+	tc.retireExcess()
+
+	assert.Zero(t, cancelled, "streams opened inside the last tick are not surplus yet")
+}
+
+// Where the streams land is the balancer's business, not ours, so the fleet
+// is rarely divided evenly — a pod holding one more than its share is the
+// normal case, not a fault.
+//
+// Pruning for that alone buys nothing and costs plenty. The agent is still
+// one short of target the moment the stream dies, so a replacement opens at
+// once and the balancer is just as free to put it back on the same pod. The
+// staging symptom was a worker cancelled and reopened every few seconds
+// forever, each cycle paying a round trip, a dispatcher notification and a
+// redis write, with its reconnect backoff climbing 1s, 2s, 4s, 16s — so the
+// slot spent most of its life waiting rather than serving.
+func TestRetireExcess_DoesNotChurnWhenTheFleetIsAtTarget(t *testing.T) {
+	tc := newSizingClient(t)
+	_, cancelled := seedRetirable(tc, []string{
+		"srv-a", "srv-a", "srv-a", "srv-b", "srv-b", "srv-c", "srv-c", "srv-d",
+	})
+
+	tc.resize()
+	require.Equal(t, int32(8), tc.targetSlots.Load(), "the reserve across four servers")
+	tc.retireExcess()
+
+	total := 0
+	for _, n := range cancelled() {
+		total += n
+	}
+	assert.Zero(t, total,
+		"an uneven spread is not a surplus: the fleet holds exactly what the target asks for")
+}
+
+// A stream the agent cancelled on purpose did not fail, and the worker that
+// was running it must not report it as a failure: that is what escalated the
+// backoff, so a slot retired for being surplus came back slower every time.
+func TestRetire_MarksTheStreamSoTheWorkerKnowsItWasDeliberate(t *testing.T) {
+	tc := newSizingClient(t)
+	byServer, _ := seedRetirable(tc, []string{"srv-a", "srv-a", "srv-a", "srv-a"})
+
+	tc.targetSlots.Store(2)
+	tc.retireExcess()
+
+	retiring := 0
+	for _, ts := range byServer["srv-a"] {
+		if ts.retiring.Load() {
+			retiring++
+		}
+	}
+	assert.Equal(t, 2, retiring, "the surplus is marked, and only the surplus")
 }
