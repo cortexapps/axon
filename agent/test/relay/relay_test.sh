@@ -16,7 +16,12 @@ set -e
 
 # Start a snyk broker, capture the ID
 export TOKEN=0e481b34-76ac-481a-a92f-c94a6cf6f6c1
-export SERVER_PORT=57341
+# Host ports are kept BELOW the ephemeral range (32768-60999 on Linux,
+# 49152-65535 on macOS). The test opens many outbound connections, and one of
+# them transiently claiming a listener's port as its source port makes the
+# next `compose up` fail with "address already in use". load_test.sh hit this
+# and pins its ports the same way.
+export SERVER_PORT=17341
 
 if [ "$PROXY" == "1" ]
 then
@@ -46,7 +51,7 @@ else
 
     # just for fun also set the HTTP_PORT to a different value to ensure
     # we respect that port as well
-    export HTTP_PORT=58080
+    export HTTP_PORT=17080
 fi
 
 # Create an exit trap to stop the broker when the script exits
@@ -119,176 +124,31 @@ function curlw {
     echo "$curl_result"
 }
 
-echo "Checking axon endpoints..."
-# First make sure we can call the status endpoint which is implemented by
-# the agent, so this is localhost right at the agent
+# Ingress for this transport. Everything the shared scenarios assert is
+# addressed relative to it, so the same checks run against both relays.
+export DISPATCH_URL="http://localhost:$SERVER_PORT/broker/$TOKEN"
+export EXPECT_RELAY_MODE=snyk-broker
+source ./relay_scenarios.sh
 
-info_result=$(curlw http://localhost:$SERVER_PORT/broker/$TOKEN/__axon/info)
-result=$(echo "$info_result" | jq -r '.alias')
-if [ "$result" != "axon-test" ]; then
-    echo "FAIL: Expected alias 'axon-test', got '$result'"
-    echo "=== Info response: $info_result ==="
-    echo "=== axon-relay logs (last 50) ==="
-    docker compose $COMPOSE_FILES logs --tail=50 axon-relay
-    if [ "$PROXY" == "1" ]; then
-        echo "=== mitmproxy logs (last 30) ==="
-        docker compose $COMPOSE_FILES logs --tail=30 mitmproxy
-        echo "=== Certificate files ==="
-        ls -la .mitmproxy/*.pem .mitmproxy/*.crt 2>/dev/null || echo "No certs found"
-    fi
-    exit 1
-fi
-result=$(echo "$info_result" | jq -r '.integration')
-if [ "$result" != "github" ]; then
-    echo "FAIL: Expected integration type 'github', got '$result'"
-    exit 1
-fi
+# snyk-broker only returns a relayed body when asked for a raw response.
+run_shared_scenarios -H "x-broker-ws-response: true"
 
-
-echo "Checking relay broker passthrough..."
-# Now we check that we can invoke a local service via the broker.  In this case
-# its just a python -m http.server that we run in the docker-compose file against /tmp
-#
-# The file we look for is at /tmp/token, mounted into the python-server container, which
-# is a fake service that we use to test the relay broker
-#
-FILENAME="token-$(date +%s)"
-echo "$TOKEN" > /tmp/$FILENAME
-echo "$TOKEN" > /tmp/axon-test-token
-result=$(curlw http://localhost:$SERVER_PORT/broker/$TOKEN/$FILENAME)
-
-if [ "$result" != "$TOKEN" ]; then
-    echo "FAIL: Expected $TOKEN, got $result"
-    exit 1
-fi
-
-echo "Checking binary file relay passthrough..."
-BINARY_FILENAME="binary-test-$(date +%s).bin"
-dd if=/dev/urandom of="/tmp/$BINARY_FILENAME" bs=1024 count=1024 2>/dev/null
-ORIGINAL_CHECKSUM=$(sha256sum "/tmp/$BINARY_FILENAME" | awk '{print $1}')
-
-# Must use curl -o directly (not curlw) — shell variables corrupt binary data
-BINARY_DOWNLOAD="/tmp/${BINARY_FILENAME}.downloaded"
-curl -s -f -H "x-broker-ws-response: true" -o "$BINARY_DOWNLOAD" "http://localhost:$SERVER_PORT/broker/$TOKEN/$BINARY_FILENAME"
-DOWNLOAD_STATUS=$?
-if [ $DOWNLOAD_STATUS -ne 0 ]; then
-    echo "FAIL: curl failed to download binary file (exit code $DOWNLOAD_STATUS)"
-    exit 1
-fi
-
-DOWNLOADED_CHECKSUM=$(sha256sum "$BINARY_DOWNLOAD" | awk '{print $1}')
-if [ "$ORIGINAL_CHECKSUM" != "$DOWNLOADED_CHECKSUM" ]; then
-    echo "FAIL: Binary checksum mismatch"
-    echo "  Original:   $ORIGINAL_CHECKSUM ($(stat -c%s /tmp/$BINARY_FILENAME) bytes)"
-    echo "  Downloaded: $DOWNLOADED_CHECKSUM ($(stat -c%s $BINARY_DOWNLOAD) bytes)"
-    exit 1
-else
-    echo "Success: Binary file (1MB) checksum verified ($ORIGINAL_CHECKSUM)"
-fi
-
-# Verify the GitLab scaffolder Basic-auth injection (mirrors accept.gitlab.json).
-# The /gitlab/* rule in accept-client.json carries:
-#   auth: { scheme: basic, username: ${GITLAB_USERNAME:oauth2}, password: ${GITLAB_TOKEN} }
-# GITLAB_USERNAME is unset, so the username falls back to "oauth2" and the broker should
-# inject "Authorization: Basic base64(oauth2:gitlab-test-token)" toward the echo origin,
-# which reflects request headers back to us. This is the auth-scheme injection that the
-# git-over-HTTP clone path depends on and that the file-shape unit test cannot cover.
-echo "Checking GitLab scaffolder Basic-auth injection..."
-gitlab_auth_result=$(curlw "http://localhost:$SERVER_PORT/broker/$TOKEN/gitlab/myrepo.git/info/refs?service=git-upload-pack")
-expected_gitlab_auth="Basic $(printf '%s' 'oauth2:gitlab-test-token' | base64)"
-if ! echo "$gitlab_auth_result" | grep -qF "$expected_gitlab_auth"; then
-    echo "FAIL: Expected injected GitLab Basic auth ($expected_gitlab_auth) not found in echoed headers"
-    echo "$gitlab_auth_result"
-    exit 1
-else
-    echo "Success: GitLab accept rule injected Basic auth on the git smart-HTTP path"
-fi
-
-# To validate this we call out to the AXON readme, which hits an HTTPS server
-# so we validate proxy and cert handling
-if ! proxy_result=$(curlw -f -v http://localhost:$SERVER_PORT/broker/$TOKEN/cortexapps/axon/refs/heads/main/README.md 2>&1)
-then
-    echo "FAIL: Expected to be able to read the axon readme from github, but got error"
-    echo "$proxy_result"
-    exit 1
-fi
-
-#
-# Now we check that HTTP_PROXY and friends support works correctly, both with
-# it configured (with a cert) and with it not
-# 
 if [ "$PROXY" == "1" ]; then
-    echo "Checking relay HTTP_PROXY config..."
-    if ! (echo "$proxy_result" | grep -i "x-proxy-mitmproxy")
-    then
-        echo "FAIL: Expected 'x-proxy-mitmproxy' header, got nothing"
-        exit 1
-    else
-        echo "Success: Found 'x-proxy-mitmproxy' header"
-    fi
-
-    if ! (echo "$proxy_result" | grep -i "x-axon-relay-instance:")
-    then
-        echo "FAIL: Expected 'x-axon-relayinstance' header, got nothing"
-        exit 1
-    else
-        echo "Success: Found 'x-axon-relayinstance' header"
-    fi
-
-
-    if ! proxy_result=$(curlw -f -v http://localhost:$SERVER_PORT/broker/$TOKEN/echo/foobar 2>&1)
-    then
-        echo "FAIL: Expected to echo 'foobar' via the proxy, but got error"
-        echo "$proxy_result"
-        exit 1
-    fi
-    # Make sure result has the header value
-    if ! echo "$proxy_result" | grep -q "added-fake-server"; then
-        echo "FAIL: Expected injected header value but not found"
-        echo "$proxy_result"
-        exit 1
-    else
-        echo "Success: Found expected injected header value in result"
-    fi
-
-    # Make sure the plugin header is also injected
-    if ! echo "$proxy_result" | grep -q "HOME=/root"; then
-        echo "FAIL: Expected injected plugin header value but not found"
-        echo "$proxy_result"
-        exit 1
-    else
-        echo "Success: Found expected injected plugin header value in result"
-    fi
-
-    # Verify that the reflector's raw WebSocket tunnel was established.
-    # "WebSocket tunnel established" is logged by the reflector when a real Upgrade: websocket
-    # request is received and a TCP tunnel is created (not just primus's application-layer WS).
-    #
-    # NOTE: WebSocket proxy usage is ENFORCED by network isolation (docker-compose.proxy.yml).
-    # axon-relay is on the "internal" network only, snyk-broker is on "external" network only.
-    # The only path is: axon-relay -> mitmproxy (bridges both) -> snyk-broker.
-    # If WebSocket code bypasses the proxy, the connection FAILS at the network level.
+    # Transport-specific: proves the reflector established a real WebSocket
+    # tunnel rather than falling back to primus's XHR polling. Network
+    # isolation enforces it — axon-relay can only reach snyk-broker through
+    # mitmproxy, so a bypass fails at the network level instead of silently
+    # degrading to a slower transport.
     echo "Checking WebSocket tunnel..."
     axon_logs=$(docker compose $COMPOSE_FILES logs axon-relay 2>&1)
-
     if ! echo "$axon_logs" | grep -q "WebSocket tunnel established"; then
         echo "FAIL: Expected 'WebSocket tunnel established' in reflector logs but not found"
         echo "  The broker client may not be upgrading to raw WebSocket (staying on XHR polling)"
         echo "=== Axon Relay Logs (last 50) ==="
         echo "$axon_logs" | tail -50
         exit 1
-    else
-        echo "Success: WebSocket tunnel established through reflector"
     fi
-else
-    echo "Checking relay non proxy config..."
-    if echo "$result" | grep -i "x-proxy-mitmproxy"
-    then
-        echo "FAIL: Expected no 'x-proxy-mitmproxy' header, got one"
-        exit 1
-    else
-        echo "Success: Did not find 'x-proxy-mitm-proxy' header (as expected)"
-    fi
+    echo "Success: WebSocket tunnel established through reflector"
 fi
 
 echo "=== Broker reconnection after SIGKILL ==="

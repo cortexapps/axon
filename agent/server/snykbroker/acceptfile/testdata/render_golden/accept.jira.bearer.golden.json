@@ -1,0 +1,19 @@
+{
+  "private": [
+    {
+      "method": "any",
+      "origin": "http://localhost:80",
+      "path": "/__axon/*"
+    },
+    {
+      "auth": {
+        "scheme": "bearer",
+        "token": "${JIRA_TOKEN}"
+      },
+      "method": "any",
+      "origin": "${JIRA_API}",
+      "path": "/*"
+    }
+  ],
+  "public": []
+}

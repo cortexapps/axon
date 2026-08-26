@@ -37,6 +37,11 @@ jobs:
       - name: Run Agent race detector
         run: make -C agent test-race
 
+      - name: Run Tunnel Server tests
+        run: |
+          make -C server proto
+          make -C server test
+
       - name: Run Go SDK tests
         run: |
           cd sdks/go
@@ -79,6 +84,49 @@ jobs:
 
       - name: "Run Relay Test: No Proxy"
         run: make -C agent relay-test-no-proxy
+
+  # The same end-to-end scenarios as docker-tests, run over the gRPC tunnel
+  # instead of snyk-broker. Both transports share relay_scenarios.sh, so this
+  # is the same suite rather than a parallel copy that can drift — it already
+  # had once, silently losing the agent-endpoint and credential-injection
+  # checks, and with them a real gap where the tunnel never stamped
+  # x-axon-relay-instance on responses.
+  #
+  # A separate job rather than more steps on docker-tests: the two transports
+  # then fail independently, and a gRPC regression is legible from the job
+  # name without opening the log.
+  docker-tests-grpc:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Set up Go
+        uses: actions/setup-go@v3
+        with:
+          go-version: '1.26.3'
+
+      - name: Install dependencies
+        run: |
+            sudo apt-get update
+            sudo apt-get install -y protobuf-compiler
+            make -C agent setup proto
+
+      - name: Build Agent Local Image
+        run: |
+          make docker-build
+
+      # The proxied case is the one that matters most for this transport: it
+      # is the only test that proves the agent's outbound gRPC dial works
+      # through an HTTP proxy via CONNECT, which is the deployment shape most
+      # customers actually have.
+      - name: "Run gRPC Relay Test: With Proxy (TLS)"
+        run: make -C agent grpc-relay-test-with-proxy
+
+      - name: "Run gRPC Relay Test: No Proxy"
+        run: make -C agent grpc-relay-test-no-proxy
 
   helm-test:
     runs-on: ubuntu-latest

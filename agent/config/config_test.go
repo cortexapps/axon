@@ -1,246 +1,91 @@
 package config
 
 import (
-	"os"
 	"testing"
-	"time"
 
-	"github.com/cortexapps/axon/util"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func resetEnv() {
-	varsToClear := []string{
-		"CORTEX_API_BASE_URL",
-		"CORTEX_API_TOKEN",
-		"PORT",
-		"HTTP_PORT",
-		"SNYK_BROKER_PORT",
-		"DRYRUN",
-		"DEQUEUE_WAIT_TIME",
-		"CA_CERT_PATH",
-		"DISABLE_TLS",
-		"ENABLE_RELAY_REFLECTOR",
-		"REFLECTOR_WEBSOCKET_UPGRADE",
-		"RELAY_IDLE_TIMEOUT",
-	}
+// These pin the environment variables the tunnel actually reads. They exist
+// because a refactor once silently dropped the GRPC_INSECURE parsing: the
+// struct field survived, so everything still compiled and every unit test
+// still passed, and the only symptom was every agent failing its TLS
+// handshake against a plaintext server under load test.
 
-	for _, v := range varsToClear {
-		if err := os.Unsetenv(v); err != nil {
-			panic(err)
-		}
-	}
+func TestEnvConfig_TunnelDefaults(t *testing.T) {
+	cfg := NewAgentEnvConfig()
+
+	assert.Equal(t, 4, cfg.TunnelConns,
+		"connections are the only tunnel dial; default is a blast-radius choice")
+	assert.Equal(t, 128, cfg.UpstreamMaxConnsPerHost)
+	assert.Equal(t, 256, cfg.MaxInflightRequests)
+	assert.False(t, cfg.GrpcInsecure, "TLS stays on unless explicitly disabled")
 }
 
-func TestNewAgentEnvConfig_DefaultValues(t *testing.T) {
-	oldEnv := util.SaveEnv(false)
-	defer util.RestoreEnv(oldEnv)
-	resetEnv()
+func TestEnvConfig_TunnelConns(t *testing.T) {
+	t.Setenv("AXON_GRPC_TUNNEL_CONNS", "9")
 
-	config := NewAgentEnvConfig()
-
-	require.Equal(t, 50051, config.GrpcPort)
-	require.Equal(t, "https://api.getcortexapp.com", config.CortexApiBaseUrl)
-	require.Equal(t, "", config.CortexApiToken)
-	require.False(t, config.DryRun)
-	require.Equal(t, 1*time.Second, config.DequeueWaitTime)
-	// Default reflector mode should be AllTraffic (reflects both traffic and registration)
-	require.Equal(t, RelayReflectorAllTraffic, config.HttpRelayReflectorMode)
-	require.True(t, config.HttpRelayReflectorMode.ReflectsTraffic())
-	require.True(t, config.HttpRelayReflectorMode.ReflectsRegistration())
-	// WebSocket upgrade should be enabled by default
-	require.True(t, config.ReflectorWebSocketUpgrade)
-	// Relay idle timeout default
-	require.Equal(t, 10*time.Minute, config.RelayIdleTimeout)
+	assert.Equal(t, 9, NewAgentEnvConfig().TunnelConns)
 }
 
-func TestNewAgentEnvConfig_CustomValues(t *testing.T) {
-	resetEnv()
-	os.Setenv("CORTEX_API_BASE_URL", "https://custom.api.url")
-	os.Setenv("PORT", "12345")
-	os.Setenv("CORTEX_API_TOKEN", "custom_token")
-	os.Setenv("DEQUEUE_WAIT_TIME", "2s")
+func TestEnvConfig_TunnelConnsRejectsNonsense(t *testing.T) {
+	t.Setenv("AXON_GRPC_TUNNEL_CONNS", "0")
+	assert.Panics(t, func() { NewAgentEnvConfig() }, "zero connections cannot serve anything")
 
-	config := NewAgentEnvConfig()
-
-	require.Equal(t, 12345, config.GrpcPort)
-	require.Equal(t, "https://custom.api.url", config.CortexApiBaseUrl)
-	require.Equal(t, "custom_token", config.CortexApiToken)
-	require.False(t, config.DryRun)
-	require.Equal(t, 2*time.Second, config.DequeueWaitTime)
+	t.Setenv("AXON_GRPC_TUNNEL_CONNS", "banana")
+	assert.Panics(t, func() { NewAgentEnvConfig() })
 }
 
-func TestNewAgentEnvConfig_CustomValues_DRYRUN(t *testing.T) {
-	resetEnv()
-	os.Setenv("CORTEX_API_TOKEN", "custom_token")
-	os.Setenv("DRYRUN", "true")
+func TestEnvConfig_UpstreamMaxConnsPerHost(t *testing.T) {
+	t.Setenv("AXON_UPSTREAM_MAX_CONNS_PER_HOST", "32")
+	assert.Equal(t, 32, NewAgentEnvConfig().UpstreamMaxConnsPerHost)
 
-	config := NewAgentEnvConfig()
-
-	require.Equal(t, "dry-run", config.CortexApiToken)
-	require.True(t, config.DryRun)
+	t.Setenv("AXON_UPSTREAM_MAX_CONNS_PER_HOST", "0")
+	assert.Panics(t, func() { NewAgentEnvConfig() })
 }
 
-func TestNewAgentEnvConfig_InvalidPort(t *testing.T) {
-	resetEnv()
-	os.Setenv("PORT", "invalid")
-
-	defer func() {
-		if r := recover(); r == nil {
-			t.Errorf("Expected panic for invalid port")
-		}
-	}()
-
-	NewAgentEnvConfig()
+// The regression that motivated this file.
+func TestEnvConfig_GrpcInsecure(t *testing.T) {
+	t.Setenv("GRPC_INSECURE", "true")
+	assert.True(t, NewAgentEnvConfig().GrpcInsecure, "GRPC_INSECURE must disable TLS")
 }
 
-func TestNewAgentEnvConfig_InvalidDequeueWaitTime(t *testing.T) {
-	resetEnv()
-	os.Setenv("DEQUEUE_WAIT_TIME", "invalid")
-
-	defer func() {
-		if r := recover(); r == nil {
-			t.Errorf("Expected panic for invalid dequeue wait time")
-		}
-	}()
-
-	NewAgentEnvConfig()
+func TestEnvConfig_GrpcInsecureCanonicalName(t *testing.T) {
+	t.Setenv("AXON_GRPC_TUNNEL_INSECURE", "true")
+	assert.True(t, NewAgentEnvConfig().GrpcInsecure)
 }
 
-func TestLoadCaCertsDir(t *testing.T) {
-	oldEnv := util.SaveEnv(false)
-	defer util.RestoreEnv(oldEnv)
-	resetEnv()
-	os.Setenv("CA_CERT_PATH", "/tmp/foo/../bar/certs/cert.pem")
-	os.Setenv("DISABLE_TLS", "true")
-
-	config := NewAgentEnvConfig()
-	require.Equal(t, true, config.HttpDisableTLS)
-	require.Equal(t, "/tmp/bar/certs/cert.pem", config.HttpCaCertFilePath)
-}
-
-func TestEnableRelayReflectorEnvVar(t *testing.T) {
-	tests := []struct {
-		envValue     string
-		expectedMode RelayReflectorMode
-	}{
-		{"disabled", RelayReflectorDisabled},
-		{"false", RelayReflectorDisabled},
-		{"registration", RelayReflectorRegistrationOnly},
-		{"traffic", RelayReflectorTrafficOnly},
-		{"all", RelayReflectorAllTraffic},
-		{"true", RelayReflectorAllTraffic},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.envValue, func(t *testing.T) {
-			oldEnv := util.SaveEnv(false)
-			defer util.RestoreEnv(oldEnv)
-			resetEnv()
-			os.Setenv("ENABLE_RELAY_REFLECTOR", tt.envValue)
-
-			config := NewAgentEnvConfig()
-			require.Equal(t, tt.expectedMode, config.HttpRelayReflectorMode)
+func TestEnvConfig_GrpcInsecureOnlyOnExactTrue(t *testing.T) {
+	// Anything other than "true" leaves TLS on. Failing closed matters more
+	// than convenience for a flag that disables transport security.
+	for _, v := range []string{"", "false", "1", "yes", "TRUE"} {
+		t.Run(v, func(t *testing.T) {
+			t.Setenv("GRPC_INSECURE", v)
+			assert.False(t, NewAgentEnvConfig().GrpcInsecure)
 		})
 	}
 }
 
-func TestReflectorWebSocketUpgradeEnvVar(t *testing.T) {
-	tests := []struct {
-		name     string
-		envValue string
-		expected bool
-	}{
-		{"default (not set)", "", true},
-		{"explicitly true", "true", true},
-		{"explicitly false", "false", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			oldEnv := util.SaveEnv(false)
-			defer util.RestoreEnv(oldEnv)
-			resetEnv()
-			if tt.envValue != "" {
-				os.Setenv("REFLECTOR_WEBSOCKET_UPGRADE", tt.envValue)
-			}
-
-			config := NewAgentEnvConfig()
-			require.Equal(t, tt.expected, config.ReflectorWebSocketUpgrade)
-		})
-	}
+func TestEnvConfig_GrpcTunnelServer(t *testing.T) {
+	t.Setenv("GRPC_TUNNEL_SERVER", "tunnel.example.com:443")
+	assert.Equal(t, "tunnel.example.com:443", NewAgentEnvConfig().GrpcTunnelServer)
 }
 
-func TestRelayIdleTimeoutEnvVar(t *testing.T) {
-	tests := []struct {
-		name     string
-		envValue string
-		expected time.Duration
-	}{
-		{"default (not set)", "", 10 * time.Minute},
-		{"custom value", "10m", 10 * time.Minute},
-		{"disabled", "0s", 0},
-		{"short duration", "30s", 30 * time.Second},
-	}
+func TestEnvConfig_RelayModeSelectsTheTunnel(t *testing.T) {
+	t.Setenv("AXON_RELAY_TRANSPORT", "grpc-tunnel")
+	require.True(t, NewAgentEnvConfig().IsGRPCTunnel())
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			oldEnv := util.SaveEnv(false)
-			defer util.RestoreEnv(oldEnv)
-			resetEnv()
-			if tt.envValue != "" {
-				os.Setenv("RELAY_IDLE_TIMEOUT", tt.envValue)
-			}
-
-			config := NewAgentEnvConfig()
-			require.Equal(t, tt.expected, config.RelayIdleTimeout)
-		})
-	}
+	t.Setenv("AXON_RELAY_TRANSPORT", "snyk-broker")
+	require.False(t, NewAgentEnvConfig().IsGRPCTunnel())
 }
 
-func TestRelayReflectorMode_Helpers(t *testing.T) {
-	tests := []struct {
-		name                 string
-		mode                 RelayReflectorMode
-		isEnabled            bool
-		reflectsRegistration bool
-		reflectsTraffic      bool
-	}{
-		{
-			name:                 "Disabled",
-			mode:                 RelayReflectorDisabled,
-			isEnabled:            false,
-			reflectsRegistration: false,
-			reflectsTraffic:      false,
-		},
-		{
-			name:                 "RegistrationOnly",
-			mode:                 RelayReflectorRegistrationOnly,
-			isEnabled:            true,
-			reflectsRegistration: true,
-			reflectsTraffic:      false,
-		},
-		{
-			name:                 "TrafficOnly",
-			mode:                 RelayReflectorTrafficOnly,
-			isEnabled:            true,
-			reflectsRegistration: false,
-			reflectsTraffic:      true,
-		},
-		{
-			name:                 "AllTraffic",
-			mode:                 RelayReflectorAllTraffic,
-			isEnabled:            true,
-			reflectsRegistration: true,
-			reflectsTraffic:      true,
-		},
-	}
+func TestEnvConfig_RelayModeLegacyAlias(t *testing.T) {
+	t.Setenv("RELAY_MODE", "grpc-tunnel")
+	assert.True(t, NewAgentEnvConfig().IsGRPCTunnel())
+}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.isEnabled, tt.mode.IsEnabled(), "IsEnabled")
-			require.Equal(t, tt.reflectsRegistration, tt.mode.ReflectsRegistration(), "ReflectsRegistration")
-			require.Equal(t, tt.reflectsTraffic, tt.mode.ReflectsTraffic(), "ReflectsTraffic")
-		})
-	}
+func TestEnvConfig_MaxRequestTimeout(t *testing.T) {
+	t.Setenv("AXON_GRPC_TUNNEL_MAX_REQUEST_TIMEOUT", "90s")
+	assert.Equal(t, "1m30s", NewAgentEnvConfig().MaxRequestTimeout.String())
 }

@@ -1,7 +1,6 @@
 package snykbroker
 
 import (
-	"bytes"
 	"regexp"
 	"testing"
 	"time"
@@ -20,7 +19,7 @@ func TestStart_SuccessExit(t *testing.T) {
 		},
 		time.Millisecond*10,
 	)
-	output := bytes.Buffer{}
+	output := syncBuffer{}
 	supervisor.output = &output
 
 	err := supervisor.Start(1, 1)
@@ -38,7 +37,7 @@ func TestStart_Restart(t *testing.T) {
 		},
 		time.Millisecond*10,
 	)
-	output := bytes.Buffer{}
+	output := syncBuffer{}
 	supervisor.output = &output
 
 	err := supervisor.Start(1, 1)
@@ -57,6 +56,12 @@ func TestStart_FastFail(t *testing.T) {
 
 	// test that if the command fails quickly off the bat, we don't retry anymore
 
+	// NewSupervisor doubles this, so 50ms gave the process 100ms to spawn,
+	// run and exit before it stopped counting as an immediate failure — which
+	// a loaded CI runner can exceed just forking bash, failing the test for
+	// reasons unrelated to what it checks. A process meant to run
+	// indefinitely that dies inside a second is still immediate by any
+	// reading, so the wider budget costs the assertion nothing.
 	supervisor := NewSupervisor(
 		"bash",
 		[]string{"-c", "exit 1"},
@@ -64,9 +69,9 @@ func TestStart_FastFail(t *testing.T) {
 			"BROKER_TOKEN":      "test_token",
 			"BROKER_SERVER_URL": "http://example.com",
 		},
-		time.Millisecond*50,
+		time.Millisecond*500,
 	)
-	output := bytes.Buffer{}
+	output := syncBuffer{}
 	supervisor.output = &output
 
 	err := supervisor.Start(2, 1)
@@ -88,7 +93,7 @@ func TestStart_MaxRetries(t *testing.T) {
 		},
 		time.Second,
 	)
-	output := bytes.Buffer{}
+	output := syncBuffer{}
 	supervisor.output = &output
 	supervisor.panicOnMaxRetries = false
 	supervisor.fastFailTime = 1 * time.Millisecond
@@ -98,7 +103,7 @@ func TestStart_MaxRetries(t *testing.T) {
 	err = supervisor.Wait()
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "max retries")
-	println(output.String())
+	println(output.contents())
 	runRegEx := regexp.MustCompile("run")
-	require.GreaterOrEqual(t, len(runRegEx.FindAllString(output.String(), -1)), 3)
+	require.GreaterOrEqual(t, len(runRegEx.FindAllString(output.contents(), -1)), 3)
 }

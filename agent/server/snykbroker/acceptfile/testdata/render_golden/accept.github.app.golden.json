@@ -1,0 +1,49 @@
+{
+  "$vars": [
+    "${GITHUB_APP_CLIENT_ID}",
+    "${GITHUB_APP_CLIENT_PEM}",
+    "${GITHUB_INSTALLATION_ID}"
+  ],
+  "private": [
+    {
+      "method": "any",
+      "origin": "http://localhost:80",
+      "path": "/__axon/*"
+    },
+    {
+      "headers": {
+        "Authorization": "Basic {{plugin:github-app-scaffolder}}"
+      },
+      "method": "any",
+      "origin": "${GITHUB}",
+      "path": "/*",
+      "valid": [
+        {
+          "header": "x-cortex-service",
+          "values": [
+            "scaffolder"
+          ]
+        }
+      ]
+    },
+    {
+      "headers": {
+        "Authorization": "Bearer {{plugin:github-app-token}}",
+        "X-GitHub-Api-Version": "2022-11-28"
+      },
+      "method": "any",
+      "origin": "${GITHUB_API}",
+      "path": "/*"
+    },
+    {
+      "headers": {
+        "Authorization": "Bearer {{plugin:github-app-token}}",
+        "X-GitHub-Api-Version": "2022-11-28"
+      },
+      "method": "POST",
+      "origin": "${GITHUB_GRAPHQL}",
+      "path": "/graphql"
+    }
+  ],
+  "public": []
+}
