@@ -8,6 +8,19 @@ import (
 	"sync"
 )
 
+// Rule matching runs on the gRPC tunnel path only.
+//
+// Despite living under snykbroker/, nothing in this file is consulted when the
+// relay runs through snyk-broker: there the Node broker matches the rendered
+// accept file itself, and the agent only hands it the file. The one non-test
+// caller is acceptfile.Router, which the tunnel client builds.
+//
+// It is written to agree with the broker's matcher anyway — path-to-regexp
+// wildcards, the GET default, traversal and fragment handling — because
+// enabling the tunnel switches deployments that are running on snyk-broker
+// today, and a rule that selected one origin there has to select the same one
+// here.
+
 // MatchRule finds the first accept file rule that matches the given HTTP method, path, and headers.
 // Returns nil if no rule matches.
 func MatchRule(rules []AcceptFileRuleWrapper, method, requestPath string, headers ...map[string]string) *AcceptFileRuleWrapper {
