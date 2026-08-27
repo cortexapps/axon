@@ -483,8 +483,16 @@ func TestInitialConnectRetry_RefusedDial(t *testing.T) {
 	go func() { _ = grpcServer.Serve(lis2) }()
 	defer grpcServer.Stop()
 
+	// >= 1, not == 1: connectionsActive counts streams, and this client runs
+	// two idle streams per server, so the gauge settles at 2. It passes
+	// through 1 on the way, but waitFor polls every 10ms and the two slots
+	// connect within a few of each other — in CI they landed 6ms apart, so
+	// the poll saw 0 then 2 and the equality never held. What this test is
+	// about is that the client connects at all after a refused dial, which
+	// is what >= 1 says. TestClose_ShutsDownCleanly already spells it that
+	// way against the same gauge.
 	waitFor(t, 10*time.Second, func() bool {
-		return gaugeVecValue(t, tc.connectionsActive, "delayed-server") == 1
+		return gaugeVecValue(t, tc.connectionsActive, "delayed-server") >= 1
 	})
 }
 
