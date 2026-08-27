@@ -33,7 +33,7 @@ func TestResponse_CarriesRelayInstanceHeader(t *testing.T) {
 
 	fc := newFrameCollector()
 	sc := newTestStreamCtx(fc.sendFn)
-	table := newCallTable()
+	table := newTestCallTable(t)
 
 	tc.startCall(sc, table, "c1", reqStart("GET", "/thing", 0))
 	tc.handleCallFrame(sc, table, &pb.CallFrame{CallId: "c1", Body: &pb.CallFrame_End{End: &pb.CallEnd{}}})
@@ -64,7 +64,7 @@ func TestResponse_OmitsRelayInstanceHeaderWhenUnset(t *testing.T) {
 
 	fc := newFrameCollector()
 	sc := newTestStreamCtx(fc.sendFn)
-	table := newCallTable()
+	table := newTestCallTable(t)
 
 	tc.startCall(sc, table, "c1", reqStart("GET", "/thing", 0))
 	tc.handleCallFrame(sc, table, &pb.CallFrame{CallId: "c1", Body: &pb.CallFrame_End{End: &pb.CallEnd{}}})
