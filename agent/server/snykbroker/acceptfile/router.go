@@ -50,11 +50,15 @@ func NewRouter(rules []AcceptFileRuleWrapper, logger *zap.Logger) *Router {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
-	return &Router{
+	rt := &Router{
 		rules:  rules,
 		pools:  NewPoolManager(),
 		logger: logger.Named("accept-router"),
 	}
+	for _, rule := range rules {
+		warnUnsupportedRule(rule.dict, rt.logger)
+	}
+	return rt
 }
 
 // Route resolves a request to a RoutedRequest. rawPath may carry a query
