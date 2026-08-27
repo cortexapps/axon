@@ -368,6 +368,37 @@ func (fc *frameCollector) waitDone(t *testing.T, n int) {
 	}
 }
 
+// newTestCallTable returns a call table that holds the test open until every
+// call goroutine it tracks has actually finished.
+//
+// A call's last act is table.remove, in the outermost defer of the goroutine
+// startCall launches — which, being registered first, runs after runCall's own
+// deferred "Request completed" line. So an empty table is the only barrier
+// that says nothing will log any more. Waiting on the terminal frame is not
+// enough: that log defer runs after the frame is sent.
+//
+// Without this a test that returns while a call is still in flight panics the
+// whole package with "Log in goroutine after <test> has completed" — zaptest
+// logging into a finished test. It is intermittent, because it depends on
+// whether the goroutine gets scheduled before the test returns.
+func newTestCallTable(t *testing.T) *callTable {
+	t.Helper()
+	table := newCallTable()
+	t.Cleanup(func() {
+		// Cancel whatever is still running first, so a test that deliberately
+		// leaves a slow call in flight does not pay its full delay here.
+		// cancelAll empties the map itself and so cannot be the barrier —
+		// cancel in place and let each goroutine's own defer do the removing.
+		table.mu.Lock()
+		for _, c := range table.calls {
+			c.cancel()
+		}
+		table.mu.Unlock()
+		waitFor(t, 10*time.Second, func() bool { return !table.active() })
+	})
+	return table
+}
+
 func reqStart(method, path string, timeoutMs int32) *pb.CallStart {
 	return &pb.CallStart{
 		PseudoHeaders: map[string]string{":method": method, ":path": path},
@@ -552,7 +583,7 @@ func TestInflightCap_QueuesThenRuns(t *testing.T) {
 
 	fc := newFrameCollector()
 	sc := newTestStreamCtx(fc.sendFn)
-	table := newCallTable()
+	table := newTestCallTable(t)
 
 	tc.startCall(sc, table, "r1", reqStart("GET", "/", 0))
 	tc.handleCallFrame(sc, table, &pb.CallFrame{CallId: "r1", Body: &pb.CallFrame_End{End: &pb.CallEnd{}}})
@@ -590,7 +621,7 @@ func TestInflightCap_QueueTimeout(t *testing.T) {
 
 	fc := newFrameCollector()
 	sc := newTestStreamCtx(fc.sendFn)
-	table := newCallTable()
+	table := newTestCallTable(t)
 
 	tc.startCall(sc, table, "r1", reqStart("GET", "/", 0))
 	tc.handleCallFrame(sc, table, &pb.CallFrame{CallId: "r1", Body: &pb.CallFrame_End{End: &pb.CallEnd{}}})
@@ -631,7 +662,7 @@ func TestMaxRequestTimeout_AppliesWhenTimeoutMsZero(t *testing.T) {
 
 	fc := newFrameCollector()
 	sc := newTestStreamCtx(fc.sendFn)
-	table := newCallTable()
+	table := newTestCallTable(t)
 
 	start := time.Now()
 	tc.startCall(sc, table, "r1", reqStart("GET", "/", 0))
@@ -678,7 +709,7 @@ func TestCall_StreamedRequestBody(t *testing.T) {
 
 	fc := newFrameCollector()
 	sc := newTestStreamCtx(fc.sendFn)
-	table := newCallTable()
+	table := newTestCallTable(t)
 
 	tc.startCall(sc, table, "c1", reqStart("POST", "/upload", 0))
 	tc.handleCallFrame(sc, table, &pb.CallFrame{CallId: "c1", Body: &pb.CallFrame_Data{Data: &pb.CallData{Payload: []byte("part-1;")}}})
@@ -710,7 +741,7 @@ func TestCall_ServerCancelAbortsBackend(t *testing.T) {
 
 	fc := newFrameCollector()
 	sc := newTestStreamCtx(fc.sendFn)
-	table := newCallTable()
+	table := newTestCallTable(t)
 
 	tc.startCall(sc, table, "c1", reqStart("GET", "/slow", 0))
 	tc.handleCallFrame(sc, table, &pb.CallFrame{CallId: "c1", Body: &pb.CallFrame_End{End: &pb.CallEnd{}}})
