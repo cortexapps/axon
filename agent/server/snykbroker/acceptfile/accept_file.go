@@ -52,6 +52,12 @@ func NewAcceptFile(content []byte, cfg config.AgentConfig, logger *zap.Logger) (
 	}
 
 	af.wrapper = newAcceptFileWrapper(processedContent, af)
+	// Deliberately no strict validation here. Parsing an accept file is shared
+	// with the snyk-broker path, where the Node broker honours constructs this
+	// package does not — refusing them here would break a deployment that
+	// works today. The Router warns about them when it is built instead, where
+	// they would otherwise be silently dropped.
+	warnIgnoredPublicRules(af.wrapper.dict, af.logger)
 	return af, nil
 }
 

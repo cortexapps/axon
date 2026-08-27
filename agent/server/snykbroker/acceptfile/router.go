@@ -50,11 +50,15 @@ func NewRouter(rules []AcceptFileRuleWrapper, logger *zap.Logger) *Router {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
-	return &Router{
+	rt := &Router{
 		rules:  rules,
 		pools:  NewPoolManager(),
 		logger: logger.Named("accept-router"),
 	}
+	for _, rule := range rules {
+		warnUnsupportedRule(rule.dict, rt.logger)
+	}
+	return rt
 }
 
 // Route resolves a request to a RoutedRequest. rawPath may carry a query
@@ -92,7 +96,22 @@ func (rt *Router) Route(method, rawPath string, headers map[string]string) (*Rou
 
 	// Inject rule headers (overrides incoming).
 	if ruleHeaders := rule.Headers(); ruleHeaders != nil {
-		for k, v := range ruleHeaders.ToStringMap() {
+		// A credential provider that fails has to stop the request rather than
+		// let its placeholder travel upstream as the credential — the refusal
+		// then comes back as an authorization failure and names the wrong
+		// culprit, which is the thing #127 set out to stop. The reflector's
+		// serve() answers 502 here; returning an error lands in the default
+		// arm of grpctunnel's RouteError mapping, which is also a 502, so both
+		// transports refuse the same way.
+		resolved, err := ruleHeaders.ToStringMap()
+		if err != nil {
+			rt.logger.Error("Credential provider failed",
+				zap.String("rulePath", rule.Path()),
+				zap.Error(err),
+			)
+			return nil, fmt.Errorf("credential provider failed: %w", err)
+		}
+		for k, v := range resolved {
 			header.Set(k, v)
 		}
 	}
