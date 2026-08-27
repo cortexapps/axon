@@ -71,16 +71,43 @@ func (rt *Router) Route(method, rawPath string, headers map[string]string) (*Rou
 		return nil, &InvalidRequestError{Reason: "missing method or path"}
 	}
 
+	// A fragment is not part of the resource, and leaving it on would let a
+	// caller hide a disallowed path behind an allowed one. snyk-broker drops it
+	// before matching for the same reason.
+	rawPath, _, _ = strings.Cut(rawPath, "#")
+	if rawPath == "" {
+		return nil, &InvalidRequestError{Reason: "missing path"}
+	}
+
 	// Split the query off before matching; rules match on the path only.
 	pathOnly, query, _ := strings.Cut(rawPath, "?")
 	decodedPath, err := url.PathUnescape(pathOnly)
 	if err != nil {
 		return nil, &InvalidRequestError{Reason: fmt.Sprintf("invalid path encoding: %v", err)}
 	}
+	// Checked on the decoded path, so an encoded "%2e%2e" cannot slip a
+	// traversal past a rule that would not have matched it spelled out.
+	if !isNormalizedPath(decodedPath) {
+		return nil, &InvalidRequestError{Reason: "path is not normalized"}
+	}
 
 	rule := MatchRule(rt.rules, method, decodedPath, headers)
 	if rule == nil {
 		return nil, ErrNoRoute
+	}
+
+	// A rule that names a segment with ${VAR} rewrites it on the way out. Both
+	// spellings of the path go through it: the escaped form is what travels,
+	// and it has to keep agreeing with the decoded form the rule matched on.
+	// Guarded so a rule without a placeholder — every rule Axon ships — costs
+	// nothing beyond the match MatchRule already did.
+	if rulePath := rule.Path(); strings.Contains(rulePath, "${") {
+		if rewritten, ok := matchPath(rulePath, decodedPath); ok {
+			decodedPath = rewritten
+		}
+		if rewritten, ok := matchPath(rulePath, pathOnly); ok {
+			pathOnly = rewritten
+		}
 	}
 
 	origin := rt.pools.ResolvePoolVars(rule.Origin())

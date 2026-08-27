@@ -56,6 +56,10 @@ type conformanceCase struct {
 		Matched bool              `json:"matched"`
 		URL     string            `json:"url"`
 		Headers map[string]string `json:"headers"`
+		// Code is the CallCancel status a rejected request must carry.
+		// Defaults to 404 (no rule matched); 400 says the request was
+		// malformed before matching — bad encoding, directory traversal.
+		Code int32 `json:"code"`
 	} `json:"expect"`
 }
 
@@ -104,10 +108,14 @@ func runConformanceFixture(t *testing.T, path string) {
 			breq, err := router.Route(start)
 
 			if !c.Expect.Matched {
-				require.Error(t, err, "expected no rule to match")
+				require.Error(t, err, "expected the request to be rejected")
 				var re *RouteError
 				require.ErrorAs(t, err, &re)
-				assert.Equal(t, int32(404), re.Code)
+				wantCode := c.Expect.Code
+				if wantCode == 0 {
+					wantCode = 404
+				}
+				assert.Equal(t, wantCode, re.Code)
 				return
 			}
 

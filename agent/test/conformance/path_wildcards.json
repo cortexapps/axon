@@ -1,0 +1,67 @@
+{
+  "name": "path wildcards cross segment boundaries (path-to-regexp parity)",
+  "env": { "UPSTREAM": "https://upstream.example" },
+  "acceptFile": {
+    "private": [
+      { "method": "GET", "path": "/*/info/refs", "origin": "${UPSTREAM}" },
+      { "method": "POST", "path": "/*/git-upload-pack", "origin": "${UPSTREAM}" },
+      { "method": "any", "path": "/api/*", "origin": "${UPSTREAM}" },
+      { "path": "/default-method", "origin": "${UPSTREAM}" }
+    ]
+  },
+  "cases": [
+    {
+      "name": "single-segment repo path",
+      "request": { "method": "GET", "path": "/project.git/info/refs?service=git-upload-pack" },
+      "expect": {
+        "matched": true,
+        "url": "https://upstream.example/project.git/info/refs?service=git-upload-pack"
+      }
+    },
+    {
+      "name": "nested group path — the GitLab common case",
+      "request": { "method": "GET", "path": "/group/subgroup/project.git/info/refs" },
+      "expect": { "matched": true, "url": "https://upstream.example/group/subgroup/project.git/info/refs" }
+    },
+    {
+      "name": "git-upload-pack under a nested group",
+      "request": { "method": "POST", "path": "/group/subgroup/project.git/git-upload-pack" },
+      "expect": { "matched": true, "url": "https://upstream.example/group/subgroup/project.git/git-upload-pack" }
+    },
+    {
+      "name": "the literal tail still has to match",
+      "request": { "method": "GET", "path": "/group/project.git/info/other" },
+      "expect": { "matched": false }
+    },
+    {
+      "name": "a prefix rule needs the separator",
+      "request": { "method": "GET", "path": "/api" },
+      "expect": { "matched": false }
+    },
+    {
+      "name": "a rule with no method means GET",
+      "request": { "method": "GET", "path": "/default-method" },
+      "expect": { "matched": true, "url": "https://upstream.example/default-method" }
+    },
+    {
+      "name": "a rule with no method does not answer POST",
+      "request": { "method": "POST", "path": "/default-method" },
+      "expect": { "matched": false }
+    },
+    {
+      "name": "directory traversal is refused before matching",
+      "request": { "method": "GET", "path": "/api/../admin/secrets" },
+      "expect": { "matched": false, "code": 400 }
+    },
+    {
+      "name": "encoded directory traversal is refused too",
+      "request": { "method": "GET", "path": "/api/%2E%2E/admin/secrets" },
+      "expect": { "matched": false, "code": 400 }
+    },
+    {
+      "name": "a fragment is discarded before matching",
+      "request": { "method": "GET", "path": "/api/search?q=x#frag" },
+      "expect": { "matched": true, "url": "https://upstream.example/api/search?q=x" }
+    }
+  ]
+}
