@@ -201,7 +201,9 @@ func TestAcceptFileHeadersAppliedToLiveRequests(t *testing.T) {
 						}
 						capturedOrigins = append(capturedOrigins, originalURI)
 						headers := entry.Headers()
-						capturedHeaders = append(capturedHeaders, headers.ToStringMap())
+						resolvedHeaders, err := headers.ToStringMap()
+						require.NoError(t, err)
+						capturedHeaders = append(capturedHeaders, resolvedHeaders)
 						newURI := reflector.ProxyURI(originalURI, WithHeadersResolver(headers))
 						entry.SetOrigin(newURI)
 						proxyUris = append(proxyUris, newURI)
@@ -326,7 +328,8 @@ func TestMultipleRoutesWithDifferentHeaders(t *testing.T) {
 				}
 				headerExtractionCount++
 				capturedOrigins = append(capturedOrigins, originalURI)
-				headers := entry.Headers().ToStringMap()
+				headers, err := entry.Headers().ToStringMap()
+				require.NoError(t, err)
 				capturedHeaders = append(capturedHeaders, headers)
 				newURI := reflector.ProxyURI(originalURI, WithHeaders(headers))
 				entry.SetOrigin(newURI)

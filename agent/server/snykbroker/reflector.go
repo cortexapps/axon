@@ -163,6 +163,7 @@ func (rr *RegistrationReflector) getProxy(targetURI string, isDefault bool, head
 	// Set before the entry is published so the copy in the map carries the
 	// header too, rather than only the reverse proxy's captured newEntry.
 	newEntry.addResponseHeader("x-axon-relay-instance", rr.config.InstanceId)
+	newEntry.logger = rr.logger
 
 	// Copy-on-write: publish a new map rather than mutating the live one, so
 	// readers never synchronize. Retried on CAS failure because a concurrent
@@ -360,7 +361,7 @@ func (rr *RegistrationReflector) ServeHTTP(w http.ResponseWriter, r *http.Reques
 		rr.logger.Error("WebSocket upgrade is not supported for a wildcard origin",
 			zap.String("targetURI", entry.TargetURI),
 		)
-		http.Error(w, ErrClassDestinationRejected, http.StatusForbidden)
+		writeFailureClass(w, ErrClassDestinationRejected, http.StatusForbidden)
 		return
 	}
 
@@ -372,7 +373,7 @@ func (rr *RegistrationReflector) ServeHTTP(w http.ResponseWriter, r *http.Reques
 			zap.String("class", ErrClassDestinationRejected),
 			zap.Error(err),
 		)
-		http.Error(w, ErrClassDestinationRejected, http.StatusForbidden)
+		writeFailureClass(w, ErrClassDestinationRejected, http.StatusForbidden)
 		return
 	}
 	if targetHost != "" {
@@ -393,7 +394,37 @@ func (rr *RegistrationReflector) ServeHTTP(w http.ResponseWriter, r *http.Reques
 	// brokers, so it should only reflect real caller traffic.
 	rr.RecordTraffic()
 
-	entry.handler.ServeHTTP(w, r)
+	entry.serve(w, r)
+}
+
+// serve resolves the rule's credentials and then proxies.
+//
+// Resolution belongs here rather than in the Director, which has no way to fail a
+// request: a provider failure must stop the request before it is dialed, not
+// degrade into a placeholder the upstream would refuse.
+func (pe *proxyEntry) serve(w http.ResponseWriter, r *http.Request) {
+	resolvedHeaders, err := pe.headers.ToStringMap()
+	if err != nil {
+		if pe.logger != nil {
+			pe.logger.Error("Credential provider failed",
+				zap.String("targetURI", pe.TargetURI),
+				zap.String("class", ErrClassCredentialFailure),
+				zap.Error(err),
+			)
+		}
+		writeFailureClass(w, ErrClassCredentialFailure, http.StatusBadGateway)
+		return
+	}
+
+	pe.handler.ServeHTTP(w, withResolvedHeaders(r, resolvedHeaders))
+}
+
+// writeFailureClass names the failing component in a header as well as the body.
+// The header is the machine-readable half: a body can come from an upstream, and
+// a caller must be able to tell the two apart.
+func writeFailureClass(w http.ResponseWriter, class string, status int) {
+	w.Header().Set(HeaderFailureClass, class)
+	http.Error(w, class, status)
 }
 
 func hashString(s string) uint32 {
@@ -413,6 +444,9 @@ type proxyEntry struct {
 	// Set when the origin authorizes a family. Such an entry has no
 	// destination of its own; the authority arrives per request.
 	wildcard *wildcardOrigin
+	// Read by the reverse proxy's closures at request time, so getProxy can set
+	// it after construction and before the entry is published.
+	logger *zap.Logger
 }
 
 // dynamicTargetContextKey carries the validated per-request target host from
@@ -427,6 +461,20 @@ func withDynamicTarget(r *http.Request, host string) *http.Request {
 func dynamicTargetFromRequest(req *http.Request) (string, bool) {
 	host, ok := req.Context().Value(dynamicTargetContextKey{}).(string)
 	return host, ok && host != ""
+}
+
+// resolvedHeadersContextKey carries the rule's resolved headers from ServeHTTP to
+// the Director. The Director cannot fail a request, so resolution - and any
+// credential-provider failure - has to happen before it runs.
+type resolvedHeadersContextKey struct{}
+
+func withResolvedHeaders(r *http.Request, headers map[string]string) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), resolvedHeadersContextKey{}, headers))
+}
+
+func resolvedHeadersFromRequest(req *http.Request) map[string]string {
+	headers, _ := req.Context().Value(resolvedHeadersContextKey{}).(map[string]string)
+	return headers
 }
 
 func newProxyEntry(targetURI string, isDefault bool, port int, headers acceptfile.ResolverMap, transport *http.Transport) (*proxyEntry, error) {
@@ -467,19 +515,33 @@ func newProxyEntry(targetURI string, isDefault bool, port int, headers acceptfil
 			req.Host = host
 		}
 
-		// Copy headers to avoid mutation
-		processedHeaders := headers.ToStringMap()
-
-		// Inject custom headers
-		for headerName, headerValue := range processedHeaders {
+		// ServeHTTP resolved these, so the provider runs once per request and its
+		// failure has already stopped the request. Absent means no rule headers.
+		for headerName, headerValue := range resolvedHeadersFromRequest(req) {
 			req.Header.Set(headerName, headerValue)
 		}
 	}
 	proxy.ModifyResponse = func(resp *http.Response) error {
+		// An upstream must not be able to name a failure class, so its copy goes
+		// before anything downstream can read one.
+		resp.Header.Del(HeaderFailureClass)
 		for headerName, headerValue := range pe.responseHeaders {
 			resp.Header.Set(headerName, headerValue)
 		}
 		return nil
+	}
+	proxy.ErrorHandler = func(w http.ResponseWriter, req *http.Request, err error) {
+		// DNS, connection, and TLS failures all arrive here. They are this agent's
+		// own network rather than the upstream's answer, and saying so keeps a
+		// caller from retrying against an upstream that was never reached.
+		if pe.logger != nil {
+			pe.logger.Error("Upstream connection failed",
+				zap.String("targetURI", pe.TargetURI),
+				zap.String("class", ErrClassNetworkFailure),
+				zap.Error(err),
+			)
+		}
+		writeFailureClass(w, ErrClassNetworkFailure, http.StatusBadGateway)
 	}
 
 	// Set transport if provided
