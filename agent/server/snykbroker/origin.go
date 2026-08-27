@@ -15,7 +15,20 @@ import (
 // stays the policy, and this value is only ever checked against it.
 const HeaderTargetHost = "x-cortex-target-host"
 
+// HeaderFailureClass names the component that failed, so a caller can branch on
+// it without reading a body an upstream could also have written. Only components
+// on this side of the boundary set it; an upstream copy is stripped.
+const HeaderFailureClass = "x-cortex-failure-class"
+
 const ErrClassDestinationRejected = "AXON_DESTINATION_REJECTED"
+
+// The rule's credential provider produced no value. Distinct from an upstream
+// 401 or 403, which says the credential was produced and then refused.
+const ErrClassCredentialFailure = "AXON_CREDENTIAL_FAILURE"
+
+// This agent's own DNS, connection, or TLS failed, so the upstream never
+// answered and its status must not be invented on its behalf.
+const ErrClassNetworkFailure = "AXON_NETWORK_FAILURE"
 
 // With verification off, anything answering the connection can claim the
 // authorized name, so a host family authorizes nothing. A concrete origin at

@@ -53,7 +53,7 @@ func TestHeaderApplicationInProxy(t *testing.T) {
 	rr := httptest.NewRecorder()
 
 	// Send request through the proxy
-	proxyEntry.handler.ServeHTTP(rr, req)
+	proxyEntry.serve(rr, req)
 
 	// Verify the request was successful
 	require.Equal(t, http.StatusOK, rr.Code)
@@ -112,11 +112,11 @@ func TestMultipleProxiesWithDifferentHeaders(t *testing.T) {
 	// Send requests through both proxies
 	req1 := httptest.NewRequest("GET", "/test", nil)
 	rr1 := httptest.NewRecorder()
-	proxy1.handler.ServeHTTP(rr1, req1)
+	proxy1.serve(rr1, req1)
 
 	req2 := httptest.NewRequest("GET", "/test", nil)
 	rr2 := httptest.NewRecorder()
-	proxy2.handler.ServeHTTP(rr2, req2)
+	proxy2.serve(rr2, req2)
 
 	// Verify both requests were successful
 	require.Equal(t, http.StatusOK, rr1.Code)
@@ -163,7 +163,7 @@ func TestProxyWithNoHeaders(t *testing.T) {
 	rr := httptest.NewRecorder()
 
 	// Send request through the proxy
-	proxyEntry.handler.ServeHTTP(rr, req)
+	proxyEntry.serve(rr, req)
 
 	// Verify the request was successful
 	require.Equal(t, http.StatusOK, rr.Code)
@@ -218,7 +218,7 @@ func TestHeaderOverwriting(t *testing.T) {
 	rr := httptest.NewRecorder()
 
 	// Send request through the proxy
-	proxyEntry.handler.ServeHTTP(rr, req)
+	proxyEntry.serve(rr, req)
 
 	// Verify the request was successful
 	require.Equal(t, http.StatusOK, rr.Code)

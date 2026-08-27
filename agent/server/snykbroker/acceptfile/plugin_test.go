@@ -60,7 +60,8 @@ func TestCreatePluginResolver(t *testing.T) {
 	resolver := CreateResolver("{{plugin:plugin.sh}}", logger, []string{"."})
 
 	// Execute the resolver and get the output
-	output := resolver.Resolve()
+	output, err := resolver.Resolve()
+	require.NoError(t, err)
 	require.NotEmpty(t, output, "Output should not be empty")
 	require.Contains(t, output, "HOME="+os.Getenv("HOME"), "Output should contain $HOME, but was: "+output)
 }
