@@ -474,7 +474,11 @@ func (tc *tunnelClient) setupRouter() error {
 	if err != nil {
 		return fmt.Errorf("error parsing rendered accept file: %w", err)
 	}
-	tc.router = NewRouter(af2.Wrapper().PrivateRules(), tc.logger)
+	router, err := NewRouter(af2.Wrapper().PrivateRules(), tc.logger)
+	if err != nil {
+		return fmt.Errorf("error building accept file router: %w", err)
+	}
+	tc.router = router
 	return nil
 }
 

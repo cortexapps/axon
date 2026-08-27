@@ -1,0 +1,104 @@
+{
+  "name": "wildcard origins and per-request target hosts",
+  "env": {
+    "FAMILY": "https://*.axon.example.com",
+    "CONCRETE": "https://a.axon.example.com"
+  },
+  "acceptFile": {
+    "private": [
+      { "method": "any", "path": "/family/*", "origin": "${FAMILY}" },
+      { "method": "any", "path": "/concrete/*", "origin": "${CONCRETE}" }
+    ]
+  },
+  "cases": [
+    {
+      "name": "target host inside the family is dialed",
+      "request": {
+        "method": "GET",
+        "path": "/family/v1/things",
+        "headers": { "x-cortex-target-host": "alpha.axon.example.com" }
+      },
+      "expect": {
+        "matched": true,
+        "url": "https://alpha.axon.example.com/family/v1/things",
+        "absentHeaders": ["x-cortex-target-host"]
+      }
+    },
+    {
+      "name": "a second host in the family retargets independently",
+      "request": {
+        "method": "GET",
+        "path": "/family/v1/things",
+        "headers": { "x-cortex-target-host": "beta.axon.example.com" }
+      },
+      "expect": { "matched": true, "url": "https://beta.axon.example.com/family/v1/things" }
+    },
+    {
+      "name": "the header name is case-insensitive",
+      "request": {
+        "method": "GET",
+        "path": "/family/v1/things",
+        "headers": { "X-Cortex-Target-Host": "alpha.axon.example.com" }
+      },
+      "expect": { "matched": true, "url": "https://alpha.axon.example.com/family/v1/things" }
+    },
+    {
+      "name": "a wildcard origin without a target host is rejected",
+      "request": { "method": "GET", "path": "/family/v1/things" },
+      "expect": { "matched": false, "code": 403 }
+    },
+    {
+      "name": "a target host outside the family is rejected",
+      "request": {
+        "method": "GET",
+        "path": "/family/v1/things",
+        "headers": { "x-cortex-target-host": "evil.example.com" }
+      },
+      "expect": { "matched": false, "code": 403 }
+    },
+    {
+      "name": "the wildcard covers exactly one label",
+      "request": {
+        "method": "GET",
+        "path": "/family/v1/things",
+        "headers": { "x-cortex-target-host": "a.b.axon.example.com" }
+      },
+      "expect": { "matched": false, "code": 403 }
+    },
+    {
+      "name": "a wildcard origin refuses a websocket upgrade",
+      "request": {
+        "method": "GET",
+        "path": "/family/socket",
+        "headers": {
+          "x-cortex-target-host": "alpha.axon.example.com",
+          "connection": "Upgrade",
+          "upgrade": "websocket"
+        }
+      },
+      "expect": { "matched": false, "code": 403 }
+    },
+    {
+      "name": "a concrete origin strips the header rather than forwarding it",
+      "request": {
+        "method": "GET",
+        "path": "/concrete/v1/things",
+        "headers": { "x-cortex-target-host": "a.axon.example.com" }
+      },
+      "expect": {
+        "matched": true,
+        "url": "https://a.axon.example.com/concrete/v1/things",
+        "absentHeaders": ["x-cortex-target-host"]
+      }
+    },
+    {
+      "name": "a concrete origin rejects a target host that disagrees with it",
+      "request": {
+        "method": "GET",
+        "path": "/concrete/v1/things",
+        "headers": { "x-cortex-target-host": "alpha.axon.example.com" }
+      },
+      "expect": { "matched": false, "code": 403 }
+    }
+  ]
+}

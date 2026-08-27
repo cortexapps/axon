@@ -1,6 +1,8 @@
 package acceptfile
 
 import (
+	"strings"
+
 	"go.uber.org/zap"
 )
 
@@ -12,9 +14,16 @@ import (
 // an operator relying on it finds out from the log rather than from an agent
 // that will not boot, and can stay on snyk-broker until we implement it.
 //
-// What ends up here are constructs snyk-broker honours that the Router does not
-// implement — body and query "valid" filters, requiredCapabilities. Ignoring
-// one widens the rule, so the warning says exactly that.
+// Two classes end up here:
+//
+//   - constructs snyk-broker honours that the Router does not yet implement —
+//     body and query "valid" filters, requiredCapabilities. Ignoring one widens
+//     the rule, so the warning says exactly that.
+//   - constructs snyk-broker itself effectively ignores — an unrecognized auth
+//     scheme, where authHeader() returns undefined and no Authorization header
+//     is sent at all. Ignoring it matches the broker; the warning is so nobody
+//     assumes a credential went out.
+//
 // The one thing still refused is a malformed wildcard origin, and that is not a
 // migration risk: the snyk-broker path already refuses it too, at render
 // (ErrWildcardOriginRequiresTLSVerification, the invalid-origin error) or by
@@ -58,6 +67,17 @@ func warnUnsupportedRule(rule map[string]any, logger *zap.Logger) int {
 			"Ignoring \"requiredCapabilities\" on an accept file rule: the relay negotiates no " +
 				"client capabilities, so the rule is allowed through unconditionally. " +
 				"snyk-broker would reject a request that did not meet them.")
+	}
+
+	if auth, ok := rule["auth"].(map[string]any); ok {
+		if scheme, _ := auth["scheme"].(string); !isSupportedAuthScheme(scheme) {
+			warnings++
+			log.Warn(
+				"Ignoring an unrecognized auth scheme on an accept file rule: no Authorization "+
+					"header will be sent, which is what snyk-broker does with it too.",
+				zap.String("scheme", scheme),
+				zap.String("supported", strings.Join(supportedAuthSchemes(), ", ")))
+		}
 	}
 
 	validEntries, ok := rule["valid"].([]any)

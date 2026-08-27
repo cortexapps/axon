@@ -69,28 +69,6 @@ func matchesValid(requirements []ValidHeaderRequirement, headers map[string]stri
 	return true
 }
 
-// getHeaderCaseInsensitive retrieves a header value with case-insensitive key matching.
-func getHeaderCaseInsensitive(headers map[string]string, key string) (string, bool) {
-	if headers == nil {
-		return "", false
-	}
-
-	// Try exact match first.
-	if v, ok := headers[key]; ok {
-		return v, true
-	}
-
-	// Case-insensitive search.
-	keyLower := strings.ToLower(key)
-	for k, v := range headers {
-		if strings.ToLower(k) == keyLower {
-			return v, true
-		}
-	}
-
-	return "", false
-}
-
 // matchesMethod checks if the rule method matches the request method.
 // "any" matches all methods. A rule with no method means GET, as it does in
 // snyk-broker — leaving it unmatched would make the rule silently dead.

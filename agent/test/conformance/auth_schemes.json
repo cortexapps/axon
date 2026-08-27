@@ -1,0 +1,108 @@
+{
+  "name": "auth schemes (snyk-broker auth-header.ts parity)",
+  "env": {
+    "UPSTREAM": "https://upstream.example",
+    "API_TOKEN": "tok-123",
+    "PRE_ENCODED": "dXNlcjpwYXNz",
+    "PINNED_ORG": "acme"
+  },
+  "acceptFile": {
+    "private": [
+      {
+        "method": "GET",
+        "path": "/token/*",
+        "origin": "${UPSTREAM}",
+        "auth": {
+          "scheme": "token",
+          "token": "${API_TOKEN}"
+        }
+      },
+      {
+        "method": "GET",
+        "path": "/raw/*",
+        "origin": "${UPSTREAM}",
+        "auth": {
+          "scheme": "raw",
+          "token": "${API_TOKEN}"
+        }
+      },
+      {
+        "method": "GET",
+        "path": "/basic-token/*",
+        "origin": "${UPSTREAM}",
+        "auth": {
+          "scheme": "basic",
+          "token": "${PRE_ENCODED}"
+        }
+      },
+      {
+        "method": "GET",
+        "path": "/repos/${PINNED_ORG}/*",
+        "origin": "${UPSTREAM}"
+      }
+    ]
+  },
+  "cases": [
+    {
+      "name": "the token scheme emits Token, not Bearer",
+      "request": {
+        "method": "GET",
+        "path": "/token/thing"
+      },
+      "expect": {
+        "matched": true,
+        "headers": {
+          "authorization": "Token tok-123"
+        }
+      }
+    },
+    {
+      "name": "the raw scheme emits the token with no prefix",
+      "request": {
+        "method": "GET",
+        "path": "/raw/thing"
+      },
+      "expect": {
+        "matched": true,
+        "headers": {
+          "authorization": "tok-123"
+        }
+      }
+    },
+    {
+      "name": "a basic block carrying a token holds the encoded pair already",
+      "request": {
+        "method": "GET",
+        "path": "/basic-token/thing"
+      },
+      "expect": {
+        "matched": true,
+        "headers": {
+          "authorization": "Basic dXNlcjpwYXNz"
+        }
+      }
+    },
+    {
+      "name": "${VAR} in a path is substituted into the outgoing URL",
+      "request": {
+        "method": "GET",
+        "path": "/repos/acme/widget"
+      },
+      "expect": {
+        "matched": true,
+        "url": "https://upstream.example/repos/acme/widget"
+      }
+    },
+    {
+      "name": "another segment matches and is rewritten, as snyk-broker does",
+      "request": {
+        "method": "GET",
+        "path": "/repos/evilcorp/widget"
+      },
+      "expect": {
+        "matched": true,
+        "url": "https://upstream.example/repos/acme/widget"
+      }
+    }
+  ]
+}
