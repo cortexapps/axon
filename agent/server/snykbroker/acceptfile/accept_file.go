@@ -3,7 +3,6 @@ package acceptfile
 import (
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"os"
 	"sync"
 
@@ -234,19 +233,25 @@ func (r AcceptFileRuleWrapper) Origin() string {
 		return ""
 	}
 	origin := os.ExpandEnv(rawOrigin)
-	asUrl, err := url.Parse(origin)
+	withScheme, err := defaultScheme(origin)
 	if err != nil {
 		r.acceptFile.logger.Panic("failed to parse origin URL", zap.String("origin", rawOrigin), zap.Error(err))
 	}
-	if asUrl.Scheme == "" {
+	if withScheme != origin {
 		if _, seen := r.acceptFile.schemeWarned.LoadOrStore(rawOrigin, struct{}{}); !seen {
 			r.acceptFile.logger.Debug("origin URL has no scheme, defaulting to https", zap.String("origin", rawOrigin))
 		}
-		asUrl.Scheme = "https"
-		return asUrl.String()
 	}
-	return origin
+	return withScheme
+}
 
+// RawOrigin returns the rule's origin exactly as written, with ${VAR}
+// references intact. The Router needs this because pool rotation has to happen
+// on the reference: expanding ${API} against the environment first turns a
+// pool-only variable into the empty string, leaving nothing to rotate.
+func (r AcceptFileRuleWrapper) RawOrigin() string {
+	origin, _ := r.dict["origin"].(string)
+	return origin
 }
 
 func (r AcceptFileRuleWrapper) Path() string {

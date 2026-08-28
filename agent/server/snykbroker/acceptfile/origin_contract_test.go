@@ -116,4 +116,5 @@ func TestOriginOfRuleWithoutOneIsEmpty(t *testing.T) {
 	rules := af.Wrapper().PrivateRules()
 	require.Len(t, rules, 1)
 	require.Equal(t, "", rules[0].Origin())
+	require.Equal(t, "", rules[0].RawOrigin())
 }
