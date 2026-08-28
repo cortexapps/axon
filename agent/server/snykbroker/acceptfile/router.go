@@ -108,7 +108,10 @@ func (rt *Router) Route(method, rawPath string, headers map[string]string) (*Rou
 		}
 	}
 
-	origin := rt.pools.ResolvePoolVars(rule.Origin())
+	origin, err := rt.resolveOrigin(*rule)
+	if err != nil {
+		return nil, err
+	}
 	targetURL, err := buildTargetURL(origin, pathOnly, decodedPath, query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build target URL: %w", err)
@@ -155,6 +158,35 @@ func (rt *Router) Route(method, rawPath string, headers map[string]string) (*Rou
 		URL:    targetURL,
 		Header: header,
 	}, nil
+}
+
+// resolveOrigin turns a rule's raw origin into a concrete URL string, rotating
+// any ${VAR} that names a pool.
+//
+// Resolution has to happen on the reference rather than on an already-expanded
+// string: rule.Origin() runs os.ExpandEnv first, so a variable that exists only
+// as VAR_POOL becomes the empty string and the PoolManager has nothing left to
+// rotate.
+func (rt *Router) resolveOrigin(rule AcceptFileRuleWrapper) (string, error) {
+	raw := rule.RawOrigin()
+	if raw == "" {
+		return "", fmt.Errorf("rule has no origin")
+	}
+	return defaultScheme(rt.pools.ResolvePoolVars(raw))
+}
+
+// defaultScheme fills in https for an origin written without one, which the
+// accept-file format allows (${GITHUB:github.com}).
+func defaultScheme(origin string) (string, error) {
+	asURL, err := url.Parse(origin)
+	if err != nil {
+		return "", fmt.Errorf("invalid origin %q: %w", origin, err)
+	}
+	if asURL.Scheme != "" {
+		return origin, nil
+	}
+	asURL.Scheme = "https"
+	return asURL.String(), nil
 }
 
 // buildTargetURL joins the rule's resolved origin with the request path
