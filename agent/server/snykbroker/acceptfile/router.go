@@ -1,12 +1,10 @@
 package acceptfile
 
 import (
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 
 	"go.uber.org/zap"
@@ -157,26 +155,6 @@ func (rt *Router) Route(method, rawPath string, headers map[string]string) (*Rou
 		URL:    targetURL,
 		Header: header,
 	}, nil
-}
-
-// applyAuth sets the Authorization header from the rule's auth block.
-func applyAuth(header http.Header, auth *AcceptFileRuleAuth) {
-	if auth == nil {
-		return
-	}
-	switch strings.ToLower(auth.Scheme) {
-	case "bearer", "token":
-		token := os.ExpandEnv(auth.Token)
-		header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
-	case "basic":
-		username := os.ExpandEnv(auth.Username)
-		password := os.ExpandEnv(auth.Password)
-		header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(username+":"+password)))
-	default:
-		// Custom scheme: set as Authorization header.
-		token := os.ExpandEnv(auth.Token)
-		header.Set("Authorization", fmt.Sprintf("%s %s", auth.Scheme, token))
-	}
 }
 
 // buildTargetURL joins the rule's resolved origin with the request path
