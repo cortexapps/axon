@@ -25,7 +25,9 @@ func TestBuildTargetURL(t *testing.T) {
 		t.Run(tt.origin+tt.path, func(t *testing.T) {
 			decoded, err := urlPathUnescape(tt.path)
 			require.NoError(t, err)
-			got, err := buildTargetURL(tt.origin, tt.path, decoded, tt.query)
+			parsed, err := parseOrigin(tt.origin)
+			require.NoError(t, err)
+			got, err := buildTargetURL(parsed.url, "", tt.path, decoded, tt.query)
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, got.String())
 		})
@@ -33,9 +35,10 @@ func TestBuildTargetURL(t *testing.T) {
 }
 
 func TestRouter_NoRouteAndInvalid(t *testing.T) {
-	router := NewRouter(nil, nil)
+	router, err := NewRouter(nil, nil)
+	require.NoError(t, err)
 
-	_, err := router.Route("GET", "/nope", nil)
+	_, err = router.Route("GET", "/nope", nil)
 	assert.ErrorIs(t, err, ErrNoRoute)
 
 	_, err = router.Route("", "/nope", nil)

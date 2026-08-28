@@ -28,9 +28,15 @@ type Router struct {
 	inner *acceptfile.Router
 }
 
-// NewRouter creates a Router over rendered accept file rules.
-func NewRouter(rules []acceptfile.AcceptFileRuleWrapper, logger *zap.Logger) *Router {
-	return &Router{inner: acceptfile.NewRouter(rules, logger)}
+// NewRouter creates a Router over rendered accept file rules. It fails when a
+// rule's origin cannot be resolved into a policy — a malformed wildcard, an
+// undialable port — so the agent stops at startup rather than per request.
+func NewRouter(rules []acceptfile.AcceptFileRuleWrapper, logger *zap.Logger) (*Router, error) {
+	inner, err := acceptfile.NewRouter(rules, logger)
+	if err != nil {
+		return nil, err
+	}
+	return &Router{inner: inner}, nil
 }
 
 // Route resolves a CallStart to a BackendRequest, or a *RouteError with an
@@ -47,6 +53,9 @@ func (rt *Router) Route(start *pb.CallStart) (*BackendRequest, error) {
 			return nil, &RouteError{Code: http.StatusNotFound, Reason: err.Error()}
 		case errors.As(err, &invalid):
 			return nil, &RouteError{Code: http.StatusBadRequest, Reason: invalid.Reason}
+		case errors.Is(err, acceptfile.ErrDestinationRejected):
+			// The reason names the policy, never the value that failed it.
+			return nil, &RouteError{Code: http.StatusForbidden, Reason: err.Error()}
 		default:
 			return nil, &RouteError{Code: http.StatusBadGateway, Reason: err.Error()}
 		}

@@ -16,9 +16,9 @@ import (
 //
 // Two classes end up here:
 //
-//   - constructs snyk-broker honours that the Router does not implement — body
-//     and query "valid" filters, requiredCapabilities. Ignoring one widens the
-//     rule, so the warning says exactly that.
+//   - constructs snyk-broker honours that the Router does not yet implement —
+//     body and query "valid" filters, requiredCapabilities. Ignoring one widens
+//     the rule, so the warning says exactly that.
 //   - constructs snyk-broker itself effectively ignores — an unrecognized auth
 //     scheme, where authHeader() returns undefined and no Authorization header
 //     is sent at all. Ignoring it matches the broker; the warning is so nobody

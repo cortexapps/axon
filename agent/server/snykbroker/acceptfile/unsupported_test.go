@@ -20,11 +20,9 @@ import (
 // that switch has to be transparent: a file the broker accepts must still
 // start. Anything the Router cannot carry is warned about and ignored.
 //
-// The refusal that used to be here is gone, and the warnings live at Router
-// construction rather than at parse: parsing is shared with the snyk-broker
-// path, where the Node broker honours these constructs, so warning at parse
-// would tell an operator their working rule is being dropped when it is not.
-// TestSnykBrokerConstructsStillParse pins that boundary.
+// The one exception is a malformed wildcard origin, covered in
+// router_wildcard_test.go — the snyk-broker path refuses that too, so no
+// working deployment has one.
 
 // loadWithLogs parses an accept file with a logger the test can inspect.
 func loadWithLogs(t *testing.T, content string) (*AcceptFile, []observer.LoggedEntry, error) {
@@ -35,8 +33,8 @@ func loadWithLogs(t *testing.T, content string) (*AcceptFile, []observer.LoggedE
 	return af, logs.All(), err
 }
 
-// routerWithLogs builds the Router, which is where a construct it cannot carry
-// gets warned about.
+// routerWithLogs builds the tunnel Router, which is where a construct it cannot
+// carry gets warned about.
 func routerWithLogs(t *testing.T, content string) (*Router, []observer.LoggedEntry) {
 	t.Helper()
 	core, logs := observer.New(zapcore.WarnLevel)
@@ -55,7 +53,9 @@ func routerWithLogs(t *testing.T, content string) (*Router, []observer.LoggedEnt
 			rules = append(rules, r)
 		}
 	}
-	return NewRouter(rules, zap.New(core)), logs.All()
+	rt, err := NewRouter(rules, zap.New(core))
+	require.NoError(t, err, "an unsupported construct must not stop the Router")
+	return rt, logs.All()
 }
 
 // requireWarns asserts the file loads, the Router builds, and a warning names
@@ -173,6 +173,25 @@ func TestRequiredCapabilitiesWarnsAndIsIgnored(t *testing.T) {
 		"requiredCapabilities":["post-streams"]}]}`, "requiredCapabilities")
 }
 
+// An unrecognized scheme sends no Authorization header — which is exactly what
+// snyk-broker's authHeader() does with it — but nobody should have to guess
+// that a credential silently went missing.
+func TestUnknownAuthSchemeWarnsAndSendsNoHeader(t *testing.T) {
+	t.Setenv("TOK", "abc")
+	logs := requireWarns(t, `{"private":[{
+		"method":"any","path":"/*","origin":"https://up.example",
+		"auth":{"scheme":"digest","token":"${TOK}"}}]}`, "digest")
+	require.NotEmpty(t, logs)
+
+	rt, _ := routerWithLogs(t, `{"private":[{
+		"method":"any","path":"/*","origin":"https://up.example",
+		"auth":{"scheme":"digest","token":"${TOK}"}}]}`)
+	routed, err := rt.Route("GET", "/x", nil)
+	require.NoError(t, err)
+	require.Empty(t, routed.Header.Get("Authorization"),
+		"an unrecognized scheme sends no credential, as in snyk-broker")
+}
+
 // The tunnel streams every body, so "stream": true asks for what it already
 // does — no warning, nothing to ignore.
 func TestStreamFieldIsAcceptedSilently(t *testing.T) {
@@ -248,13 +267,15 @@ func TestNoAcceptFileConstructStopsTheAgent(t *testing.T) {
 			"valid":[{"queryParam":"proxyMe","values":["please"]}]}]}`,
 		"required capabilities": `{"private":[{"method":"GET","path":"/*","origin":"https://up.example",
 			"requiredCapabilities":["post-streams"]}]}`,
+		"unknown auth scheme": `{"private":[{"method":"GET","path":"/*","origin":"https://up.example",
+			"auth":{"scheme":"digest","token":"t"}}]}`,
 		"inbound rules": `{"private":[{"method":"any","path":"/*","origin":"https://up.example"}],
 			"public":[{"method":"POST","path":"/webhook/github"}]}`,
 		"stream":             `{"private":[{"method":"GET","path":"/*","origin":"https://up.example","stream":true}]}`,
 		"unknown rule field": `{"private":[{"method":"GET","path":"/*","origin":"https://up.example","someFutureField":{"a":1}}]}`,
 		"comment key":        `{"private":[{"//":"note","method":"GET","path":"/*","origin":"https://up.example"}]}`,
 		"everything at once": `{"private":[{"method":"POST","path":"/*","origin":"https://up.example",
-			"requiredCapabilities":["x"],
+			"requiredCapabilities":["x"],"auth":{"scheme":"digest","token":"t"},
 			"valid":[{"path":"a.b","value":"c"},{"queryParam":"q","values":["v"]}]}],
 			"public":[{"method":"POST","path":"/hook"}]}`,
 	} {
@@ -263,26 +284,6 @@ func TestNoAcceptFileConstructStopsTheAgent(t *testing.T) {
 			require.NoError(t, err, "parsing must not refuse this")
 			rt, _ := routerWithLogs(t, content)
 			require.NotNil(t, rt, "the Router must not refuse this")
-		})
-	}
-}
-
-// The snyk-broker path keeps working. Every construct the Router warns about is
-// one the Node broker implements, so parsing has to stay silent about it: an
-// operator on snyk-broker must not be told their working rule is being dropped.
-func TestSnykBrokerConstructsStillParse(t *testing.T) {
-	for name, content := range map[string]string{
-		"body filter": `{"private":[{"method":"POST","path":"/*","origin":"https://up.example",
-			"valid":[{"path":"proxy.*","value":"please"}]}]}`,
-		"query filter": `{"private":[{"method":"GET","path":"/*","origin":"https://up.example",
-			"valid":[{"queryParam":"proxyMe","values":["please"]}]}]}`,
-		"required capabilities": `{"private":[{"method":"GET","path":"/*","origin":"https://up.example",
-			"requiredCapabilities":["post-streams"]}]}`,
-	} {
-		t.Run(name, func(t *testing.T) {
-			_, logs, err := loadWithLogs(t, content)
-			require.NoError(t, err, "the Node broker honours this; parsing must not refuse it")
-			require.Empty(t, logs, "nor tell a snyk-broker operator it is being ignored")
 		})
 	}
 }
@@ -308,9 +309,7 @@ func TestEveryShippedAcceptFileLoads(t *testing.T) {
 }
 
 // Accept files the repo hands to the agent — the shipped templates and the
-// fixtures the docker E2E suites run with. Without the fixtures here, a
-// construct this package starts refusing surfaces only as a container that
-// will not start, several CI minutes later.
+// fixtures the docker E2E suites run with.
 func acceptFilesUnderTest(t *testing.T) []string {
 	t.Helper()
 	files := builtinAcceptFiles(t)

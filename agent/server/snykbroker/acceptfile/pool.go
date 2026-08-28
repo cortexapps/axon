@@ -73,26 +73,45 @@ func (pe *poolEntry) Next() string {
 	return pe.values[idx%uint64(len(pe.values))]
 }
 
+// Peek returns the value Next would return, without consuming the slot.
+// Startup validation uses it so checking a pool does not shift which member the
+// first request lands on.
+func (pe *poolEntry) Peek() string {
+	idx := pe.counter.Load()
+	return pe.values[idx%uint64(len(pe.values))]
+}
+
 // reEnvVar matches ${VAR_NAME} patterns in strings.
 var reEnvVar = regexp.MustCompile(`\$\{([^}]+)\}`)
 
 // ResolvePoolVars resolves any ${VAR} references in the string, checking for
 // _POOL variants first (round-robin), then falling back to regular env vars.
 func (pm *PoolManager) ResolvePoolVars(s string) string {
+	return pm.resolveVars(s, true)
+}
+
+// resolveVars resolves ${VAR} references. advance is false for startup
+// validation, which must observe a pool without consuming a slot.
+//
+// The pool is checked before the plain environment variable, matching
+// snyk-broker's replace(). Resolution has to happen on the reference rather
+// than on an already-expanded string: a variable that exists only as VAR_POOL
+// expands to the empty string, leaving nothing to rotate.
+func (pm *PoolManager) resolveVars(s string, advance bool) string {
 	return reEnvVar.ReplaceAllStringFunc(s, func(match string) string {
 		varName := match[2 : len(match)-1] // strip ${ and }
 
-		// Check pool first.
 		if entry := pm.getPool(varName); entry != nil {
-			return entry.Next()
+			if advance {
+				return entry.Next()
+			}
+			return entry.Peek()
 		}
 
-		// Fall back to regular env var.
 		if val := os.Getenv(varName); val != "" {
 			return val
 		}
 
-		// Check if the value itself (already expanded) is a comma-separated pool.
 		return match
 	})
 }

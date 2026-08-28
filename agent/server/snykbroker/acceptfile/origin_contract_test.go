@@ -11,11 +11,13 @@ import (
 // AcceptFileRuleWrapper.Origin() is the one accessor this package shares with
 // the snyk-broker reflector: relay_instance_manager.go reads it to decide
 // whether a rule needs a wildcard policy, to build the reflector proxy URI, and
-// to report a bad origin. Nothing else in here is reachable from that path —
-// Path() and MatchRule have no callers outside this package and grpctunnel.
+// to report a bad origin. Nothing else the tunnel work touched is reachable
+// from that path — Path() and MatchRule have no callers outside this package
+// and grpctunnel.
 //
-// It is pinned here, before the routing work that follows refactors it, so a
-// change to the shared accessor cannot quietly alter what the reflector sees.
+// So this pins Origin()'s contract directly, in the shapes the reflector
+// depends on, rather than leaving it implied by tests of the things built on
+// top of it.
 func TestOriginContract(t *testing.T) {
 	cases := []struct {
 		name   string
