@@ -109,7 +109,9 @@ func catchAllRouter(t *testing.T) *Router {
 		"private": [{"method": "any", "path": "/*", "origin": "http://stub.internal"}]
 	}`), cfg, zap.NewNop())
 	require.NoError(t, err)
-	return NewRouter(af.Wrapper().PrivateRules(), zap.NewNop())
+	router, err := NewRouter(af.Wrapper().PrivateRules(), zap.NewNop())
+	require.NoError(t, err)
+	return router
 }
 
 // -----------------------------------------------------------------------------

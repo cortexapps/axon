@@ -245,6 +245,18 @@ func (r AcceptFileRuleWrapper) Origin() string {
 	return withScheme
 }
 
+// Path returns the rule's path pattern as written, ${VAR} references included.
+// Expanding them here would pin the segment to the configured value; matchPath
+// instead treats ${VAR} as snyk-broker does, matching any one segment and
+// substituting the configured value into the outgoing URL.
+func (r AcceptFileRuleWrapper) Path() string {
+	path, ok := r.dict["path"].(string)
+	if !ok {
+		return ""
+	}
+	return path
+}
+
 // RawOrigin returns the rule's origin exactly as written, with ${VAR}
 // references intact. The Router needs this because pool rotation has to happen
 // on the reference: expanding ${API} against the environment first turns a
@@ -252,14 +264,6 @@ func (r AcceptFileRuleWrapper) Origin() string {
 func (r AcceptFileRuleWrapper) RawOrigin() string {
 	origin, _ := r.dict["origin"].(string)
 	return origin
-}
-
-func (r AcceptFileRuleWrapper) Path() string {
-	path, ok := r.dict["path"].(string)
-	if !ok {
-		return ""
-	}
-	return path
 }
 
 func (r AcceptFileRuleWrapper) SetOrigin(origin string) {

@@ -40,6 +40,15 @@ func makeRouterRules(t *testing.T, rules string) []acceptfile.AcceptFileRuleWrap
 	return filtered
 }
 
+// newRouter builds a Router over the rules, failing the test if the accept
+// file declares a policy the Router refuses.
+func newRouter(t *testing.T, rulesJSON string) *Router {
+	t.Helper()
+	router, err := NewRouter(makeRouterRules(t, rulesJSON), zap.NewNop())
+	require.NoError(t, err)
+	return router
+}
+
 func callStart(method, path string, headers map[string]string) *pb.CallStart {
 	return &pb.CallStart{
 		PseudoHeaders: map[string]string{":method": method, ":path": path},
@@ -84,7 +93,7 @@ func TestRouterBackend_BasicRequest(t *testing.T) {
 		]
 	}`, server.URL)
 
-	router := NewRouter(makeRouterRules(t, rulesJSON), zap.NewNop())
+	router := newRouter(t, rulesJSON)
 	status, body, headers := doCall(t, router, callStart("GET", "/api/v1/repos", nil), nil)
 	assert.Equal(t, http.StatusOK, status)
 	assert.Equal(t, `{"repos": []}`, body)
@@ -103,7 +112,7 @@ func TestRouterBackend_QueryStringForwarded(t *testing.T) {
 		"private": [{"method": "GET", "path": "/api/*", "origin": "%s"}]
 	}`, server.URL)
 
-	router := NewRouter(makeRouterRules(t, rulesJSON), zap.NewNop())
+	router := newRouter(t, rulesJSON)
 	status, _, _ := doCall(t, router, callStart("GET", "/api/search?q=foo&page=2", nil), nil)
 	assert.Equal(t, http.StatusOK, status)
 }
@@ -120,7 +129,7 @@ func TestRouterBackend_EncodedSlashPreserved(t *testing.T) {
 		"private": [{"method": "any", "path": "/api/*", "origin": "%s"}]
 	}`, server.URL)
 
-	router := NewRouter(makeRouterRules(t, rulesJSON), zap.NewNop())
+	router := newRouter(t, rulesJSON)
 	status, _, _ := doCall(t, router, callStart("GET", "/api/v4/projects/group%2Fproject", nil), nil)
 	assert.Equal(t, http.StatusOK, status)
 }
@@ -136,7 +145,7 @@ func TestRouter_NoMatchingRule(t *testing.T) {
 		]
 	}`
 
-	router := NewRouter(makeRouterRules(t, rulesJSON), zap.NewNop())
+	router := newRouter(t, rulesJSON)
 	_, err := router.Route(callStart("GET", "/unknown/path", nil))
 	require.Error(t, err)
 	var re *RouteError
@@ -167,7 +176,7 @@ func TestRouterBackend_BearerAuth(t *testing.T) {
 		]
 	}`, server.URL)
 
-	router := NewRouter(makeRouterRules(t, rulesJSON), zap.NewNop())
+	router := newRouter(t, rulesJSON)
 	status, _, _ := doCall(t, router, callStart("GET", "/api/repos", nil), nil)
 	assert.Equal(t, http.StatusOK, status)
 }
@@ -197,7 +206,7 @@ func TestRouterBackend_BasicAuth(t *testing.T) {
 		]
 	}`, server.URL)
 
-	router := NewRouter(makeRouterRules(t, rulesJSON), zap.NewNop())
+	router := newRouter(t, rulesJSON)
 	status, _, _ := doCall(t, router, callStart("POST", "/api/data", nil), strings.NewReader(`{"key":"value"}`))
 	assert.Equal(t, http.StatusOK, status)
 }
@@ -222,7 +231,7 @@ func TestRouterBackend_RuleHeaderInjection(t *testing.T) {
 		]
 	}`, server.URL)
 
-	router := NewRouter(makeRouterRules(t, rulesJSON), zap.NewNop())
+	router := newRouter(t, rulesJSON)
 	status, _, _ := doCall(t, router, callStart("GET", "/api/repos", map[string]string{"x-custom": "caller-value"}), nil)
 	assert.Equal(t, http.StatusOK, status)
 }
@@ -250,7 +259,7 @@ func TestRouterBackend_StreamedRequestBody(t *testing.T) {
 		bodyW.Close()
 	}()
 
-	router := NewRouter(makeRouterRules(t, rulesJSON), zap.NewNop())
+	router := newRouter(t, rulesJSON)
 	status, _, _ := doCall(t, router, callStart("POST", "/api/upload", nil), bodyR)
 	assert.Equal(t, http.StatusOK, status)
 }

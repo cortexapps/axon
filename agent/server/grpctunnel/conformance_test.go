@@ -57,9 +57,11 @@ type conformanceCase struct {
 		URL     string            `json:"url"`
 		Headers map[string]string `json:"headers"`
 		// Code is the CallCancel status a rejected request must carry.
-		// Defaults to 404 (no rule matched); 400 says the request was
-		// malformed before matching — bad encoding, directory traversal.
+		// Defaults to 404 (no rule matched); 403 says a rule matched but did
+		// not authorize the destination the request named.
 		Code int32 `json:"code"`
+		// AbsentHeaders names headers that must not reach the upstream.
+		AbsentHeaders []string `json:"absentHeaders"`
 	} `json:"expect"`
 }
 
@@ -93,7 +95,8 @@ func runConformanceFixture(t *testing.T, path string) {
 			rules = append(rules, r)
 		}
 	}
-	router := NewRouter(rules, zap.NewNop())
+	router, err := NewRouter(rules, zap.NewNop())
+	require.NoError(t, err)
 
 	for _, c := range fixture.Cases {
 		t.Run(c.Name, func(t *testing.T) {
@@ -126,6 +129,9 @@ func runConformanceFixture(t *testing.T, path string) {
 			}
 			for k, v := range c.Expect.Headers {
 				assert.Equal(t, v, breq.Header.Get(k), "outgoing header %q", k)
+			}
+			for _, k := range c.Expect.AbsentHeaders {
+				assert.Empty(t, breq.Header.Values(k), "header %q must not reach the upstream", k)
 			}
 		})
 	}
