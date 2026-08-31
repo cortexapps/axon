@@ -24,6 +24,12 @@ on:
       - 'server/**'
       - 'proto/**'
       - '.github/workflows/tunnel-server-image.yml'
+  # Release tags do NOT come in through a `tags:` filter here. This `push`
+  # trigger carries a `paths:` filter, and a tag push has no file diff for
+  # GitHub to evaluate that filter against, so a `tags:` entry alongside
+  # `paths:` would silently never fire. tunnel-server-release.yml owns the
+  # tag trigger and calls this workflow instead.
+  workflow_call:
   workflow_dispatch:
 
 concurrency:
@@ -68,8 +74,15 @@ jobs:
           # Branch name (slashes become dashes) plus the commit sha. The
           # branch tag is the handle for "deploy what I am working on"; the
           # sha tag is the one to pin, since a branch tag moves under you.
+          #
+          # The semver patterns only emit on a `refs/tags/v*` ref, so they are
+          # inert on the branch builds above; on a release tag they give the
+          # server the same `1.2.3` / `1.2` stamp the agent image gets from
+          # docker.yml, which is the whole point of tagging both together.
           tags: |
             type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
             type=sha
           # Only main moves the floating "latest" tag. A PR image is for
           # deliberately pinning a deployment at, never for anything that
