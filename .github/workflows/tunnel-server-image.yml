@@ -135,6 +135,10 @@ jobs:
   trivy:
     name: Run Trivy Container scan
     needs: build
+    permissions:
+      contents: read
+      packages: read
+      security-events: write
     uses: ./.github/workflows/trivy-scan.yml
     with:
       image-ref: ${{ needs.build.outputs.published-ref }}

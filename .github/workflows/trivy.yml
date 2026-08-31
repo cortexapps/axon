@@ -15,6 +15,13 @@ on:
 jobs:
   agent:
     name: Agent image
+    # Explicit rather than inherited: a called workflow cannot hold a
+    # permission its caller did not grant, so these are the scan's actual
+    # needs -- pull the image, upload SARIF -- and nothing else.
+    permissions:
+      contents: read
+      packages: read
+      security-events: write
     uses: ./.github/workflows/trivy-scan.yml
     with:
       image-ref: ghcr.io/${{ github.repository_owner }}/cortex-axon-agent:main
@@ -23,6 +30,10 @@ jobs:
 
   tunnel-server:
     name: Tunnel server image
+    permissions:
+      contents: read
+      packages: read
+      security-events: write
     uses: ./.github/workflows/trivy-scan.yml
     with:
       image-ref: ghcr.io/${{ github.repository_owner }}/cortex-axon-tunnel-server:main
