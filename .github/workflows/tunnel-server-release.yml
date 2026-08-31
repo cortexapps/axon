@@ -26,4 +26,10 @@ jobs:
     permissions:
       contents: read
       packages: write
+      # The build workflow chains into the Trivy scan, which uploads SARIF.
+      # A nested reusable workflow cannot hold a permission its caller did not
+      # grant, so withholding this here would fail the release scan's upload
+      # rather than merely narrowing it.
+      security-events: write
     uses: ./.github/workflows/tunnel-server-image.yml
+    secrets: inherit
