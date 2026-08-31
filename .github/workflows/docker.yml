@@ -87,6 +87,11 @@ jobs:
 
     outputs:
       image-tag: ${{ steps.local-tag.outputs.tag }}
+      # The primary tag metadata-action resolved -- the semver version on a
+      # tag build, the branch name on main. The release scan targets this
+      # rather than a hardcoded :main, so a tag build reports on the image
+      # that tag actually published.
+      published-ref: ghcr.io/${{ github.repository_owner }}/cortex-axon-agent:${{ steps.meta.outputs.version }}
 
   trivy-pr:
     name: Run Trivy PR scan (local image)
@@ -118,6 +123,10 @@ jobs:
         uses: github/codeql-action/upload-sarif@v4.32.2
         with:
           sarif_file: 'trivy-results.sarif'
+          # Matches the release scan's category so PR and post-merge findings
+          # for this image track one series instead of churning against
+          # each other in the Security tab.
+          category: trivy-cortex-axon-agent
 
       - name: Fail on CRITICAL/HIGH vulnerabilities
         run: |
@@ -132,5 +141,12 @@ jobs:
     name: Run Trivy Container scan
     needs: build
     if: ${{ github.event_name == 'workflow_dispatch' || github.ref == format('refs/heads/{0}', 'main') || startsWith(github.ref, 'refs/tags/') }}
-    uses: ./.github/workflows/trivy.yml
+    permissions:
+      contents: read
+      packages: read
+      security-events: write
+    uses: ./.github/workflows/trivy-scan.yml
+    with:
+      image-ref: ${{ needs.build.outputs.published-ref }}
+      category: trivy-cortex-axon-agent
     secrets: inherit

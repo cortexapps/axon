@@ -32,7 +32,7 @@ WORKDIR /agent
 # when the scheduled Trivy scan flags OS-package CVEs whose fixes are already
 # in the archive — the cache is just serving a stale layer. Leaves the rest of
 # the build (Go, npm, snyk-broker clone) hitting cache as normal.
-ARG APT_CACHE_BUST=2026-08-16
+ARG APT_CACHE_BUST=2026-08-31
 # NOTE: build-essential is deliberately NOT installed here. It pulls in a full
 # C/C++ toolchain whose libc6-dev dependency drags in linux-libc-dev (the Linux
 # kernel headers), and that single package generates a steady stream of HIGH

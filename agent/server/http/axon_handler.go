@@ -113,6 +113,12 @@ func (h *axonHandler) relayMode() string {
 func (h *axonHandler) healthcheck(w http.ResponseWriter, r *http.Request) {
 	result := map[string]interface{}{
 		"OK": true,
+		// Also served from /info, but health is the endpoint every component
+		// exposes and the one reached for first when something looks wrong.
+		// The tunnel server reports build_version from its own /healthcheck,
+		// so carrying it here means "which build is this" is the same probe
+		// on both halves rather than a different path per component.
+		"build_version": getBuildVersion(),
 	}
 	h.returnJson(result, w)
 }

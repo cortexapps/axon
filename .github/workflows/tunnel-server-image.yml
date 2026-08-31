@@ -24,6 +24,12 @@ on:
       - 'server/**'
       - 'proto/**'
       - '.github/workflows/tunnel-server-image.yml'
+  # Release tags do NOT come in through a `tags:` filter here. This `push`
+  # trigger carries a `paths:` filter, and a tag push has no file diff for
+  # GitHub to evaluate that filter against, so a `tags:` entry alongside
+  # `paths:` would silently never fire. tunnel-server-release.yml owns the
+  # tag trigger and calls this workflow instead.
+  workflow_call:
   workflow_dispatch:
 
 concurrency:
@@ -68,14 +74,24 @@ jobs:
           # Branch name (slashes become dashes) plus the commit sha. The
           # branch tag is the handle for "deploy what I am working on"; the
           # sha tag is the one to pin, since a branch tag moves under you.
+          #
+          # The semver patterns only emit on a `refs/tags/v*` ref, so they are
+          # inert on the branch builds above; on a release tag they give the
+          # server the same `1.2.3` / `1.2` stamp the agent image gets from
+          # docker.yml, which is the whole point of tagging both together.
           tags: |
             type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
             type=sha
-          # Only main moves the floating "latest" tag. A PR image is for
-          # deliberately pinning a deployment at, never for anything that
-          # resolves a tag on its own.
-          flavor: |
-            latest=${{ github.ref == 'refs/heads/main' }}
+          # No flavor block, which leaves metadata-action's default
+          # latest=auto: "latest" moves only on a semver tag push, exactly as
+          # it does for the agent image in docker.yml. Previously it tracked
+          # main HEAD here, so the same word meant "last release" on one image
+          # and "tip of main" on the other -- a deployment pinned to :latest
+          # got a different kind of thing depending on which half it was.
+          # A branch build still never moves it: those refs are not semver
+          # tags, so they publish only their branch and sha tags.
 
       - name: Build and push
         uses: docker/build-push-action@v6
@@ -85,6 +101,11 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # Same stamp the agent image gets in docker.yml: the ref (branch or
+          # tag name) plus the sha, so a running server reports what it was
+          # built from rather than what its image tag currently points at.
+          build-args: |
+            BUILD_VERSION=${{ github.ref_name }}-${{ github.sha }}
           # amd64 only: this runs on every PR touching the server, and arm64
           # via QEMU costs minutes for an image that deploys to amd64 hosts.
           platforms: linux/amd64
@@ -100,3 +121,26 @@ jobs:
             echo "${{ steps.meta.outputs.tags }}"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+    outputs:
+      # The primary tag metadata-action resolved: the semver version on a
+      # release tag, the branch name otherwise. The scan below targets this so
+      # it reports on the image this run actually pushed.
+      published-ref: ghcr.io/${{ github.repository_owner }}/cortex-axon-tunnel-server:${{ steps.meta.outputs.version }}
+
+  # The agent image is scanned on every build; this one was not scanned at all,
+  # despite being the internet-facing half. Every run scans what it published,
+  # which is the same gate the agent gets -- there is no unpushed path here to
+  # scan locally, since this workflow publishes on every branch.
+  trivy:
+    name: Run Trivy Container scan
+    needs: build
+    permissions:
+      contents: read
+      packages: read
+      security-events: write
+    uses: ./.github/workflows/trivy-scan.yml
+    with:
+      image-ref: ${{ needs.build.outputs.published-ref }}
+      category: trivy-cortex-axon-tunnel-server
+    secrets: inherit

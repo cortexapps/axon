@@ -1,0 +1,35 @@
+# Publishes a version-stamped gRPC tunnel server image when a release tag is
+# pushed.
+#
+# This exists as its own file rather than a `tags:` entry on
+# tunnel-server-image.yml because that workflow's `push` trigger is filtered by
+# `paths:`. A tag push carries no file diff for GitHub to evaluate a path
+# filter against, so a `tags:` entry sitting next to `paths:` never fires — the
+# release image would silently not be built. Splitting the tag trigger into a
+# separate, unfiltered workflow that calls the shared build keeps one build
+# definition and makes the release path actually run.
+#
+# The agent image already builds on the same tags from docker.yml, so between
+# the two, one `git tag v1.2.3 && git push --tags` stamps `1.2.3` on both
+# ghcr.io/<owner>/cortex-axon-agent and
+# ghcr.io/<owner>/cortex-axon-tunnel-server.
+name: Tunnel Server Release Image
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  publish:
+    permissions:
+      contents: read
+      packages: write
+      # The build workflow chains into the Trivy scan, which uploads SARIF.
+      # A nested reusable workflow cannot hold a permission its caller did not
+      # grant, so withholding this here would fail the release scan's upload
+      # rather than merely narrowing it.
+      security-events: write
+    uses: ./.github/workflows/tunnel-server-image.yml
+    secrets: inherit

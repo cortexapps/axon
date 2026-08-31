@@ -101,7 +101,14 @@ func testAxonHealthcheck(t *testing.T, port int) {
 	require.NoError(t, err)
 
 	require.Equal(t, http.StatusOK, resp.StatusCode)
-	require.Equal(t, "{\"OK\":true}", string(body))
+
+	// Parsed rather than string-compared: the body carries build_version
+	// alongside OK, and pinning the exact bytes made adding a field a test
+	// failure rather than a decision.
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal(body, &parsed), "health body is not valid JSON: %s", string(body))
+	require.Equal(t, true, parsed["OK"])
+	require.NotEmpty(t, parsed["build_version"])
 }
 
 func testWebhook(t *testing.T, port int) {
