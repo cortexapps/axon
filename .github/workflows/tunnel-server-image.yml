@@ -98,6 +98,11 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # Same stamp the agent image gets in docker.yml: the ref (branch or
+          # tag name) plus the sha, so a running server reports what it was
+          # built from rather than what its image tag currently points at.
+          build-args: |
+            BUILD_VERSION=${{ github.ref_name }}-${{ github.sha }}
           # amd64 only: this runs on every PR touching the server, and arm64
           # via QEMU costs minutes for an image that deploys to amd64 hosts.
           platforms: linux/amd64

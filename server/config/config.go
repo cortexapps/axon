@@ -16,6 +16,11 @@ const (
 	DefaultHeartbeatInterval  = 30 * time.Second
 	DefaultMaxFrameBytes      = 1 << 20 // 1 MiB
 	DefaultMaxStreamsPerToken = 64
+	// DefaultBuildVersion is what an unstamped binary reports. The release
+	// image sets AXON_BUILD_VERSION at build time; anything without it — a
+	// local `go run`, a hand-built image — is honestly labeled "dev" rather
+	// than claiming a version it does not have.
+	DefaultBuildVersion = "dev"
 )
 
 type Config struct {
@@ -57,6 +62,13 @@ type Config struct {
 	// ServerHello.max_streams; the (N+1)th stream is rejected with
 	// ResourceExhausted. 0 means unlimited.
 	MaxStreamsPerToken int
+	// BuildVersion identifies the build this server is running, from
+	// AXON_BUILD_VERSION (stamped into the image at build time), or "dev".
+	// It is logged at startup and served from /healthcheck so a deployed
+	// server can be matched to a release without shelling into the pod --
+	// the same AXON_BUILD_VERSION contract the agent reports from
+	// /api/v1/info.
+	BuildVersion string
 }
 
 // Fields renders the configuration for logging. It goes through the logger
@@ -74,6 +86,7 @@ func (c Config) Fields() []zap.Field {
 		zap.Duration("re_registration_interval", c.ReRegistrationInterval),
 		zap.Int("max_frame_bytes", c.MaxFrameBytes),
 		zap.Int("max_streams_per_token", c.MaxStreamsPerToken),
+		zap.String("build_version", c.BuildVersion),
 		// Whether the gRPC listener serves TLS decides whether GCLB can reach
 		// it at all, so it belongs in the line you check first.
 		zap.Bool("grpc_tls_enabled", c.GrpcTLSCertFile != ""),
@@ -92,6 +105,7 @@ func NewConfigFromEnv() Config {
 		ReRegistrationInterval: 5 * time.Minute,
 		MaxFrameBytes:          DefaultMaxFrameBytes,
 		MaxStreamsPerToken:     DefaultMaxStreamsPerToken,
+		BuildVersion:           getBuildVersion(),
 	}
 
 	if v := os.Getenv("MAX_FRAME_BYTES"); v != "" {
@@ -161,6 +175,16 @@ func NewConfigFromEnv() Config {
 	}
 
 	return cfg
+}
+
+// getBuildVersion mirrors the agent's read of the same variable
+// (agent/server/http/axon_handler.go): an empty or unset value is "dev", so
+// the field is never blank in a log line or a health response.
+func getBuildVersion() string {
+	if v := os.Getenv("AXON_BUILD_VERSION"); v != "" {
+		return v
+	}
+	return DefaultBuildVersion
 }
 
 func getServerID() string {

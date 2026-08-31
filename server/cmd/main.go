@@ -66,6 +66,27 @@ func newLogger() (*zap.Logger, error) {
 	return cfg.Build()
 }
 
+// newHealthHandler serves the server's liveness and at-a-glance state. It is
+// a named function rather than a closure in main so its response shape is
+// testable: it is the only thing an operator can curl, and callers parse it.
+func newHealthHandler(
+	cfg config.Config,
+	registry *tunnel.ClientRegistry,
+	dispatcher *dispatch.Dispatcher,
+	brokerClient *broker.Client,
+) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		acquireWaits, acquireWaitMs := dispatcher.AcquireStats()
+		// build_version answers "which release is actually running here",
+		// which otherwise took reading the deployment's image tag and
+		// trusting it had not been re-pushed.
+		fmt.Fprintf(w, `{"status":"ok","server_id":%q,"build_version":%q,"clients":%d,"streams":%d,"inflight":%d,"acquire_waits":%d,"acquire_wait_ms":%d,"broker_server_configured":%t}`,
+			cfg.ServerID, cfg.BuildVersion, registry.Count(), registry.StreamCount(), dispatcher.InflightCount(),
+			acquireWaits, acquireWaitMs, brokerClient.IsConfigured())
+	}
+}
+
 func main() {
 	cfg := config.NewConfigFromEnv()
 
@@ -76,6 +97,7 @@ func main() {
 	logger = logger.Named("axon-tunnel-server")
 	defer logger.Sync()
 
+	logger.Info("Starting axon tunnel server", zap.String("build_version", cfg.BuildVersion))
 	logger.Info("Server configuration", cfg.Fields()...)
 
 	// Initialize metrics.
@@ -140,13 +162,7 @@ func main() {
 	// The dispatcher's connection-status probe lives at the root, not under
 	// /broker/. Both forms reach the same handler in the adapter.
 	httpMux.Handle("/connection-status/", httpAdapter)
-	health := func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		acquireWaits, acquireWaitMs := dispatcher.AcquireStats()
-		fmt.Fprintf(w, `{"status":"ok","server_id":%q,"clients":%d,"streams":%d,"inflight":%d,"acquire_waits":%d,"acquire_wait_ms":%d,"broker_server_configured":%t}`,
-			cfg.ServerID, registry.Count(), registry.StreamCount(), dispatcher.InflightCount(),
-			acquireWaits, acquireWaitMs, brokerClient.IsConfigured())
-	}
+	health := newHealthHandler(cfg, registry, dispatcher, brokerClient)
 	httpMux.HandleFunc("/healthz", health)
 	// The same body under the path we actually advertise. Both
 	// client-connected and server-starting tell the dispatcher to health
