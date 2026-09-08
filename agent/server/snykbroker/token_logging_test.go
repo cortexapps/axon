@@ -15,7 +15,7 @@ import (
 
 // The broker token is the sole credential on the relay path, and the agent
 // writes its logs into the customer's log sink. So no log line may carry the
-// raw token. It is logged as the SHA-256 hash the relay server and
+// raw token. It is logged as the token hash on both the relay server and
 // BROKER_SERVER log for the same token, which keeps the lines joinable.
 func TestRefreshTokenInfo_LogsTokenHashNotRawToken(t *testing.T) {
 	ctrl := gomock.NewController(t)
