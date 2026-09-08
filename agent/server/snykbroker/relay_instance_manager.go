@@ -364,7 +364,7 @@ func (r *relayInstanceManager) Restart() error {
 	// (idle tenant, not a dead tunnel) restarts every tick forever instead
 	// of once per RelayIdleTimeout.
 	if r.reflector != nil {
-		r.reflector.RecordTraffic()
+		r.reflector.ResetIdleClock()
 	}
 	return nil
 }

@@ -119,6 +119,14 @@ func (rr *RegistrationReflector) RecordTraffic() {
 	rr.lastTrafficTime.Store(time.Now().UnixMilli())
 }
 
+// ResetIdleClock gives the idle window a fresh start without implying that
+// traffic was relayed. Callers that just recovered the broker (e.g. after a
+// restart) use this instead of RecordTraffic so the watchdog doesn't
+// immediately re-suspect it.
+func (rr *RegistrationReflector) ResetIdleClock() {
+	rr.lastTrafficTime.Store(time.Now().UnixMilli())
+}
+
 // LastTrafficTime returns the time of the last recorded traffic.
 func (rr *RegistrationReflector) LastTrafficTime() time.Time {
 	return time.UnixMilli(rr.lastTrafficTime.Load())
