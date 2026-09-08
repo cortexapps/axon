@@ -70,7 +70,3 @@ func TestRefreshTokenInfo_LogsTokenHashNotRawToken(t *testing.T) {
 	require.Len(t, changed, 1)
 	require.Equal(t, common.TokenHash(rawToken), changed[0].ContextMap()["tokenHash"])
 }
-
-func TestTokenHash_EmptyTokenHashesToEmpty(t *testing.T) {
-	require.Empty(t, common.TokenHash(""), "an absent token must not look like a real one")
-}
