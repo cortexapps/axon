@@ -373,9 +373,11 @@ func TestWebSocketProxyConnectionRefused(t *testing.T) {
 func TestRecordTrafficAndLastTrafficTime(t *testing.T) {
 	env := newTestReflectorEnv(t)
 
-	// LastTrafficTime should be initialized (set in constructor)
+	// The constructor records a startup, not traffic, so LastTrafficTime
+	// starts unset while LastStartupTime is recent.
 	initial := env.Reflector.LastTrafficTime()
-	require.False(t, initial.IsZero(), "LastTrafficTime should be initialized")
+	require.True(t, initial.Before(time.Now().Add(-time.Hour)), "LastTrafficTime should be unset before any traffic")
+	require.False(t, env.Reflector.LastStartupTime().IsZero(), "LastStartupTime should be initialized by the constructor")
 
 	// Wait briefly and record traffic
 	time.Sleep(10 * time.Millisecond)

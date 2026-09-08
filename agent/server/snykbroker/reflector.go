@@ -32,6 +32,7 @@ type RegistrationReflector struct {
 	mode            config.RelayReflectorMode
 	config          config.AgentConfig
 	lastTrafficTime atomic.Int64
+	lastStartupTime atomic.Int64
 	wsProxy         *WebSocketProxy
 }
 
@@ -77,7 +78,7 @@ func NewRegistrationReflector(p RegistrationReflectorParams) *RegistrationReflec
 		rr.logger.Info("WebSocket tunnel established", zap.String("target", target))
 	}
 
-	rr.RecordTraffic()
+	rr.RecordStartup()
 
 	server.RegisterHandler(rr)
 
@@ -119,17 +120,21 @@ func (rr *RegistrationReflector) RecordTraffic() {
 	rr.lastTrafficTime.Store(time.Now().UnixMilli())
 }
 
-// ResetIdleClock gives the idle window a fresh start without implying that
-// traffic was relayed. Callers that just recovered the broker (e.g. after a
-// restart) use this instead of RecordTraffic so the watchdog doesn't
-// immediately re-suspect it.
-func (rr *RegistrationReflector) ResetIdleClock() {
-	rr.lastTrafficTime.Store(time.Now().UnixMilli())
-}
-
 // LastTrafficTime returns the time of the last recorded traffic.
 func (rr *RegistrationReflector) LastTrafficTime() time.Time {
 	return time.UnixMilli(rr.lastTrafficTime.Load())
+}
+
+// RecordStartup marks that the reflector (or the broker beside it) just
+// (re)started. It never touches lastTrafficTime, so LastTrafficTime keeps
+// meaning "last real relayed request" rather than being reset by restarts.
+func (rr *RegistrationReflector) RecordStartup() {
+	rr.lastStartupTime.Store(time.Now().UnixMilli())
+}
+
+// LastStartupTime returns the time of the last recorded (re)start.
+func (rr *RegistrationReflector) LastStartupTime() time.Time {
+	return time.UnixMilli(rr.lastStartupTime.Load())
 }
 
 // SetOnWSTunnelClose sets a callback invoked when a WebSocket tunnel closes.

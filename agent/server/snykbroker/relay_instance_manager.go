@@ -311,7 +311,11 @@ func (r *relayInstanceManager) shouldRestart() (bool, string) {
 	if !r.config.HttpRelayReflectorMode.ReflectsTraffic() {
 		return false, ""
 	}
-	if time.Since(r.reflector.LastTrafficTime()) >= r.config.RelayIdleTimeout {
+	lastActivity := r.reflector.LastTrafficTime()
+	if startup := r.reflector.LastStartupTime(); startup.After(lastActivity) {
+		lastActivity = startup
+	}
+	if time.Since(lastActivity) >= r.config.RelayIdleTimeout {
 		return true, "idle_timeout"
 	}
 	return false, ""
@@ -364,7 +368,7 @@ func (r *relayInstanceManager) Restart() error {
 	// (idle tenant, not a dead tunnel) restarts every tick forever instead
 	// of once per RelayIdleTimeout.
 	if r.reflector != nil {
-		r.reflector.ResetIdleClock()
+		r.reflector.RecordStartup()
 	}
 	return nil
 }

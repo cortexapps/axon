@@ -466,9 +466,10 @@ func TestIdleTimeoutDetectsIdleReflector(t *testing.T) {
 
 	mgr := createTestRelayInstanceManager(t, controller, nil, true, defaultIntegrationInfo)
 
-	// Reflector should have been initialized with a recent traffic time
+	// No traffic has been relayed yet, so LastTrafficTime should still be its
+	// unset zero value, not a recent time (only RecordStartup runs at construction).
 	lastTraffic := mgr.reflector.LastTrafficTime()
-	require.False(t, lastTraffic.IsZero())
+	require.True(t, lastTraffic.Before(time.Now().Add(-time.Hour)))
 
 	// Simulate idle: no traffic recorded
 	// Check that time.Since(lastTraffic) grows
@@ -486,10 +487,11 @@ func TestIdleTimeoutDetectsIdleReflector(t *testing.T) {
 }
 
 // A broker with nothing to relay looks identical, idle-wise, to one whose
-// tunnel died silently: shouldRestart() can only see "no traffic recorded."
-// If a restart didn't reset the clock, an idle (but healthy) broker would
-// restart again on the very next watchdog tick instead of getting a full
-// RelayIdleTimeout window to prove itself.
+// tunnel died silently: shouldRestart() can only see "no activity recorded."
+// A restart must reset the idle clock (LastStartupTime) so a healthy-but-idle
+// broker isn't immediately re-suspected on the next watchdog tick, but it
+// must not touch LastTrafficTime, which should keep meaning "the last time
+// real traffic was relayed" rather than "the last restart."
 func TestRestartResetsIdleClock(t *testing.T) {
 	controller := gomock.NewController(t)
 	defer controller.Finish()
@@ -497,14 +499,17 @@ func TestRestartResetsIdleClock(t *testing.T) {
 	mgr := createTestRelayInstanceManager(t, controller, nil, true, defaultIntegrationInfo)
 
 	time.Sleep(50 * time.Millisecond)
-	require.True(t, time.Since(mgr.reflector.LastTrafficTime()) >= 50*time.Millisecond,
+	require.True(t, time.Since(mgr.reflector.LastStartupTime()) >= 50*time.Millisecond,
 		"Precondition: reflector should look idle before the restart")
+	trafficTimeBeforeRestart := mgr.reflector.LastTrafficTime()
 
 	err := mgr.Restart()
 	require.NoError(t, err)
 
-	require.True(t, time.Since(mgr.reflector.LastTrafficTime()) < 10*time.Millisecond,
+	require.True(t, time.Since(mgr.reflector.LastStartupTime()) < 10*time.Millisecond,
 		"Restart should reset the idle clock")
+	require.Equal(t, trafficTimeBeforeRestart, mgr.reflector.LastTrafficTime(),
+		"Restart must not touch LastTrafficTime")
 
 	err = mgr.Close()
 	require.NoError(t, err)
