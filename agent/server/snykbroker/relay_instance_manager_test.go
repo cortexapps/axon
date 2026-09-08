@@ -484,3 +484,28 @@ func TestIdleTimeoutDetectsIdleReflector(t *testing.T) {
 	err := mgr.Close()
 	require.NoError(t, err)
 }
+
+// A broker with nothing to relay looks identical, idle-wise, to one whose
+// tunnel died silently: shouldRestart() can only see "no traffic recorded."
+// If a restart didn't reset the clock, an idle (but healthy) broker would
+// restart again on the very next watchdog tick instead of getting a full
+// RelayIdleTimeout window to prove itself.
+func TestRestartResetsIdleClock(t *testing.T) {
+	controller := gomock.NewController(t)
+	defer controller.Finish()
+
+	mgr := createTestRelayInstanceManager(t, controller, nil, true, defaultIntegrationInfo)
+
+	time.Sleep(50 * time.Millisecond)
+	require.True(t, time.Since(mgr.reflector.LastTrafficTime()) >= 50*time.Millisecond,
+		"Precondition: reflector should look idle before the restart")
+
+	err := mgr.Restart()
+	require.NoError(t, err)
+
+	require.True(t, time.Since(mgr.reflector.LastTrafficTime()) < 10*time.Millisecond,
+		"Restart should reset the idle clock")
+
+	err = mgr.Close()
+	require.NoError(t, err)
+}

@@ -358,6 +358,14 @@ func (r *relayInstanceManager) Restart() error {
 	if err != nil {
 		return fmt.Errorf("unable to start supervisor on Restart: %w", err)
 	}
+
+	// A fresh broker gets a full idle window before the watchdog is allowed
+	// to suspect it again. Without this, a broker with nothing to relay
+	// (idle tenant, not a dead tunnel) restarts every tick forever instead
+	// of once per RelayIdleTimeout.
+	if r.reflector != nil {
+		r.reflector.RecordTraffic()
+	}
 	return nil
 }
 
