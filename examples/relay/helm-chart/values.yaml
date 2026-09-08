@@ -18,6 +18,16 @@ image:
   repository: ghcr.io/cortexapps/cortex-axon-agent
   tag: latest
 
+# Memory is tuned by sizing the container: the agent reads its own cgroup limit
+# at startup and targets ~80% of it as a Go heap budget, so raising the limit
+# below raises the agent's working budget with it and no separate setting has to
+# be kept in step. Setting GOMEMLIMIT explicitly overrides that if you need to.
+#
+# The agent's peak is driven by concurrent proxied calls: each in-flight call
+# holds one read buffer of the server-announced frame size (1 MiB by default),
+# bounded by MAX_INFLIGHT_REQUESTS (256 by default). The 512Mi limit leaves
+# roughly 2x headroom over that worst case. Raise both together if you raise
+# MAX_INFLIGHT_REQUESTS for throughput.
 resources:
   limits:
     memory: "512Mi"

@@ -11,10 +11,14 @@ import (
 )
 
 const (
-	DefaultGrpcPort           = 50052
-	DefaultHttpPort           = 8080
-	DefaultHeartbeatInterval  = 30 * time.Second
-	DefaultMaxFrameBytes      = 1 << 20 // 1 MiB
+	DefaultGrpcPort          = 50052
+	DefaultHttpPort          = 8080
+	DefaultHeartbeatInterval = 30 * time.Second
+	DefaultMaxFrameBytes     = 1 << 20 // 1 MiB
+	// MaxAllowedFrameBytes bounds MAX_FRAME_BYTES. Agents allocate a buffer of
+	// this size per in-flight call, so the value sets their memory ceiling;
+	// it must also fit in the int32 the hello carries.
+	MaxAllowedFrameBytes      = 4 << 20 // 4 MiB
 	DefaultMaxStreamsPerToken = 64
 	// DefaultBuildVersion is what an unstamped binary reports. The release
 	// image sets AXON_BUILD_VERSION at build time; anything without it — a
@@ -112,6 +116,13 @@ func NewConfigFromEnv() Config {
 		n, err := strconv.Atoi(v)
 		if err != nil {
 			panic(fmt.Errorf("invalid MAX_FRAME_BYTES: %w", err))
+		}
+		// The value is announced to every connected agent, which sizes a
+		// per-call buffer from it, so a typo here is a fleet-wide memory
+		// event rather than a local one. It also crosses the wire as an
+		// int32, where anything larger would arrive wrapped and negative.
+		if n <= 0 || n > MaxAllowedFrameBytes {
+			panic(fmt.Errorf("MAX_FRAME_BYTES must be between 1 and %d, got %d", MaxAllowedFrameBytes, n))
 		}
 		cfg.MaxFrameBytes = n
 	}
