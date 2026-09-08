@@ -410,7 +410,10 @@ func (r *relayInstanceManager) refreshTokenInfo() (*tokenInfo, error) {
 	}
 
 	if !tokenInfo.equals(r.tokenInfo) {
-		r.logger.Info("Registration info has changed", zap.String("uri", tokenInfo.ServerUri), zap.String("token", tokenInfo.Token))
+		r.logger.Info("Registration info has changed",
+			zap.String("uri", tokenInfo.ServerUri),
+			zap.String("tokenHash", common.TokenHash(tokenInfo.Token)),
+		)
 		tokenInfo.HasChanged = true
 		r.tokenInfo = tokenInfo
 	}
@@ -639,7 +642,7 @@ func (r *relayInstanceManager) Start() error {
 		r.logger.Debug("Starting broker",
 			zap.String("executable", executable),
 			zap.Strings("args", args),
-			zap.String("token", info.Token),
+			zap.String("tokenHash", common.TokenHash(info.Token)),
 			zap.String("uri", info.ServerUri),
 			zap.String("acceptFile", tmpAcceptFile),
 		)
