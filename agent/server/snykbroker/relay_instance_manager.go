@@ -311,7 +311,11 @@ func (r *relayInstanceManager) shouldRestart() (bool, string) {
 	if !r.config.HttpRelayReflectorMode.ReflectsTraffic() {
 		return false, ""
 	}
-	if time.Since(r.reflector.LastTrafficTime()) >= r.config.RelayIdleTimeout {
+	lastActivity := r.reflector.LastTrafficTime()
+	if startup := r.reflector.LastStartupTime(); startup.After(lastActivity) {
+		lastActivity = startup
+	}
+	if time.Since(lastActivity) >= r.config.RelayIdleTimeout {
 		return true, "idle_timeout"
 	}
 	return false, ""
@@ -357,6 +361,14 @@ func (r *relayInstanceManager) Restart() error {
 	err = r.Start()
 	if err != nil {
 		return fmt.Errorf("unable to start supervisor on Restart: %w", err)
+	}
+
+	// A fresh broker gets a full idle window before the watchdog is allowed
+	// to suspect it again. Without this, a broker with nothing to relay
+	// (idle tenant, not a dead tunnel) restarts every tick forever instead
+	// of once per RelayIdleTimeout.
+	if r.reflector != nil {
+		r.reflector.RecordStartup()
 	}
 	return nil
 }
