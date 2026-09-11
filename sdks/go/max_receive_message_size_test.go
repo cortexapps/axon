@@ -120,3 +120,19 @@ func TestWithMaxReceiveMessageSize(t *testing.T) {
 		require.Equal(t, math.MaxInt32, options.maxReceiveMessageSize)
 	})
 }
+
+func TestAgentUsesConfiguredMaxReceiveMessageSize(t *testing.T) {
+	t.Setenv(maxReceiveMessageSizeEnvVar, "8388608")
+
+	t.Run("from the environment", func(t *testing.T) {
+		agent := NewAxonAgent()
+
+		require.Equal(t, 8*1024*1024, agent.client.(*grpcClientImpl).maxReceiveMessageSize)
+	})
+
+	t.Run("from an option", func(t *testing.T) {
+		agent := NewAxonAgent(WithMaxReceiveMessageSize(16 * 1024 * 1024))
+
+		require.Equal(t, 16*1024*1024, agent.client.(*grpcClientImpl).maxReceiveMessageSize)
+	})
+}
