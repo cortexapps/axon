@@ -108,22 +108,3 @@ This will begin executing your handler every second.
 
 
 
-
-## Large API responses
-
-gRPC rejects received messages larger than 4MB, so a `CortexJsonApiCall` that
-returns more than 4MB fails with `ResourceExhausted` and
-`received message larger than max`. To raise the limit, set
-`AXON_GRPC_MAX_RECEIVE_MESSAGE_SIZE` to a number of bytes, or to `-1` for no
-limit:
-
-```
-AXON_GRPC_MAX_RECEIVE_MESSAGE_SIZE=16777216 go run main.go
-```
-
-You can also set it in code, which takes precedence over the environment
-variable:
-
-```go
-agentClient := axon.NewAxonAgent(axon.WithMaxReceiveMessageSize(16 * 1024 * 1024))
-```
