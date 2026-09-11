@@ -86,6 +86,64 @@ Generally the naming works like:
 | **Jira**              | `JIRA_API=https://jira.mycompany.com`, `JIRA_USERNAME`, `JIRA_TOKEN`                                                                                                                                                                            |
 | **Jira Bearer/Cloud** | Arg `-s bearer`, `JIRA_API=https://mycompany.atlassian.com`, `JIRA_TOKEN`                                                                                                                                                                       |
 | **Harness**           | `HARNESS_API=https://app.harness.io`, `HARNESS_TOKEN`                                                                                                                                                                                           |
+| **Google**            | Arg `-i google`, no token variable - see [Google (Application Default Credentials)](#google-application-default-credentials) below                                                                                                            |
+
+### Google (Application Default Credentials)
+
+Unlike the integrations above, `google` doesn't take a token in an environment
+variable. The agent gets its credential from Google's Application Default
+Credentials (ADC) through a bundled plugin, `google-adc`, so it works with
+whatever identity mechanism you already run - GKE Workload Identity, workload
+identity federation, or a mounted service account key - without telling Cortex
+which.
+
+The alias is fixed at `gcp`, not one you pick - Cortex holds one Google
+configuration per tenant, so the alias carries no information:
+
+```bash
+docker run ... cortex-axon-agent:latest relay -i google -a gcp
+```
+
+The shipped accept file authorizes `https://*.googleapis.com` and injects the
+credential as a header via the plugin:
+
+```json
+{
+  "private": [
+    {
+      "method": "any",
+      "path": "/*",
+      "origin": "${GOOGLE_API:https://*.googleapis.com}",
+      "headers": {
+        "authorization": "${plugin:google-adc}"
+      }
+    }
+  ]
+}
+```
+
+To restrict which Google APIs are reachable, replace the shipped file with your
+own accept file (`-f`) that lists each host you use as a concrete origin - no
+`*` - instead of the wildcard. It only narrows, it doesn't redirect: Cortex
+always names the real Google API host in its request, and a request naming a
+host the accept file doesn't authorize is rejected, not rerouted. Either way,
+your IAM bindings are the real permission boundary; the accept file only
+decides which hosts are reachable at all.
+
+Workload identity federation needs one more thing than a mounted key: a
+subject-token source that stays fresh. On Kubernetes, a projected
+`serviceAccountToken` volume does that for you; on plain Docker, point
+`credential_source` at an `executable` or a `url` instead of a static file.
+
+Check the credential on its own, with no relay, tunnel, or Cortex token needed:
+
+```bash
+docker run --rm --entrypoint /agent/plugins/google-adc cortex-axon-agent:latest -probe
+```
+
+`--entrypoint` is required - without it the plugin path is read as an unknown
+`cortex-axon-agent` subcommand. No output means ADC found a credential; it's
+cached in a file so it isn't re-minted on every request.
 
 ## Relay transports
 
