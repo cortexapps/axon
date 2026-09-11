@@ -17,20 +17,22 @@ type grpcClient interface {
 }
 
 type grpcClientImpl struct {
-	host          string
-	port          int
-	conn          *grpc.ClientConn
-	stub          pb.AxonAgentClient
-	apiClientStub pb.CortexApiClient
+	host                  string
+	port                  int
+	maxReceiveMessageSize int
+	conn                  *grpc.ClientConn
+	stub                  pb.AxonAgentClient
+	apiClientStub         pb.CortexApiClient
 
 	logger *zap.Logger
 }
 
-func newGrpcClient(host string, port int, logger *zap.Logger) grpcClient {
+func newGrpcClient(host string, port int, maxReceiveMessageSize int, logger *zap.Logger) grpcClient {
 	return &grpcClientImpl{
-		host:   host,
-		port:   port,
-		logger: logger,
+		host:                  host,
+		port:                  port,
+		maxReceiveMessageSize: maxReceiveMessageSize,
+		logger:                logger,
 	}
 }
 
@@ -38,9 +40,14 @@ func (c *grpcClientImpl) getConnection() *grpc.ClientConn {
 
 	if c.conn == nil {
 
+		// gRPC caps received messages at 4MB, which large Cortex API
+		// responses can exceed. Sends stay at the gRPC default.
 		conn, err := grpc.NewClient(
 			fmt.Sprintf("%s:%d", c.host, c.port),
-			grpc.WithTransportCredentials(insecure.NewCredentials()))
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithDefaultCallOptions(
+				grpc.MaxCallRecvMsgSize(c.maxReceiveMessageSize),
+			))
 
 		if err != nil {
 			c.logger.Error("failed to create connection to agent", zap.Error(err))
