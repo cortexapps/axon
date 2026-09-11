@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -11,6 +12,15 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/zap"
 )
+
+// dispatchQueueDepth is how many invocations may wait for an SDK client
+// before Trigger starts refusing them.
+const dispatchQueueDepth = 100
+
+// ErrDispatchQueueFull means no SDK client drained the queue fast enough.
+// Callers that front an inbound request must turn it into a retryable
+// response rather than accepting work that will only time out.
+var ErrDispatchQueueFull = errors.New("dispatch queue is full")
 
 type Manager interface {
 	RegisterHandler(dispatchId string, name string, timeout time.Duration, options ...*pb.HandlerOption) (string, error)
@@ -239,7 +249,19 @@ func (s *handlerManager) Trigger(handler Invocable) error {
 
 	startTime := time.Now()
 	queue := s.getDispatchQueue(entry.DispatchId())
-	queue <- message
+	select {
+	case queue <- message:
+	default:
+		// Never block here: Trigger runs on the inbound HTTP goroutine for a
+		// webhook, and a blocked send holds that request open with no timeout.
+		// Cancelling completes the invocation rather than leaking it.
+		cancel()
+		s.queueDepthGauge.WithLabelValues(handlerName).Set(float64(len(queue)))
+		s.invokeCounter.WithLabelValues(handlerName, "rejected").Inc()
+		logger.Warn("Dispatch queue is full, rejecting invocation",
+			zap.Int("depth", len(queue)))
+		return ErrDispatchQueueFull
+	}
 	s.queueDepthGauge.WithLabelValues(handlerName).Set(float64(len(queue)))
 
 	go func() {
@@ -264,7 +286,7 @@ func (s *handlerManager) getDispatchQueue(DispatchId string) chan Invocable {
 
 	queue, ok := s.dispatchQueues[DispatchId]
 	if !ok {
-		queue = make(chan Invocable, 100)
+		queue = make(chan Invocable, dispatchQueueDepth)
 		s.dispatchQueues[DispatchId] = queue
 	}
 	return queue

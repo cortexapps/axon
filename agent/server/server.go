@@ -208,7 +208,12 @@ func (s *AxonAgent) sendInvocations(dispatchId string, stream pb.AxonAgent_Dispa
 				<-time.After(time.Duration(msg.TimeoutMs) * time.Millisecond)
 				s.ReportInvocation(context.Background(), &pb.ReportInvocationRequest{
 					HandlerInvoke: msg,
-					Message:       &pb.ReportInvocationRequest_Error{Error: &pb.Error{Code: "timeout"}},
+					Message: &pb.ReportInvocationRequest_Error{Error: &pb.Error{
+						Code: "timeout",
+						Message: fmt.Sprintf(
+							"handler did not report a result within %dms",
+							msg.TimeoutMs),
+					}},
 				})
 			}(msg.InvocationId)
 		}
@@ -227,6 +232,23 @@ func (s *AxonAgent) setOutstandingRequest(id string, req *inflightRequest) {
 	s.outstandingRequests[id] = *req
 }
 
+// describeError renders a reported error for a log line. The code carries the
+// only detail some senders set — an SDK timeout reports code "timeout" with no
+// message — so printing the message alone leaves "invocation error: " and no
+// way to tell what went wrong.
+func describeError(e *pb.Error) string {
+	code, message := e.GetCode(), e.GetMessage()
+	switch {
+	case code != "" && message != "":
+		return fmt.Sprintf("%s: %s", code, message)
+	case code != "":
+		return code
+	case message != "":
+		return message
+	}
+	return "unknown"
+}
+
 // ReportInvocation is called by the client to report the result of an invocation, which will
 // log the result of an invocation into the history path.
 func (s *AxonAgent) ReportInvocation(ctx context.Context, req *pb.ReportInvocationRequest) (*pb.ReportInvocationResponse, error) {
@@ -241,8 +263,8 @@ func (s *AxonAgent) ReportInvocation(ctx context.Context, req *pb.ReportInvocati
 
 	var requestErr error
 
-	if req.GetError() != nil {
-		requestErr = fmt.Errorf("invocation error: %s", req.GetError().GetMessage())
+	if e := req.GetError(); e != nil {
+		requestErr = fmt.Errorf("invocation error: %s", describeError(e))
 	}
 	requestResult := ""
 
