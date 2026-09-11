@@ -11,15 +11,18 @@ from generated import cortex_api_pb2_grpc, cortex_axon_agent_pb2_grpc
 class MockGrpcServer:
     port: int
 
-    def __init__(self, port: int):
+    def __init__(self, port: int, server: grpc.Server):
         self.port = port
         self.mock = mock.MagicMock()
+        # Held so the server is not garbage collected, which stops it
+        # listening part way through a test.
+        self.server = server
 
 @pytest.fixture
 def mock_agent() -> MockGrpcServer:
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=2))
     port = server.add_insecure_port('[::]:0')
-    mock_grpc_server = MockGrpcServer(port)
+    mock_grpc_server = MockGrpcServer(port, server)
     cortex_axon_agent_pb2_grpc.add_AxonAgentServicer_to_server(
         mock_grpc_server.mock,
         server
@@ -34,7 +37,7 @@ def mock_agent() -> MockGrpcServer:
 def mock_cortex_api() -> MockGrpcServer:
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=2))
     port = server.add_insecure_port('[::]:0')
-    mock_grpc_server = MockGrpcServer(port)
+    mock_grpc_server = MockGrpcServer(port, server)
     cortex_api_pb2_grpc.add_CortexApiServicer_to_server(mock_grpc_server.mock, server)
 
     server.start()

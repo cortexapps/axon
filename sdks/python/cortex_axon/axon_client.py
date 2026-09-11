@@ -1,6 +1,8 @@
 import json
 import queue
+import threading
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from time import sleep
 from typing import Any, Optional
@@ -21,6 +23,8 @@ from .handler import (
     CortexAnnotation,
     find_annotated_methods,
 )
+
+DEFAULT_MAX_CONCURRENT_HANDLERS = 8
 
 
 # TODO Add docstrings
@@ -125,7 +129,11 @@ class AxonClient:
         cortex_port: int = None,
         handlers: Optional[list[CortexAnnotation]] = None,
         scope=None,
+        max_concurrent_handlers: int = DEFAULT_MAX_CONCURRENT_HANDLERS,
     ):
+        if max_concurrent_handlers < 1:
+            raise ValueError("max_concurrent_handlers must be at least 1")
+
         self.id = str(datetime.now().timestamp())
         self.agent_hostport = f"{agent_host}:{agent_port}"
 
@@ -144,6 +152,16 @@ class AxonClient:
             raise ValueError("One of scope (globals()) or handlers required")
 
         self.handlers = handlers or find_annotated_methods(scope)
+
+        # Handlers run on this pool rather than inline on the dispatch stream,
+        # so a slow one does not hold back every invocation behind it. The
+        # semaphore stops reading once every worker is busy, which pushes
+        # backpressure onto the agent instead of queueing without limit here.
+        self._executor = ThreadPoolExecutor(
+            max_workers=max_concurrent_handlers,
+            thread_name_prefix="axon-handler",
+        )
+        self._handler_slots = threading.BoundedSemaphore(max_concurrent_handlers)
 
     def _get_stub(self):
         if not self.agent_stub:
@@ -181,6 +199,75 @@ class AxonClient:
     def _handler_context(self, args):
         return HandlerContext(self.cortex_stub, args)
 
+    def _submit_handler(self, handler_to_invoke, invoke):
+        # Blocks once every worker is busy. That is deliberate: the agent then
+        # sees its own queue fill rather than this process growing without
+        # bound, and the dispatch stream stays readable up to that point.
+        self._handler_slots.acquire()
+        stub = self.agent_stub
+        try:
+            future = self._executor.submit(
+                self._invoke_handler, handler_to_invoke, invoke, stub
+            )
+        except BaseException:
+            self._handler_slots.release()
+            raise
+        future.add_done_callback(lambda _: self._handler_slots.release())
+
+    def _invoke_handler(self, handler_to_invoke, invoke, stub):
+        print(
+            f"Dispatch handler START {invoke.handler_name} (id={invoke.invocation_id}) reason={invoke.reason}"
+        )
+        handler_err = None
+        handler_result = None
+        result = None
+        now = datetime.now()
+        ctx = self._handler_context(invoke.args)
+        duration_ms = 0
+
+        try:
+            result = handler_to_invoke(ctx)
+            duration_ms = int(
+                (datetime.now() - now).total_seconds() * 1000
+            )
+            if result:
+                handler_result = cortex_axon_agent_pb2.InvokeResult(
+                    value=str(result)
+                )
+            print(f"Dispatch handler SUCCESS {invoke.handler_name} (id={invoke.invocation_id}) in {round((datetime.now() - now).total_seconds() * 1000, 1)}ms. Returned result={result is not None}")
+        except Exception as e:
+            print(f"Dispatch handler ERROR {invoke.handler_name} (id={invoke.invocation_id}) in {round((datetime.now() - now).total_seconds() * 1000, 1)}ms. Error={e}")
+            traceback.print_exc()
+            handler_err = common_pb2.Error(
+                code="unexpected", message="Error calling handler: " + str(e)
+            )
+
+        invoke_info = cortex_axon_agent_pb2.ReportInvocationRequest(
+            handler_invoke=invoke,
+            start_client_timestamp=now,
+            duration_ms=duration_ms,
+            result=handler_result,
+            error=handler_err,
+            logs=ctx.logs,
+        )
+
+        # A failure here must not escape the worker: the dispatch loop is no
+        # longer in the call path, so an exception would be swallowed by the
+        # future and the invocation would look like it vanished.
+        try:
+            report_response = stub.ReportInvocation(invoke_info)
+        except Exception as e:
+            print(
+                f"Error reporting invocation {invoke.invocation_id}: {e}"
+            )
+            traceback.print_exc()
+            return
+
+        if report_response.error and report_response.error.code:
+            print(
+                f"Error reporting invocation: {report_response.error}"
+            )
+
     def run(self):
         registered = False
         while True:
@@ -200,54 +287,12 @@ class AxonClient:
 
                     if response.type == cortex_axon_agent_pb2.DISPATCH_MESSAGE_INVOKE:
                         invoke = response.invoke
-                        args = invoke.args
                         handler_to_invoke = self._find_handler(
                             invoke.handler_name)
                         if not handler_to_invoke:
                             print(f"Unknown handler: {response.handler_name}")
                             continue
-                        print(
-                            f"Dispatch handler START {invoke.handler_name} (id={invoke.invocation_id}) reason={invoke.reason}"
-                        )
-                        handler_err = None
-                        handler_result = None
-                        result = None
-                        now = datetime.now()
-                        ctx = self._handler_context(args)
-                        duration_ms = 0
-
-                        try:
-                            result = handler_to_invoke(ctx)
-                            duration_ms = int(
-                                (datetime.now() - now).total_seconds() * 1000
-                            )
-                            if result:
-                                handler_result = cortex_axon_agent_pb2.InvokeResult(
-                                    value=str(result)
-                                )
-                            print(f"Dispatch handler SUCCESS {invoke.handler_name} (id={invoke.invocation_id}) in {round((datetime.now() - now).total_seconds() * 1000, 1)}ms. Returned result={result is not None}")
-                        except Exception as e:
-                            print(f"Dispatch handler ERROR {invoke.handler_name} (id={invoke.invocation_id}) in {round((datetime.now() - now).total_seconds() * 1000, 1)}ms. Error={e}")
-                            traceback.print_exc()
-                            handler_err = common_pb2.Error(
-                                code="unexpected", message="Error calling handler: " + str(e)
-                            )
-
-                        invoke_info = cortex_axon_agent_pb2.ReportInvocationRequest(
-                            handler_invoke=invoke,
-                            start_client_timestamp=now,
-                            duration_ms=duration_ms,
-                            result=handler_result,
-                            error=handler_err,
-                            logs=ctx.logs,
-                        )
-                        report_response = self.agent_stub.ReportInvocation(
-                            invoke_info)
-
-                        if report_response.error and report_response.error.code:
-                            print(
-                                f"Error reporting invocation: {report_response.error}"
-                            )
+                        self._submit_handler(handler_to_invoke, invoke)
                     elif (
                         response.type == cortex_axon_agent_pb2.DISPATCH_MESSAGE_WORK_COMPLETED
                     ):
