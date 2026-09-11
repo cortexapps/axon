@@ -88,6 +88,26 @@ python main.py
 This will begin executing your handler every 5 seconds. 
 To invoke the webhook handler, you can just send a POST request to `http://localhost:80/webhook/my-webhook-1` with a body.
 
+## Large API responses
+
+gRPC rejects received messages larger than 4MB, so a `ctx.cortex_api_call` that
+returns more than 4MB fails with `RESOURCE_EXHAUSTED` and
+`Received message larger than max`. To raise the limit, set
+`AXON_GRPC_MAX_RECEIVE_MESSAGE_SIZE` to a number of bytes, or to `-1` for no
+limit:
+
+```
+AXON_GRPC_MAX_RECEIVE_MESSAGE_SIZE=16777216 python main.py
+```
+
+You can also set it in code, which takes precedence over the environment
+variable:
+
+```python
+client = AxonClient(handlers=handlers, max_receive_message_size=16 * 1024 * 1024)
+```
+
+
 
 
 
