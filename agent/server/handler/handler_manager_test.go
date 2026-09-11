@@ -199,3 +199,42 @@ func TestTriggerAndDequeueTimeoutContext(t *testing.T) {
 	require.NoError(t, err)
 	require.Nil(t, h)
 }
+
+func TestTriggerRejectsWhenQueueIsFull(t *testing.T) {
+	logger, _ := zap.NewDevelopment()
+	mgr := NewHandlerManager(logger, cron.New(), nil)
+
+	id, err := mgr.RegisterHandler("1", "handler1", defaultTimeout, FixtureHandlerOption())
+	require.NoError(t, err)
+	require.NoError(t, mgr.Start("1"))
+
+	entry := mgr.ListHandlers()[0]
+	require.Equal(t, id, entry.Id())
+
+	// Nothing dequeues, so the queue fills and every later trigger must be
+	// refused rather than block the caller.
+	for i := 0; i < dispatchQueueDepth; i++ {
+		require.NoError(t, mgr.Trigger(NewHandlerInvoke(entry, pb.HandlerInvokeType_WEBHOOK, nil)))
+	}
+
+	rejected := NewHandlerInvoke(entry, pb.HandlerInvokeType_WEBHOOK, nil)
+
+	done := make(chan error, 1)
+	go func() { done <- mgr.Trigger(rejected) }()
+
+	select {
+	case err := <-done:
+		require.ErrorIs(t, err, ErrDispatchQueueFull)
+	case <-time.After(5 * time.Second):
+		require.Fail(t, "Trigger blocked on a full queue instead of rejecting")
+	}
+
+	// A refused invocation is finished, not left dangling for its full timeout.
+	select {
+	case <-rejected.Done():
+	case <-time.After(5 * time.Second):
+		require.Fail(t, "refused invocation was never completed")
+	}
+	_, err = rejected.GetResult()
+	require.Error(t, err)
+}
