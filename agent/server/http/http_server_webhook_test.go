@@ -72,3 +72,53 @@ func TestHandleWebhook(t *testing.T) {
 	}
 	require.Equal(t, expected, handlerInvocation.ToDispatchInvoke().Args)
 }
+
+func TestHandleWebhookRejectsWhenQueueIsFull(t *testing.T) {
+	logger, _ := zap.NewDevelopment()
+	manager := handler.NewHandlerManager(logger, cron.New(), nil)
+
+	option := &pb.HandlerOption{
+		Option: &pb.HandlerOption_Invoke{
+			Invoke: &pb.HandlerInvokeOption{
+				Type:  pb.HandlerInvokeType_WEBHOOK,
+				Value: "my-webhook-id",
+			},
+		},
+	}
+
+	_, err := manager.RegisterHandler("1", "test", time.Minute, option)
+	require.NoError(t, err)
+	require.NoError(t, manager.Start("1"))
+
+	webhookHandler := NewWebhookHandler(config.AgentConfig{}, logger, manager, nil)
+	router := mux.NewRouter()
+	webhookHandler.RegisterRoutes(router)
+	ts := httptest.NewServer(router)
+	defer ts.Close()
+
+	post := func() int {
+		req, err := http.NewRequest(http.MethodPost, ts.URL+"/webhook/my-webhook-id", strings.NewReader("payload"))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	// Nothing is dequeuing, so the queue fills up and every webhook after
+	// that must be refused instead of accepted and silently dropped.
+	for i := 0; i < 100; i++ {
+		require.Equal(t, http.StatusOK, post())
+	}
+
+	done := make(chan int, 1)
+	go func() { done <- post() }()
+
+	select {
+	case status := <-done:
+		require.Equal(t, http.StatusServiceUnavailable, status)
+	case <-time.After(5 * time.Second):
+		require.Fail(t, "webhook request hung on a full queue instead of returning 503")
+	}
+}

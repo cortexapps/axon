@@ -2,6 +2,7 @@ package http
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -101,6 +102,16 @@ func (h *webhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	err = h.handlerManager.Trigger(handler.NewWebhookHandlerInvoke(entry, r.URL, string(bodyBytes), contentType))
 
 	if err != nil {
+		// A queued-but-undeliverable webhook is worse than a refused one: the
+		// sender is told 2xx, the invocation times out unseen, and the message
+		// is gone. 503 lets the sender retry.
+		if errors.Is(err, handler.ErrDispatchQueueFull) {
+			h.logger.Warn("Rejecting webhook, no handler is draining the queue",
+				zap.String("webhookId", webhookId))
+			w.Header().Set("Retry-After", "5")
+			writeStatus(http.StatusServiceUnavailable)
+			return
+		}
 		h.logger.Error("Failed to trigger webhook", zap.Error(err))
 		writeStatus(http.StatusInternalServerError)
 		return
