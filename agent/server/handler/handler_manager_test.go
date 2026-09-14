@@ -204,7 +204,17 @@ func TestTriggerRejectsWhenQueueIsFull(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 	mgr := NewHandlerManager(logger, cron.New(), nil)
 
-	id, err := mgr.RegisterHandler("1", "handler1", defaultTimeout, FixtureHandlerOption())
+	// The fixture option triggers on an interval, which would put unrelated
+	// invocations into the same queue while it fills below.
+	webhookOnly := &pb.HandlerOption{
+		Option: &pb.HandlerOption_Invoke{
+			Invoke: &pb.HandlerInvokeOption{
+				Type: pb.HandlerInvokeType_WEBHOOK,
+			},
+		},
+	}
+
+	id, err := mgr.RegisterHandler("1", "handler1", defaultTimeout, webhookOnly)
 	require.NoError(t, err)
 	require.NoError(t, mgr.Start("1"))
 
