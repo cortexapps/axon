@@ -91,3 +91,18 @@ To invoke the webhook handler, you can just send a POST request to `http://local
 
 
 
+
+## Handler concurrency
+
+Handlers run on a thread pool, so a slow handler does not delay the ones
+behind it. Eight run at once by default. Once every worker is busy, the SDK
+stops reading new invocations until one finishes.
+
+Write handlers to be thread safe, because two invocations of the same handler
+can run at the same time. To change the limit:
+
+```python
+client = AxonClient(scope=globals(), max_concurrent_handlers=16)
+```
+
+Set it to `1` for the old behaviour, where handlers run one at a time.
