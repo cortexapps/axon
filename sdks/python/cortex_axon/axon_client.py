@@ -1,4 +1,5 @@
 import json
+import os
 import queue
 import traceback
 from datetime import datetime
@@ -108,6 +109,26 @@ class CortexResponse:
         return True
 
 
+DEFAULT_MAX_RECEIVE_MESSAGE_SIZE = 4 * 1024 * 1024
+MAX_RECEIVE_MESSAGE_SIZE_ENV_VAR = "AXON_GRPC_MAX_RECEIVE_MESSAGE_SIZE"
+
+
+def _resolve_max_receive_message_size(max_receive_message_size: Optional[int]) -> int:
+    if max_receive_message_size is not None:
+        return max_receive_message_size
+
+    value = os.environ.get(MAX_RECEIVE_MESSAGE_SIZE_ENV_VAR)
+    if not value:
+        return DEFAULT_MAX_RECEIVE_MESSAGE_SIZE
+
+    try:
+        return int(value)
+    except ValueError:
+        raise ValueError(
+            f"{MAX_RECEIVE_MESSAGE_SIZE_ENV_VAR} must be a whole number of bytes, or -1 for no limit, but is {value!r}"
+        ) from None
+
+
 def _client_message_iterator(initial_message: cortex_axon_agent_pb2.DispatchRequest):
     blocking_queue = queue.Queue()
     blocking_queue.put(initial_message)
@@ -125,6 +146,7 @@ class AxonClient:
         cortex_port: int = None,
         handlers: Optional[list[CortexAnnotation]] = None,
         scope=None,
+        max_receive_message_size: Optional[int] = None,
     ):
         self.id = str(datetime.now().timestamp())
         self.agent_hostport = f"{agent_host}:{agent_port}"
@@ -133,7 +155,18 @@ class AxonClient:
         cortex_api_port = cortex_port or agent_port
         self.cortex_hostport = f"{cortex_api_host}:{cortex_api_port}"
 
-        self.cortex_channel = grpc.insecure_channel(self.cortex_hostport)
+        # gRPC caps received messages at 4MB, which large Cortex API responses
+        # can exceed. Sends stay at the gRPC default of no limit.
+        self.grpc_channel_options = [
+            (
+                "grpc.max_receive_message_length",
+                _resolve_max_receive_message_size(max_receive_message_size),
+            ),
+        ]
+
+        self.cortex_channel = grpc.insecure_channel(
+            self.cortex_hostport, options=self.grpc_channel_options
+        )
         self.cortex_stub = cortex_api_pb2_grpc.CortexApiStub(
             self.cortex_channel)
 
@@ -147,7 +180,9 @@ class AxonClient:
 
     def _get_stub(self):
         if not self.agent_stub:
-            self.agent_channel = grpc.insecure_channel(self.agent_hostport)
+            self.agent_channel = grpc.insecure_channel(
+                self.agent_hostport, options=self.grpc_channel_options
+            )
             self.agent_stub = cortex_axon_agent_pb2_grpc.AxonAgentStub(
                 self.agent_channel
             )

@@ -61,7 +61,7 @@ func NewAxonAgent(options ...Option) *Agent {
 	}
 
 	a.logger = logger
-	a.client = newGrpcClient(ao.host, ao.port, logger)
+	a.client = newGrpcClient(ao.host, ao.port, ao.maxReceiveMessageSize, logger)
 	a.registeredHandlers = make(map[string]*handlerInfo)
 	return a
 }
