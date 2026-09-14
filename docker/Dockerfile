@@ -32,7 +32,7 @@ WORKDIR /agent
 # when the scheduled Trivy scan flags OS-package CVEs whose fixes are already
 # in the archive — the cache is just serving a stale layer. Leaves the rest of
 # the build (Go, npm, snyk-broker clone) hitting cache as normal.
-ARG APT_CACHE_BUST=2026-08-31
+ARG APT_CACHE_BUST=2026-09-14
 # NOTE: build-essential is deliberately NOT installed here. It pulls in a full
 # C/C++ toolchain whose libc6-dev dependency drags in linux-libc-dev (the Linux
 # kernel headers), and that single package generates a steady stream of HIGH
@@ -50,7 +50,7 @@ RUN echo "apt cache bust: $APT_CACHE_BUST" \
 # Install NodeJS and Snyk Broker
 ENV NODE_VERSION=20
 
-ARG SNYK_BROKER_VERSION=v1.0.18-axon
+ARG SNYK_BROKER_VERSION=v1.0.19-axon
 RUN wget -q -O - https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash - && apt-get install -y nodejs
 RUN npm install --global npm@11.18.0 typescript@4.9.3
 RUN git clone https://github.com/cortexapps/snyk-broker.git /tmp/snyk-broker && \
