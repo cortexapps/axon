@@ -35,9 +35,18 @@ import (
 )
 
 const (
-	maxChunkSize     = 1024 * 1024
-	maxGrpcMsgSize   = 8 * 1024 * 1024
-	handshakeTimeout = 30 * time.Second
+	maxChunkSize   = 1024 * 1024
+	maxGrpcMsgSize = 8 * 1024 * 1024
+	// maxAcceptedFrameBytes bounds the per-call read buffer the agent will
+	// size from the server's hello. The frame size is announced by the
+	// server, not configured by whoever runs the agent, so without a ceiling
+	// here a server-side change to MAX_FRAME_BYTES silently multiplies the
+	// memory ceiling of every agent in the fleet: the buffer is allocated per
+	// in-flight call, so the agent's peak is this value times its in-flight
+	// cap. Clamping costs nothing when the server is sane -- frames larger
+	// than the clamp are still carried, just read in more than one chunk.
+	maxAcceptedFrameBytes = 4 * 1024 * 1024
+	handshakeTimeout      = 30 * time.Second
 	// keepaliveInterval is deliberately long. Behind a load balancer the
 	// client's HTTP/2 peer is the load balancer, not the tunnel server, and
 	// its ping policy is not ours to set: GCLB answers pings it considers
@@ -1241,7 +1250,7 @@ func (tc *tunnelClient) openSlot(id int, recovering bool) (*streamCtx, error) {
 		stream:        stream,
 		sendFn:        tc.makeSendFunc(ts, stream),
 		hbMs:          serverHello.HeartbeatIntervalMs,
-		maxFrameBytes: serverHello.MaxFrameBytes,
+		maxFrameBytes: clampFrameBytes(serverHello.MaxFrameBytes, tc.logger),
 	}, nil
 }
 
