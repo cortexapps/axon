@@ -52,6 +52,19 @@ func TestBuildServeStack(t *testing.T) {
 	app.Stop(context.Background())
 }
 
+func TestServeRelayIdleTimeout(t *testing.T) {
+	oldEnv := util.SaveEnv(false)
+	defer util.RestoreEnv(oldEnv)
+
+	os.Unsetenv("RELAY_IDLE_TIMEOUT")
+	require.Equal(t, time.Duration(0), serveRelayIdleTimeout(10*time.Minute),
+		"serve mode must not run the idle watchdog by default")
+
+	os.Setenv("RELAY_IDLE_TIMEOUT", "3m")
+	require.Equal(t, 3*time.Minute, serveRelayIdleTimeout(3*time.Minute),
+		"an explicit RELAY_IDLE_TIMEOUT still wins")
+}
+
 func TestBuildServeStackLive(t *testing.T) {
 
 	// create a fake server that serves http://localhost:xxx/relay/register

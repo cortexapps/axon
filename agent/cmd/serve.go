@@ -4,6 +4,7 @@ import (
 	_ "embed"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/cortexapps/axon/common"
 	"github.com/cortexapps/axon/config"
@@ -35,6 +36,8 @@ var serveCmd = &cobra.Command{
 			config.IntegrationAlias = id
 		}
 
+		config.RelayIdleTimeout = serveRelayIdleTimeout(config.RelayIdleTimeout)
+
 		config.Print()
 
 		info := common.IntegrationInfo{
@@ -57,6 +60,18 @@ var serveCmd = &cobra.Command{
 		startAgent(stack)
 		fmt.Println("Server stopped")
 	},
+}
+
+// serveRelayIdleTimeout disables the relay idle watchdog for serve mode
+// unless RELAY_IDLE_TIMEOUT is set explicitly. A handler agent's tunnel
+// carries only what relay-dispatcher sends it, and the broker server
+// delivers that to just the newest client per token, so the other
+// replicas would look idle and be restarted in rotation forever.
+func serveRelayIdleTimeout(configured time.Duration) time.Duration {
+	if _, set := os.LookupEnv("RELAY_IDLE_TIMEOUT"); set {
+		return configured
+	}
+	return 0
 }
 
 func init() {
