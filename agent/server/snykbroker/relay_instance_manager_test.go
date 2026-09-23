@@ -515,6 +515,21 @@ func TestShouldRestartCountsTunnelActivity(t *testing.T) {
 	rr.lastTunnelTime.Store(stale)
 	restart, _ = r.shouldRestart()
 	require.True(t, restart, "a tunnel that has gone quiet is idle again")
+
+	// "registration" routes the broker's tunnel through the reflector but no
+	// relayed requests, so tunnel frames are its only signal.
+	r.config.HttpRelayReflectorMode = config.RelayReflectorRegistrationOnly
+	restart, _ = r.shouldRestart()
+	require.True(t, restart, "registration mode watches the tunnel too")
+	rr.RecordTunnelActivity()
+	restart, _ = r.shouldRestart()
+	require.False(t, restart, "registration mode counts tunnel frames")
+
+	// With the reflector off the agent sees neither, so it must not guess.
+	rr.lastTunnelTime.Store(stale)
+	r.config.HttpRelayReflectorMode = config.RelayReflectorDisabled
+	restart, _ = r.shouldRestart()
+	require.False(t, restart, "disabled mode has no signal and never restarts")
 }
 
 // A broker with nothing to relay looks identical, idle-wise, to one whose

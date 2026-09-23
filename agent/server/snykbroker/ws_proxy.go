@@ -31,11 +31,6 @@ type WebSocketProxy struct {
 	// Callbacks
 	OnTunnelEstablished func(target string)
 	OnTunnelClosed      func(target string, duration time.Duration)
-	// OnActivity is called whenever bytes arrive from the target (the broker
-	// server). The server heartbeats every tunnel, so this proves the far end
-	// is alive even when no request is being relayed. Bytes we send don't
-	// count: writing into a dead tunnel can still succeed.
-	OnActivity func()
 
 	// State tracking - use Int32 to properly track multiple concurrent tunnels
 	activeConnections atomic.Int32
@@ -65,7 +60,10 @@ func (wp *WebSocketProxy) ActiveConnections() int32 {
 
 // Proxy handles a WebSocket upgrade request by establishing a tunnel to the target.
 // It hijacks the client connection and proxies bidirectionally.
-func (wp *WebSocketProxy) Proxy(w http.ResponseWriter, r *http.Request, targetURI string) error {
+//
+// onActivity, if set, is called whenever bytes arrive from the target. Bytes
+// sent to the target don't count: writing into a dead tunnel can still succeed.
+func (wp *WebSocketProxy) Proxy(w http.ResponseWriter, r *http.Request, targetURI string, onActivity func()) error {
 	targetURL, err := url.Parse(targetURI)
 	if err != nil {
 		return fmt.Errorf("invalid target URI: %w", err)
@@ -96,7 +94,7 @@ func (wp *WebSocketProxy) Proxy(w http.ResponseWriter, r *http.Request, targetUR
 	}
 
 	// Run the bidirectional tunnel
-	wp.runTunnel(clientConn, targetConn, targetAddr)
+	wp.runTunnel(clientConn, targetConn, targetAddr, onActivity)
 	return nil
 }
 
@@ -244,7 +242,7 @@ func (wp *WebSocketProxy) hijackConnection(w http.ResponseWriter) (net.Conn, err
 	return conn, nil
 }
 
-func (wp *WebSocketProxy) runTunnel(clientConn, targetConn net.Conn, targetAddr string) {
+func (wp *WebSocketProxy) runTunnel(clientConn, targetConn net.Conn, targetAddr string, onActivity func()) {
 	start := time.Now()
 	wp.activeConnections.Add(1)
 
@@ -266,7 +264,7 @@ func (wp *WebSocketProxy) runTunnel(clientConn, targetConn net.Conn, targetAddr 
 		wp.copyWithIdleTimeout(dst, src, direction, onRead)
 	}
 
-	go copy(clientConn, targetConn, "target->client", wp.OnActivity)
+	go copy(clientConn, targetConn, "target->client", onActivity)
 	go copy(targetConn, clientConn, "client->target", nil)
 
 	<-done

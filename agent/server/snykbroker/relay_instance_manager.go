@@ -308,7 +308,11 @@ func (r *relayInstanceManager) shouldRestart() (bool, string) {
 	if r.config.RelayIdleTimeout == 0 || r.reflector == nil {
 		return false, ""
 	}
-	if !r.config.HttpRelayReflectorMode.ReflectsTraffic() {
+	// Each reflecting mode gives the watchdog a signal: relayed requests in
+	// "traffic", frames on the broker's tunnel in "registration", both in
+	// "all". Only "disabled" leaves it blind.
+	mode := r.config.HttpRelayReflectorMode
+	if !mode.ReflectsTraffic() && !mode.ReflectsRegistration() {
 		return false, ""
 	}
 	if time.Since(r.reflector.LastActivityTime()) >= r.config.RelayIdleTimeout {

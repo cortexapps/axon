@@ -78,7 +78,6 @@ func NewRegistrationReflector(p RegistrationReflectorParams) *RegistrationReflec
 	rr.wsProxy.OnTunnelEstablished = func(target string) {
 		rr.logger.Info("WebSocket tunnel established", zap.String("target", target))
 	}
-	rr.wsProxy.OnActivity = rr.RecordTunnelActivity
 
 	rr.RecordStartup()
 
@@ -421,7 +420,13 @@ func (rr *RegistrationReflector) ServeHTTP(w http.ResponseWriter, r *http.Reques
 	// Check if this is a WebSocket upgrade request
 	if rr.config.ReflectorWebSocketUpgrade && IsWebSocketUpgrade(r) {
 		rr.logger.Debug("Detected WebSocket upgrade request, using WebSocket proxy")
-		if err := rr.wsProxy.Proxy(w, r, entry.TargetURI); err != nil {
+		// Only the default entry is the broker's own tunnel to the server; a
+		// websocket to a customer origin says nothing about that tunnel.
+		var onActivity func()
+		if entry.isDefault {
+			onActivity = rr.RecordTunnelActivity
+		}
+		if err := rr.wsProxy.Proxy(w, r, entry.TargetURI, onActivity); err != nil {
 			rr.logger.Error("WebSocket proxy failed", zap.Error(err))
 		}
 		return

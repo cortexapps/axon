@@ -479,69 +479,86 @@ func TestWebSocketProxyCallbacks(t *testing.T) {
 	assert.True(t, closedDuration > 0, "duration should be positive")
 }
 
-// OnActivity must fire for bytes from the broker server and not for bytes we
-// send: a write into a dead tunnel can still succeed, so it proves nothing.
-func TestWebSocketProxyOnActivityCountsTargetFramesOnly(t *testing.T) {
+// Frames from the broker server on the default entry (the broker's own
+// tunnel) count as tunnel activity. Our own writes don't, since writing into a
+// dead tunnel can still succeed, and neither does a websocket to a customer
+// origin, which says nothing about the broker's tunnel.
+func TestReflectorRecordsTunnelActivityForBrokerTunnelOnly(t *testing.T) {
 	logger := newTestLogger(t)
 
-	serverSend := make(chan struct{})
-	var upgrader = websocket.Upgrader{
-		CheckOrigin: func(r *http.Request) bool { return true },
-	}
-	router := mux.NewRouter()
-	router.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
-		conn, err := upgrader.Upgrade(w, r, nil)
-		if err != nil {
-			return
-		}
-		defer conn.Close()
-		go func() {
-			for {
-				if _, _, err := conn.ReadMessage(); err != nil {
-					return
-				}
+	// A websocket server that sends one frame when told to.
+	newTarget := func(t *testing.T) (*httptest.Server, chan struct{}) {
+		send := make(chan struct{})
+		upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+		router := mux.NewRouter()
+		router.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+			conn, err := upgrader.Upgrade(w, r, nil)
+			if err != nil {
+				return
 			}
-		}()
-		<-serverSend
-		_ = conn.WriteMessage(websocket.TextMessage, []byte("primus::ping::1"))
-		time.Sleep(200 * time.Millisecond)
-	})
-	targetServer := httptest.NewServer(router)
-	defer targetServer.Close()
+			defer conn.Close()
+			go func() {
+				for {
+					if _, _, err := conn.ReadMessage(); err != nil {
+						return
+					}
+				}
+			}()
+			<-send
+			_ = conn.WriteMessage(websocket.TextMessage, []byte("primus::ping::1"))
+			time.Sleep(200 * time.Millisecond)
+		})
+		server := httptest.NewServer(router)
+		t.Cleanup(server.Close)
+		return server, send
+	}
 
-	var activity atomic.Int32
 	rr := NewRegistrationReflector(RegistrationReflectorParams{
 		Logger: logger,
-		Config: config.AgentConfig{
-			ReflectorWebSocketUpgrade: true,
-		},
+		Config: config.AgentConfig{ReflectorWebSocketUpgrade: true},
 	})
-	rr.wsProxy.OnActivity = func() { activity.Add(1) }
-
 	reflectorRouter := mux.NewRouter()
 	rr.RegisterRoutes(reflectorRouter)
 	reflectorServer := httptest.NewServer(reflectorRouter)
 	defer reflectorServer.Close()
 
-	wsURL := "ws" + rr.ProxyURI(targetServer.URL)[4:] + "/ws"
-	conn, _, err := (&websocket.Dialer{}).Dial(wsURL, nil)
-	require.NoError(t, err)
-	defer conn.Close()
+	// Dial through the reflector, write one frame of our own, then have the
+	// target send one. Returns the tunnel watermark after each step.
+	exchange := func(t *testing.T, proxyURI string, send chan struct{}) (afterOwnWrite, afterTargetFrame int64) {
+		conn, _, err := (&websocket.Dialer{}).Dial("ws"+proxyURI[4:]+"/ws", nil)
+		require.NoError(t, err)
+		defer conn.Close()
 
-	// The upgrade response is the first thing back from the target; only
-	// frames after it are under test.
-	time.Sleep(50 * time.Millisecond)
-	afterHandshake := activity.Load()
+		// The upgrade response is the first read from the target; only frames
+		// after it are under test.
+		time.Sleep(50 * time.Millisecond)
+		before := rr.lastTunnelTime.Load()
 
-	require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte("primus::pong::1")))
-	time.Sleep(50 * time.Millisecond)
-	require.Equal(t, afterHandshake, activity.Load(), "our own writes must not count as activity")
+		require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte("primus::pong::1")))
+		time.Sleep(50 * time.Millisecond)
+		afterOwnWrite = rr.lastTunnelTime.Load()
+		require.Equal(t, before, afterOwnWrite, "our own writes must not count as tunnel activity")
 
-	close(serverSend)
-	_, msg, err := conn.ReadMessage()
-	require.NoError(t, err)
-	require.Equal(t, "primus::ping::1", string(msg))
-	require.Greater(t, activity.Load(), afterHandshake, "a frame from the server must count as activity")
+		// Millisecond watermark: make sure a new stamp can differ from the old.
+		time.Sleep(5 * time.Millisecond)
+		close(send)
+		_, msg, err := conn.ReadMessage()
+		require.NoError(t, err)
+		require.Equal(t, "primus::ping::1", string(msg))
+		return afterOwnWrite, rr.lastTunnelTime.Load()
+	}
+
+	t.Run("customer origin", func(t *testing.T) {
+		target, send := newTarget(t)
+		before, after := exchange(t, rr.ProxyURI(target.URL), send)
+		require.Equal(t, before, after, "a websocket to a customer origin must not count as tunnel activity")
+	})
+
+	t.Run("broker tunnel", func(t *testing.T) {
+		target, send := newTarget(t)
+		before, after := exchange(t, rr.ProxyURI(target.URL, WithDefault(true)), send)
+		require.Greater(t, after, before, "a frame from the broker server must count as tunnel activity")
+	})
 }
 
 func TestWebSocketProxyIsConnected(t *testing.T) {
