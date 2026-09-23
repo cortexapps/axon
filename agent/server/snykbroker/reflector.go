@@ -146,10 +146,20 @@ func (rr *RegistrationReflector) RecordTunnelActivity() {
 	rr.lastTunnelTime.Store(time.Now().UnixMilli())
 }
 
-// LastTunnelActivityTime returns the time the broker server last sent
-// anything down the tunnel.
-func (rr *RegistrationReflector) LastTunnelActivityTime() time.Time {
-	return time.UnixMilli(rr.lastTunnelTime.Load())
+// LastActivityTime is the latest of the last relayed request, the last frame
+// from the broker server, and the last (re)start: the idle watchdog's clock.
+//
+// Relayed requests alone can't tell a dead tunnel from a quiet one: the
+// broker server hands a token's requests to only its newest client, so every
+// other replica sharing the token looks idle. Frames cover that when the
+// tunnel runs through this reflector; in "traffic" mode it doesn't, and
+// relayed requests are the only signal.
+func (rr *RegistrationReflector) LastActivityTime() time.Time {
+	return time.UnixMilli(max(
+		rr.lastTrafficTime.Load(),
+		rr.lastTunnelTime.Load(),
+		rr.lastStartupTime.Load(),
+	))
 }
 
 // SetOnWSTunnelClose sets a callback invoked when a WebSocket tunnel closes.

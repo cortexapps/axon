@@ -311,21 +311,7 @@ func (r *relayInstanceManager) shouldRestart() (bool, string) {
 	if !r.config.HttpRelayReflectorMode.ReflectsTraffic() {
 		return false, ""
 	}
-	// Relayed requests alone can't tell a dead tunnel from a quiet one: the
-	// broker server hands a token's requests to only its newest client, so
-	// every other replica sharing the token looks idle and gets restarted in
-	// rotation. Frames from the server (its heartbeat included) show the
-	// tunnel is alive, so they count too.
-	lastActivity := r.reflector.LastTrafficTime()
-	for _, t := range []time.Time{
-		r.reflector.LastStartupTime(),
-		r.reflector.LastTunnelActivityTime(),
-	} {
-		if t.After(lastActivity) {
-			lastActivity = t
-		}
-	}
-	if time.Since(lastActivity) >= r.config.RelayIdleTimeout {
+	if time.Since(r.reflector.LastActivityTime()) >= r.config.RelayIdleTimeout {
 		return true, "idle_timeout"
 	}
 	return false, ""
