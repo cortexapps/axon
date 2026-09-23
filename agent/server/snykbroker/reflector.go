@@ -33,6 +33,7 @@ type RegistrationReflector struct {
 	config          config.AgentConfig
 	lastTrafficTime atomic.Int64
 	lastStartupTime atomic.Int64
+	lastTunnelTime  atomic.Int64
 	wsProxy         *WebSocketProxy
 }
 
@@ -77,6 +78,7 @@ func NewRegistrationReflector(p RegistrationReflectorParams) *RegistrationReflec
 	rr.wsProxy.OnTunnelEstablished = func(target string) {
 		rr.logger.Info("WebSocket tunnel established", zap.String("target", target))
 	}
+	rr.wsProxy.OnActivity = rr.RecordTunnelActivity
 
 	rr.RecordStartup()
 
@@ -135,6 +137,19 @@ func (rr *RegistrationReflector) RecordStartup() {
 // LastStartupTime returns the time of the last recorded (re)start.
 func (rr *RegistrationReflector) LastStartupTime() time.Time {
 	return time.UnixMilli(rr.lastStartupTime.Load())
+}
+
+// RecordTunnelActivity marks that the broker server just sent something down
+// the websocket tunnel. It is kept apart from lastTrafficTime: a heartbeat
+// proves the tunnel is alive, not that anything was relayed.
+func (rr *RegistrationReflector) RecordTunnelActivity() {
+	rr.lastTunnelTime.Store(time.Now().UnixMilli())
+}
+
+// LastTunnelActivityTime returns the time the broker server last sent
+// anything down the tunnel.
+func (rr *RegistrationReflector) LastTunnelActivityTime() time.Time {
+	return time.UnixMilli(rr.lastTunnelTime.Load())
 }
 
 // SetOnWSTunnelClose sets a callback invoked when a WebSocket tunnel closes.

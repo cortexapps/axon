@@ -479,6 +479,71 @@ func TestWebSocketProxyCallbacks(t *testing.T) {
 	assert.True(t, closedDuration > 0, "duration should be positive")
 }
 
+// OnActivity must fire for bytes from the broker server and not for bytes we
+// send: a write into a dead tunnel can still succeed, so it proves nothing.
+func TestWebSocketProxyOnActivityCountsTargetFramesOnly(t *testing.T) {
+	logger := newTestLogger(t)
+
+	serverSend := make(chan struct{})
+	var upgrader = websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool { return true },
+	}
+	router := mux.NewRouter()
+	router.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		go func() {
+			for {
+				if _, _, err := conn.ReadMessage(); err != nil {
+					return
+				}
+			}
+		}()
+		<-serverSend
+		_ = conn.WriteMessage(websocket.TextMessage, []byte("primus::ping::1"))
+		time.Sleep(200 * time.Millisecond)
+	})
+	targetServer := httptest.NewServer(router)
+	defer targetServer.Close()
+
+	var activity atomic.Int32
+	rr := NewRegistrationReflector(RegistrationReflectorParams{
+		Logger: logger,
+		Config: config.AgentConfig{
+			ReflectorWebSocketUpgrade: true,
+		},
+	})
+	rr.wsProxy.OnActivity = func() { activity.Add(1) }
+
+	reflectorRouter := mux.NewRouter()
+	rr.RegisterRoutes(reflectorRouter)
+	reflectorServer := httptest.NewServer(reflectorRouter)
+	defer reflectorServer.Close()
+
+	wsURL := "ws" + rr.ProxyURI(targetServer.URL)[4:] + "/ws"
+	conn, _, err := (&websocket.Dialer{}).Dial(wsURL, nil)
+	require.NoError(t, err)
+	defer conn.Close()
+
+	// The upgrade response is the first thing back from the target; only
+	// frames after it are under test.
+	time.Sleep(50 * time.Millisecond)
+	afterHandshake := activity.Load()
+
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte("primus::pong::1")))
+	time.Sleep(50 * time.Millisecond)
+	require.Equal(t, afterHandshake, activity.Load(), "our own writes must not count as activity")
+
+	close(serverSend)
+	_, msg, err := conn.ReadMessage()
+	require.NoError(t, err)
+	require.Equal(t, "primus::ping::1", string(msg))
+	require.Greater(t, activity.Load(), afterHandshake, "a frame from the server must count as activity")
+}
+
 func TestWebSocketProxyIsConnected(t *testing.T) {
 	logger := newTestLogger(t)
 

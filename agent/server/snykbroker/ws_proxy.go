@@ -31,6 +31,11 @@ type WebSocketProxy struct {
 	// Callbacks
 	OnTunnelEstablished func(target string)
 	OnTunnelClosed      func(target string, duration time.Duration)
+	// OnActivity is called whenever bytes arrive from the target (the broker
+	// server). The server heartbeats every tunnel, so this proves the far end
+	// is alive even when no request is being relayed. Bytes we send don't
+	// count: writing into a dead tunnel can still succeed.
+	OnActivity func()
 
 	// State tracking - use Int32 to properly track multiple concurrent tunnels
 	activeConnections atomic.Int32
@@ -256,13 +261,13 @@ func (wp *WebSocketProxy) runTunnel(clientConn, targetConn net.Conn, targetAddr 
 
 	done := make(chan struct{}, 2)
 
-	copy := func(dst, src net.Conn, direction string) {
+	copy := func(dst, src net.Conn, direction string, onRead func()) {
 		defer func() { done <- struct{}{} }()
-		wp.copyWithIdleTimeout(dst, src, direction)
+		wp.copyWithIdleTimeout(dst, src, direction, onRead)
 	}
 
-	go copy(clientConn, targetConn, "target->client")
-	go copy(targetConn, clientConn, "client->target")
+	go copy(clientConn, targetConn, "target->client", wp.OnActivity)
+	go copy(targetConn, clientConn, "client->target", nil)
 
 	<-done
 	clientConn.Close()
@@ -270,7 +275,7 @@ func (wp *WebSocketProxy) runTunnel(clientConn, targetConn net.Conn, targetAddr 
 	<-done
 }
 
-func (wp *WebSocketProxy) copyWithIdleTimeout(dst, src net.Conn, direction string) {
+func (wp *WebSocketProxy) copyWithIdleTimeout(dst, src net.Conn, direction string, onRead func()) {
 	buf := make([]byte, 32*1024)
 	isFirstRead := true
 	for {
@@ -298,6 +303,9 @@ func (wp *WebSocketProxy) copyWithIdleTimeout(dst, src net.Conn, direction strin
 		}
 
 		if n > 0 {
+			if onRead != nil {
+				onRead()
+			}
 			dst.SetWriteDeadline(time.Now().Add(wp.HandshakeTimeout))
 			if _, writeErr := dst.Write(buf[:n]); writeErr != nil {
 				return
