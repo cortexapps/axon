@@ -1,0 +1,9 @@
+grpcio
+grpcio-tools
+pygit2
+readerwriterlock
+jinja2
+isodate
+
+--extra-index-url https://test.pypi.org/simple
+cortex-axon-sdk
