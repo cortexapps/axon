@@ -33,6 +33,7 @@ type RegistrationReflector struct {
 	config          config.AgentConfig
 	lastTrafficTime atomic.Int64
 	lastStartupTime atomic.Int64
+	lastTunnelTime  atomic.Int64
 	wsProxy         *WebSocketProxy
 }
 
@@ -135,6 +136,29 @@ func (rr *RegistrationReflector) RecordStartup() {
 // LastStartupTime returns the time of the last recorded (re)start.
 func (rr *RegistrationReflector) LastStartupTime() time.Time {
 	return time.UnixMilli(rr.lastStartupTime.Load())
+}
+
+// RecordTunnelActivity marks that the broker server just sent something down
+// the websocket tunnel. It is kept apart from lastTrafficTime: a heartbeat
+// proves the tunnel is alive, not that anything was relayed.
+func (rr *RegistrationReflector) RecordTunnelActivity() {
+	rr.lastTunnelTime.Store(time.Now().UnixMilli())
+}
+
+// LastActivityTime is the latest of the last relayed request, the last frame
+// from the broker server, and the last (re)start: the idle watchdog's clock.
+//
+// Relayed requests alone can't tell a dead tunnel from a quiet one: the
+// broker server hands a token's requests to only its newest client, so every
+// other replica sharing the token looks idle. Frames cover that when the
+// tunnel runs through this reflector; in "traffic" mode it doesn't, and
+// relayed requests are the only signal.
+func (rr *RegistrationReflector) LastActivityTime() time.Time {
+	return time.UnixMilli(max(
+		rr.lastTrafficTime.Load(),
+		rr.lastTunnelTime.Load(),
+		rr.lastStartupTime.Load(),
+	))
 }
 
 // SetOnWSTunnelClose sets a callback invoked when a WebSocket tunnel closes.
@@ -396,7 +420,13 @@ func (rr *RegistrationReflector) ServeHTTP(w http.ResponseWriter, r *http.Reques
 	// Check if this is a WebSocket upgrade request
 	if rr.config.ReflectorWebSocketUpgrade && IsWebSocketUpgrade(r) {
 		rr.logger.Debug("Detected WebSocket upgrade request, using WebSocket proxy")
-		if err := rr.wsProxy.Proxy(w, r, entry.TargetURI); err != nil {
+		// Only the default entry is the broker's own tunnel to the server; a
+		// websocket to a customer origin says nothing about that tunnel.
+		var onActivity func()
+		if entry.isDefault {
+			onActivity = rr.RecordTunnelActivity
+		}
+		if err := rr.wsProxy.Proxy(w, r, entry.TargetURI, onActivity); err != nil {
 			rr.logger.Error("WebSocket proxy failed", zap.Error(err))
 		}
 		return

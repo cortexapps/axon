@@ -486,6 +486,52 @@ func TestIdleTimeoutDetectsIdleReflector(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// Only the newest client for a token gets relayed requests, so a healthy
+// replica can go a long time without traffic. Frames from the broker server
+// keep it out of the idle watchdog; a tunnel that has gone quiet does not.
+func TestShouldRestartCountsTunnelActivity(t *testing.T) {
+	cfg := config.NewAgentEnvConfig()
+	cfg.HttpRelayReflectorMode = config.RelayReflectorAllTraffic
+	cfg.RelayIdleTimeout = time.Minute
+
+	rr := NewRegistrationReflector(RegistrationReflectorParams{
+		Logger: zap.NewNop(),
+		Config: cfg,
+	})
+	r := &relayInstanceManager{config: cfg, reflector: rr}
+
+	stale := time.Now().Add(-2 * time.Minute).UnixMilli()
+	rr.lastStartupTime.Store(stale)
+	rr.lastTrafficTime.Store(stale)
+
+	restart, reason := r.shouldRestart()
+	require.True(t, restart, "no traffic, no startup and no tunnel frames within the window is idle")
+	require.Equal(t, "idle_timeout", reason)
+
+	rr.RecordTunnelActivity()
+	restart, _ = r.shouldRestart()
+	require.False(t, restart, "a frame from the broker server shows the tunnel is alive")
+
+	rr.lastTunnelTime.Store(stale)
+	restart, _ = r.shouldRestart()
+	require.True(t, restart, "a tunnel that has gone quiet is idle again")
+
+	// "registration" routes the broker's tunnel through the reflector but no
+	// relayed requests, so tunnel frames are its only signal.
+	r.config.HttpRelayReflectorMode = config.RelayReflectorRegistrationOnly
+	restart, _ = r.shouldRestart()
+	require.True(t, restart, "registration mode watches the tunnel too")
+	rr.RecordTunnelActivity()
+	restart, _ = r.shouldRestart()
+	require.False(t, restart, "registration mode counts tunnel frames")
+
+	// With the reflector off the agent sees neither, so it must not guess.
+	rr.lastTunnelTime.Store(stale)
+	r.config.HttpRelayReflectorMode = config.RelayReflectorDisabled
+	restart, _ = r.shouldRestart()
+	require.False(t, restart, "disabled mode has no signal and never restarts")
+}
+
 // A broker with nothing to relay looks identical, idle-wise, to one whose
 // tunnel died silently: shouldRestart() can only see "no activity recorded."
 // A restart must reset the idle clock (LastStartupTime) so a healthy-but-idle
