@@ -31,7 +31,7 @@ WORKDIR /agent
 # force `apt-get update && upgrade` to re-fetch from Debian's archive. Use this
 # when the scheduled Trivy scan flags OS-package CVEs whose fixes are already
 # in the archive — the cache is just serving a stale layer. Leaves the rest of
-# the build (Go, npm, snyk-broker clone) hitting cache as normal.
+# the build (Go, Node + snyk-broker install) hitting cache as normal.
 ARG APT_CACHE_BUST=2026-09-30
 # NOTE: build-essential is deliberately NOT installed here. It pulls in a full
 # C/C++ toolchain whose libc6-dev dependency drags in linux-libc-dev (the Linux
@@ -51,9 +51,15 @@ RUN echo "apt cache bust: $APT_CACHE_BUST" \
 ENV NODE_VERSION=20
 
 ARG SNYK_BROKER_VERSION=v1.0.21-axon
-RUN wget -q -O - https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash - && apt-get install -y nodejs
-RUN npm install --global npm@11.18.0 typescript@4.9.3
-RUN git clone https://github.com/cortexapps/snyk-broker.git /tmp/snyk-broker && \
+# npm is only a build tool here: nothing in the agent or the scaffolds runs npm
+# or npx at runtime, the agent just execs the installed `snyk-broker` bin. So
+# npm (and npx, which lives inside it) is deleted once the broker is installed.
+# It has to happen in this same RUN: the nodejs package itself installs npm
+# under /usr/lib/node_modules/npm, and removing it in a later layer would leave
+# it in the image's lower layers, where customers' scanners still find it.
+RUN wget -q -O - https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash - && apt-get install -y nodejs && \
+    npm install --global npm@11.18.0 typescript@4.9.3 && \
+    git clone https://github.com/cortexapps/snyk-broker.git /tmp/snyk-broker && \
     cd /tmp/snyk-broker && \
     git checkout ${SNYK_BROKER_VERSION} && \
     npm install && \
@@ -61,7 +67,8 @@ RUN git clone https://github.com/cortexapps/snyk-broker.git /tmp/snyk-broker && 
     cd /usr/local/snyk-broker && \
     npm install --global . && \
     npm prune --omit=dev && \
-    rm -rf /tmp/snyk-broker
+    rm -rf /tmp/snyk-broker && \
+    rm -rf /usr/lib/node_modules/npm /usr/bin/npm /usr/bin/npx /root/.npm
 
 # Add npm global bin to PATH
 ENV PATH="/usr/local/lib/node_modules/.bin:${PATH}"
