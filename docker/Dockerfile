@@ -50,7 +50,7 @@ RUN echo "apt cache bust: $APT_CACHE_BUST" \
 # Install NodeJS and Snyk Broker
 ENV NODE_VERSION=20
 
-ARG SNYK_BROKER_VERSION=v1.0.21-axon
+ARG SNYK_BROKER_VERSION=v1.0.22-axon
 # npm is only a build tool here: nothing in the agent or the scaffolds runs npm
 # or npx at runtime, the agent just execs the installed `snyk-broker` bin. So
 # npm (and npx, which lives inside it) is deleted once the broker is installed.
