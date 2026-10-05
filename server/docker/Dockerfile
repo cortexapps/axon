@@ -15,7 +15,7 @@ RUN go build -o /axon-tunnel-server ./cmd/...
 # Runtime image.
 FROM debian:bookworm-slim
 
-ARG APT_CACHE_BUST=2026-09-14
+ARG APT_CACHE_BUST=2026-10-05
 RUN echo "apt cache bust: $APT_CACHE_BUST" \
     && apt-get update && apt-get upgrade -y && apt-get install -y ca-certificates \
     && rm -rf /var/lib/apt/lists/*
