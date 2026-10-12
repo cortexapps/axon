@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	_ "embed"
 	"fmt"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"github.com/cortexapps/axon/config"
 	"github.com/cortexapps/axon/server"
 	cortexHttp "github.com/cortexapps/axon/server/http"
+	"github.com/cortexapps/axon/server/logstore"
 	"github.com/spf13/cobra"
 	"go.uber.org/fx"
 	"go.uber.org/fx/fxevent"
@@ -33,7 +35,15 @@ func startAgent(opts fx.Option) {
 }
 
 var AgentModule = fx.Module("agent",
-	fx.Provide(func(config config.AgentConfig) *zap.Logger {
+	// The captured-log store is built before the logger because the logger
+	// tees into it. It registers its OnStop first, so it closes last and
+	// everything else can still log while shutting down.
+	fx.Provide(func(config config.AgentConfig, lc fx.Lifecycle) *logstore.Store {
+		store := logstore.NewFromConfig(config)
+		lc.Append(fx.Hook{OnStop: func(context.Context) error { return store.Close() }})
+		return store
+	}),
+	fx.Provide(func(config config.AgentConfig, store *logstore.Store) *zap.Logger {
 
 		cfg := zap.NewDevelopmentConfig()
 		if os.Getenv("ENV") == "production" {
@@ -50,12 +60,25 @@ var AgentModule = fx.Module("agent",
 			loggingLevel = zap.DebugLevel
 		}
 
+		// cfg.Level governs stderr only. The store's core carries its own
+		// level, so REMOTE_LOGS_VISIBLE=* puts debug on disk while stderr
+		// stays as it was.
 		cfg.Level = zap.NewAtomicLevelAt(loggingLevel)
-		logger, err := cfg.Build()
+		var opts []zap.Option
+		if store.Enabled() {
+			opts = append(opts, zap.WrapCore(func(c zapcore.Core) zapcore.Core {
+				return zapcore.NewTee(c, store.Core())
+			}))
+		}
+		logger, err := cfg.Build(opts...)
 		if err != nil {
 			panic(err)
 		}
-		return logger.Named("axon")
+		logger = logger.Named("axon")
+		if err := store.Err(); err != nil {
+			logger.Warn("remote logs disabled", zap.Error(err))
+		}
+		return logger
 	}),
 	fx.Provide(cortexHttp.NewPrometheusRegistry),
 	fx.Provide(createHttpTransport),

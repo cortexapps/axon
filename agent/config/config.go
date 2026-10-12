@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -89,6 +90,17 @@ type AgentConfig struct {
 	HandlerHistoryMaxAge       time.Duration
 	HandlerHistoryMaxSizeBytes int64
 
+	// RemoteLogsVisible turns on the on-disk capture of the agent's own log
+	// output that __axon/logs serves. "" is off; "*" captures every level
+	// including debug; "debug", "info", "warn" or "error" capture that level
+	// and above. Validated at env parse so a typo fails at startup rather
+	// than silently capturing nothing.
+	RemoteLogsVisible string
+	// RemoteLogsPath is the directory the captured log segments live in.
+	RemoteLogsPath string
+	// RemoteLogsMaxSizeBytes bounds the total size of captured logs on disk.
+	RemoteLogsMaxSizeBytes int64
+
 	HttpDisableTLS            bool
 	HttpCaCertFilePath        string
 	HttpRelayReflectorMode    RelayReflectorMode
@@ -133,6 +145,12 @@ type AgentConfig struct {
 	GrpcTunnelServer string
 }
 
+// RemoteLogsEnabled reports whether the agent captures its logs for
+// __axon/logs. Any validated REMOTE_LOGS_VISIBLE value turns it on.
+func (ac AgentConfig) RemoteLogsEnabled() bool {
+	return ac.RemoteLogsVisible != ""
+}
+
 func (ac AgentConfig) HttpBaseUrl() string {
 	return fmt.Sprintf("http://localhost:%d", ac.HttpServerPort)
 }
@@ -153,6 +171,9 @@ func (ac AgentConfig) Print() {
 	}
 	if ac.DryRun {
 		fmt.Println("\tDry Run: Enabled")
+	}
+	if ac.RemoteLogsEnabled() {
+		fmt.Printf("\tRemote Logs: %s (%s, max %d bytes)\n", ac.RemoteLogsVisible, ac.RemoteLogsPath, ac.RemoteLogsMaxSizeBytes)
 	}
 	if ac.EnableApiProxy {
 		fmt.Println("\tAPI Port: ", ac.HttpServerPort)
@@ -280,6 +301,34 @@ func NewAgentEnvConfig() AgentConfig {
 		handlerHistoryMaxSizeBytes = hma
 	}
 
+	// Normalised rather than compared verbatim: this is typed by hand into a
+	// compose file or Helm values, and " WARN " should not be a silent no-op.
+	remoteLogsVisible := strings.ToLower(strings.TrimSpace(os.Getenv("REMOTE_LOGS_VISIBLE")))
+	switch remoteLogsVisible {
+	case "", "*", "debug", "info", "warn", "error":
+	default:
+		panic(fmt.Sprintf("REMOTE_LOGS_VISIBLE must be one of *, debug, info, warn, error (got %q)", remoteLogsVisible))
+	}
+
+	remoteLogsPath := "/tmp/axon-agent/logs"
+	if v := os.Getenv("REMOTE_LOGS_PATH"); v != "" {
+		remoteLogsPath = v
+	}
+
+	remoteLogsMaxSizeBytes := int64(50 << 20)
+	if v := os.Getenv("REMOTE_LOGS_MAX_SIZE_BYTES"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			panic(err)
+		}
+		// Below a megabyte the store cannot hold one segment and would
+		// rotate on every line.
+		if n < 1<<20 {
+			panic(fmt.Sprintf("REMOTE_LOGS_MAX_SIZE_BYTES must be at least %d (got %d)", 1<<20, n))
+		}
+		remoteLogsMaxSizeBytes = n
+	}
+
 	identifier := os.Getenv("INTEGRATION_ALIAS")
 	if identifier == "" {
 		identifier = "custom-agent"
@@ -319,6 +368,9 @@ func NewAgentEnvConfig() AgentConfig {
 		HandlerHistoryPath:         historyPath,
 		HandlerHistoryMaxAge:       handlerHistoryMaxAge,
 		HandlerHistoryMaxSizeBytes: handlerHistoryMaxSizeBytes,
+		RemoteLogsVisible:          remoteLogsVisible,
+		RemoteLogsPath:             remoteLogsPath,
+		RemoteLogsMaxSizeBytes:     remoteLogsMaxSizeBytes,
 	}
 
 	if builtinPluginDir := os.Getenv("BUILTIN_PLUGIN_DIR"); builtinPluginDir != "" {

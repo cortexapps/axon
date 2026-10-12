@@ -111,6 +111,7 @@ ARG BUILD_VERSION=dev
 ENV AXON_BUILD_VERSION=${BUILD_VERSION}
 ENV CORTEX_API_BASE_URL=https://api.getcortexapp.com
 ENV HANDLER_HISTORY_PATH=/var/log/axon/history
+ENV REMOTE_LOGS_PATH=/var/log/axon/logs
 ENV NODE_OPTIONS=--use-openssl-ca
 
 EXPOSE 50051

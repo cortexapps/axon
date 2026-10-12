@@ -64,7 +64,71 @@ scenario_axon_endpoints() {
         scenario_fail "Expected a build_version, got '$build'" "=== Info response: $info ==="
     fi
 
-    echo "Success: agent reports integration, relay_mode=$mode, build_version=$build"
+    # The compose file sets REMOTE_LOGS_VISIBLE, so /info must advertise the
+    # logs endpoint; the backend reads this before it asks for logs.
+    local remote_logs
+    remote_logs=$(echo "$info" | jq -r '.remote_logs')
+    if [ "$remote_logs" != "true" ]; then
+        scenario_fail "Expected remote_logs true, got '$remote_logs'" "=== Info response: $info ==="
+    fi
+
+    echo "Success: agent reports integration, relay_mode=$mode, build_version=$build, remote_logs=$remote_logs"
+}
+
+# Pages the agent's captured logs back through the relay. The query string
+# has to survive the transport, page 0 has to be the newest block, and a
+# pinned now has to make page 1 disjoint from page 0.
+scenario_remote_logs() {
+    echo "Checking remote logs paging..."
+    local p0 p1 now count has_more sorted
+    p0=$(curlw "$DISPATCH_URL/__axon/logs?size=3")
+
+    count=$(echo "$p0" | jq -r '.lines | length')
+    if [ "$count" -lt 1 ] 2>/dev/null; then
+        scenario_fail "Expected at least one captured log line, got '$count'" "=== Page 0: $p0 ==="
+    elif [ -z "$count" ]; then
+        scenario_fail "Expected a lines array" "=== Page 0: $p0 ==="
+    fi
+    if [ "$(echo "$p0" | jq -r '.page')" != "0" ] || [ "$(echo "$p0" | jq -r '.size')" != "3" ]; then
+        scenario_fail "Expected page 0 of size 3 echoed back" "=== Page 0: $p0 ==="
+    fi
+    has_more=$(echo "$p0" | jq -r '.has_more | type')
+    if [ "$has_more" != "boolean" ]; then
+        scenario_fail "Expected has_more to be a boolean" "=== Page 0: $p0 ==="
+    fi
+    now=$(echo "$p0" | jq -r '.now')
+    if ! [ "$now" -gt 0 ] 2>/dev/null; then
+        scenario_fail "Expected a numeric now, got '$now'" "=== Page 0: $p0 ==="
+    fi
+
+    # Each line is a JSON document and the page is chronological.
+    sorted=$(echo "$p0" | jq -r '[.lines[] | fromjson | .ts] | . == sort')
+    if [ "$sorted" != "true" ]; then
+        scenario_fail "Expected lines in chronological order" "=== Page 0: $p0 ==="
+    fi
+
+    p1=$(curlw "$DISPATCH_URL/__axon/logs?size=3&page=1&now=$now")
+    if [ "$(echo "$p1" | jq -r '.now')" != "$now" ] || [ "$(echo "$p1" | jq -r '.page')" != "1" ]; then
+        scenario_fail "Expected page 1 pinned at now=$now" "=== Page 1: $p1 ==="
+    fi
+
+    local overlap
+    overlap=$(comm -12 <(echo "$p0" | jq -r '.lines[]' | sort) <(echo "$p1" | jq -r '.lines[]' | sort))
+    if [ -n "$overlap" ]; then
+        scenario_fail "Pages 0 and 1 overlap" "=== Overlap: $overlap ==="
+    fi
+
+    # Page 1 is older than page 0 when it has anything in it.
+    if [ "$(echo "$p1" | jq -r '.lines | length')" -gt 0 ]; then
+        local p0_first p1_last
+        p0_first=$(echo "$p0" | jq -r '.lines[0] | fromjson | .ts')
+        p1_last=$(echo "$p1" | jq -r '.lines[-1] | fromjson | .ts')
+        if [ "$(jq -n --argjson a "$p1_last" --argjson b "$p0_first" '$a <= $b')" != "true" ]; then
+            scenario_fail "Expected page 1 to be older than page 0" "p0 first ts: $p0_first" "p1 last ts: $p1_last"
+        fi
+    fi
+
+    echo "Success: remote logs page back through the relay (page 0 had $count lines, now=$now)"
 }
 
 # A plain relayed GET: python-server serves /tmp, so a file written here must
@@ -193,6 +257,7 @@ scenario_no_proxy_headers() {
 # $1 optional extra curl args for the binary download.
 run_shared_scenarios() {
     scenario_axon_endpoints
+    scenario_remote_logs
     scenario_broker_passthrough
     scenario_binary_passthrough "$@"
     scenario_gitlab_basic_auth

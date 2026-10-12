@@ -6,10 +6,13 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
+	"time"
 
 	pb "github.com/cortexapps/axon/.generated/proto/github.com/cortexapps/axon"
 	"github.com/cortexapps/axon/config"
 	"github.com/cortexapps/axon/server/handler"
+	"github.com/cortexapps/axon/server/logstore"
 	"github.com/gorilla/mux"
 	"go.uber.org/fx"
 	"go.uber.org/zap"
@@ -25,6 +28,9 @@ type axonHandler struct {
 	logger         *zap.Logger
 	client         pb.AxonAgentClient
 	handlerManager handler.Manager
+	// logStore is the captured-log store behind /logs. Nil or disabled
+	// means the feature is off; both read as not enabled.
+	logStore *logstore.Store
 }
 
 type AxonHandlerParams struct {
@@ -33,6 +39,7 @@ type AxonHandlerParams struct {
 	Logger         *zap.Logger
 	Config         config.AgentConfig
 	HandlerManager handler.Manager `optional:"true"`
+	LogStore       *logstore.Store `optional:"true"`
 }
 
 func NewAxonHandler(p AxonHandlerParams) RegisterableHandler {
@@ -41,6 +48,7 @@ func NewAxonHandler(p AxonHandlerParams) RegisterableHandler {
 		config:         p.Config,
 		logger:         p.Logger,
 		handlerManager: p.HandlerManager,
+		logStore:       p.LogStore,
 	}
 
 	return handler
@@ -69,6 +77,7 @@ func (h *axonHandler) RegisterRoutes(mux *mux.Router) error {
 	subRouter.HandleFunc("/handlers", h.listHandlers)
 	subRouter.HandleFunc("/healthcheck", h.healthcheck)
 	subRouter.HandleFunc("/info", h.info)
+	subRouter.HandleFunc("/logs", h.logs)
 	return nil
 }
 
@@ -136,6 +145,11 @@ func (h *axonHandler) info(w http.ResponseWriter, r *http.Request) {
 		// from the backend rather than inferred from which server an agent
 		// happens to be connected to.
 		RelayMode string `json:"relay_mode"`
+		// Whether /logs is being served. Lets the backend know before it
+		// asks, and tells "not configured" apart from "configured but the
+		// store could not open", which RemoteLogsError carries.
+		RemoteLogs      bool   `json:"remote_logs"`
+		RemoteLogsError string `json:"remote_logs_error,omitempty"`
 	}{
 		InstanceID:   h.config.InstanceId,
 		Integration:  h.config.Integration,
@@ -143,6 +157,10 @@ func (h *axonHandler) info(w http.ResponseWriter, r *http.Request) {
 		Handlers:     []string{},
 		BuildVersion: getBuildVersion(),
 		RelayMode:    h.relayMode(),
+		RemoteLogs:   h.logStore.Enabled(),
+	}
+	if err := h.logStore.Err(); err != nil {
+		result.RemoteLogsError = err.Error()
 	}
 
 	handlers, err := h.fetchHandlers(r)
@@ -273,8 +291,67 @@ func (h *axonHandler) writeError(w http.ResponseWriter, status int, message stri
 		w.Write([]byte(err.Error()))
 		return
 	}
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	w.Write([]byte(jsonErr))
+}
+
+// logs pages through the captured log store: GET /__axon/logs?now=<unix
+// seconds>&page=<n>&size=<n>. Page 0 is the newest block at or before now
+// and higher pages walk back in time. When now is omitted the server's
+// clock is used and echoed so the caller can pin later pages to it.
+func (h *axonHandler) logs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if !h.logStore.Enabled() {
+		h.writeError(w, http.StatusNotFound, "remote logs are not enabled; set REMOTE_LOGS_VISIBLE on the agent")
+		return
+	}
+
+	q := r.URL.Query()
+	// Truncated to the second on purpose: the in-progress second is left
+	// out, which is what keeps a pinned now stable across page requests.
+	now := time.Now().Unix()
+	if v := q.Get("now"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 0 {
+			h.writeError(w, http.StatusBadRequest, "now must be a unix timestamp in seconds")
+			return
+		}
+		now = n
+	}
+	page := 0
+	if v := q.Get("page"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			h.writeError(w, http.StatusBadRequest, "page must be an integer >= 0")
+			return
+		}
+		page = n
+	}
+	size := logstore.DefaultPageSize
+	if v := q.Get("size"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > logstore.MaxPageSize {
+			h.writeError(w, http.StatusBadRequest, fmt.Sprintf("size must be between 1 and %d", logstore.MaxPageSize))
+			return
+		}
+		size = n
+	}
+
+	result, err := h.logStore.Read(time.Unix(now, 0), page, size)
+	if err == logstore.ErrDisabled {
+		h.writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	if err != nil {
+		h.logger.Error("Failed to read remote logs", zap.Error(err))
+		h.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	h.returnJson(result, w)
 }
 
 func (h *axonHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
