@@ -1,3 +1,6 @@
+import time
+
+import grpc
 import pytest
 from utils import (
     mock_agent,  # noqa: F401
@@ -121,3 +124,28 @@ def test_response_handle_errors(mock_agent, mock_cortex_api):  # noqa: F811
     assert resp.ok is False
     with pytest.raises(CortexHTTPError):
         resp.raise_for_status()
+
+
+def test_call_stops_at_invocation_deadline(mock_agent, mock_cortex_api):  # noqa: F811
+    def slow_call(request, context):
+        time.sleep(2)
+        return mock_call(request)
+
+    mock_cortex_api.mock.Call.side_effect = slow_call
+
+    client = AxonClient(
+        agent_host="localhost",
+        agent_port=mock_agent.port,
+        cortex_host="localhost",
+        cortex_port=mock_cortex_api.port,
+        handlers=[],
+        scope=globals(),
+    )
+
+    ctx = client._handler_context({}, timeout_ms=200)
+    start = time.monotonic()
+    with pytest.raises(grpc.RpcError) as err:
+        ctx.cortex_api_call(method="GET", path="/api/v1/some-api")
+
+    assert err.value.code() == grpc.StatusCode.DEADLINE_EXCEEDED
+    assert time.monotonic() - start < 1

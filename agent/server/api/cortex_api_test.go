@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	pb "github.com/cortexapps/axon/.generated/proto/github.com/cortexapps/axon"
 	"github.com/cortexapps/axon/common"
@@ -177,4 +178,74 @@ func mockServer(t *testing.T, cfg config.AgentConfig, handler http.HandlerFunc) 
 		mockServer.Close()
 		proxyServer.Close()
 	}
+}
+
+func TestCall_RateLimited_StopsAtDeadline(t *testing.T) {
+	server, cleanup := mockServer(t, config.AgentConfig{
+		CortexApiToken: "test_token",
+	}, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "1")
+		w.WriteHeader(http.StatusTooManyRequests)
+	})
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, err := server.Call(ctx, &pb.CallRequest{Method: "GET", Path: "/test"})
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Less(t, time.Since(start), 2*time.Second)
+}
+
+func TestHelper_RateLimited_RetrySendsBody(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		require.Equal(t, `{"key": "value"}`, string(body), attempts)
+		attempts++
+		if attempts == 1 {
+			w.Header().Set("Retry-After", ".01")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	helper := &httpRequestHelper{
+		BaseURL: server.URL,
+		logger:  zap.NewNop(),
+		client:  &http.Client{},
+	}
+	resp, err := helper.Do(context.Background(), "POST", "/test", &RequestBody{
+		Body:        []byte(`{"key": "value"}`),
+		ContentType: "application/json",
+	})
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Equal(t, 2, attempts)
+}
+
+func TestHelper_RateLimited_StopsAtDeadline(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "1")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+
+	helper := &httpRequestHelper{
+		BaseURL: server.URL,
+		logger:  zap.NewNop(),
+		client:  &http.Client{},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, err := helper.Do(ctx, "GET", "/test", nil)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Less(t, time.Since(start), time.Second)
 }
