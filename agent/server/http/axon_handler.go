@@ -2,12 +2,12 @@ package http
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"strconv"
-	"time"
 
 	pb "github.com/cortexapps/axon/.generated/proto/github.com/cortexapps/axon"
 	"github.com/cortexapps/axon/config"
@@ -296,10 +296,10 @@ func (h *axonHandler) writeError(w http.ResponseWriter, status int, message stri
 	w.Write([]byte(jsonErr))
 }
 
-// logs pages through the captured log store: GET /__axon/logs?now=<unix
-// seconds>&page=<n>&size=<n>. Page 0 is the newest block at or before now
-// and higher pages walk back in time. When now is omitted the server's
-// clock is used and echoed so the caller can pin later pages to it.
+// logs pages through the captured log store: GET /__axon/logs?size=<n>
+// returns the newest block, and GET /__axon/logs?size=<n>&next=<token>
+// returns the block just older than the page that issued the token. The
+// token pins the walk, so pages do not shift as the agent keeps logging.
 func (h *axonHandler) logs(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -311,26 +311,6 @@ func (h *axonHandler) logs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	q := r.URL.Query()
-	// Truncated to the second on purpose: the in-progress second is left
-	// out, which is what keeps a pinned now stable across page requests.
-	now := time.Now().Unix()
-	if v := q.Get("now"); v != "" {
-		n, err := strconv.ParseInt(v, 10, 64)
-		if err != nil || n < 0 {
-			h.writeError(w, http.StatusBadRequest, "now must be a unix timestamp in seconds")
-			return
-		}
-		now = n
-	}
-	page := 0
-	if v := q.Get("page"); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil || n < 0 {
-			h.writeError(w, http.StatusBadRequest, "page must be an integer >= 0")
-			return
-		}
-		page = n
-	}
 	size := logstore.DefaultPageSize
 	if v := q.Get("size"); v != "" {
 		n, err := strconv.Atoi(v)
@@ -341,12 +321,21 @@ func (h *axonHandler) logs(w http.ResponseWriter, r *http.Request) {
 		size = n
 	}
 
-	result, err := h.logStore.Read(time.Unix(now, 0), page, size)
-	if err == logstore.ErrDisabled {
+	var result logstore.Page
+	var err error
+	if next := q.Get("next"); next != "" {
+		result, err = h.logStore.Continue(next, size)
+	} else {
+		result, err = h.logStore.Read(size)
+	}
+	switch {
+	case errors.Is(err, logstore.ErrDisabled):
 		h.writeError(w, http.StatusNotFound, err.Error())
 		return
-	}
-	if err != nil {
+	case errors.Is(err, logstore.ErrBadToken):
+		h.writeError(w, http.StatusBadRequest, "next is not a token this agent issued")
+		return
+	case err != nil:
 		h.logger.Error("Failed to read remote logs", zap.Error(err))
 		h.writeError(w, http.StatusInternalServerError, err.Error())
 		return

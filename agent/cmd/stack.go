@@ -60,17 +60,11 @@ var AgentModule = fx.Module("agent",
 			loggingLevel = zap.DebugLevel
 		}
 
-		// cfg.Level governs stderr only. The store's core carries its own
-		// level, so REMOTE_LOGS_VISIBLE=* puts debug on disk while stderr
-		// stays as it was.
+		// cfg.Level governs stderr only. The store carries its own level,
+		// so REMOTE_LOGS_VISIBLE=* puts debug on disk while stderr stays as
+		// it was. A disabled store's option is a no-op.
 		cfg.Level = zap.NewAtomicLevelAt(loggingLevel)
-		var opts []zap.Option
-		if store.Enabled() {
-			opts = append(opts, zap.WrapCore(func(c zapcore.Core) zapcore.Core {
-				return zapcore.NewTee(c, store.Core())
-			}))
-		}
-		logger, err := cfg.Build(opts...)
+		logger, err := cfg.Build(store.ZapOption())
 		if err != nil {
 			panic(err)
 		}

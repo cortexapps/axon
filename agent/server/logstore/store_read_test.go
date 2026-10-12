@@ -1,6 +1,7 @@
 package logstore
 
 import (
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"testing"
@@ -12,7 +13,7 @@ import (
 )
 
 // 25 lines with ts = 1s..25s, padded so they span several segments.
-func seedPaged(t *testing.T, segmentBytes int64) *Store {
+func seedPaged(t *testing.T, segmentBytes int64) (*Store, *fakeClock) {
 	t.Helper()
 	s := openStore(t, Options{SegmentBytes: segmentBytes, MaxSizeBytes: 1 << 20})
 	clock := &fakeClock{}
@@ -22,7 +23,7 @@ func seedPaged(t *testing.T, segmentBytes int64) *Store {
 		logger.Info("entry", zap.Int("i", i))
 	}
 	require.Greater(t, len(segmentFiles(t, s.opts.Path)), 2, "seed must span segments for the walk to matter")
-	return s
+	return s, clock
 }
 
 func tsSeconds(t *testing.T, page Page) []int {
@@ -42,74 +43,106 @@ func seq(from, to int) []int {
 	return out
 }
 
-func TestRead_Paging(t *testing.T) {
-	s := seedPaged(t, 400)
+// walk pages from the newest block to the oldest and returns each page's
+// ts, newest page first.
+func walk(t *testing.T, s *Store, size int) [][]int {
+	t.Helper()
+	var pages [][]int
+	page, err := s.Read(size)
+	require.NoError(t, err)
+	for {
+		pages = append(pages, tsSeconds(t, page))
+		if page.Next == "" {
+			return pages
+		}
+		require.Len(t, page.Lines, size, "only the last page may be short")
+		page, err = s.Continue(page.Next, size)
+		require.NoError(t, err)
+	}
+}
 
-	cases := []struct {
-		name    string
-		now     int64
-		page    int
-		size    int
-		want    []int
-		hasMore bool
-	}{
-		{"page 0 is the newest block, chronological", 25, 0, 10, seq(16, 25), true},
-		{"page 1 is the next older block", 25, 1, 10, seq(6, 15), true},
-		{"last page is short with no more", 25, 2, 10, seq(1, 5), false},
-		{"page past the end is empty", 25, 3, 10, []int{}, false},
-		{"now excludes later lines", 10, 0, 10, seq(1, 10), false},
-		{"now pins mid-stream with more behind it", 12, 0, 5, seq(8, 12), true},
-		{"size 1 at the last page", 25, 24, 1, []int{1}, false},
-		{"exact fit has no more", 25, 0, 25, seq(1, 25), false},
-		{"now before first line", 0, 0, 10, []int{}, false},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			page, err := s.Read(time.Unix(c.now, 0), c.page, c.size)
-			require.NoError(t, err)
-			assert.Equal(t, c.want, tsSeconds(t, page))
-			assert.Equal(t, c.hasMore, page.HasMore)
-			assert.Equal(t, len(c.want), page.Count)
-			assert.Equal(t, c.page, page.Page)
-			assert.Equal(t, c.size, page.Size)
-			assert.Equal(t, c.now, page.Now)
-			assert.NotNil(t, page.Lines, "lines is always an array, never null")
-		})
-	}
+func TestRead_FirstPageIsTheNewestBlockChronological(t *testing.T) {
+	s, _ := seedPaged(t, 400)
+	page, err := s.Read(10)
+	require.NoError(t, err)
+	assert.Equal(t, seq(16, 25), tsSeconds(t, page))
+	assert.NotEmpty(t, page.Next, "older lines exist, so there is a continuation")
+}
+
+func TestRead_ContinueWalksBackToTheOldestLine(t *testing.T) {
+	s, _ := seedPaged(t, 400)
+	assert.Equal(t, [][]int{seq(16, 25), seq(6, 15), seq(1, 5)}, walk(t, s, 10))
+}
+
+func TestRead_ExactFitHasNoContinuation(t *testing.T) {
+	s, _ := seedPaged(t, 400)
+	page, err := s.Read(25)
+	require.NoError(t, err)
+	assert.Equal(t, seq(1, 25), tsSeconds(t, page))
+	assert.Empty(t, page.Next, "the size+1 peek must not leak a token when nothing is older")
+}
+
+func TestRead_SizeLargerThanStoreReturnsEverything(t *testing.T) {
+	s, _ := seedPaged(t, 400)
+	page, err := s.Read(1000)
+	require.NoError(t, err)
+	assert.Equal(t, seq(1, 25), tsSeconds(t, page))
+	assert.Empty(t, page.Next)
 }
 
 // Page boundaries that fall exactly on a segment boundary are the case a
 // per-segment walk gets wrong by one. Small segments and sizes hit them.
 func TestRead_PageBoundariesAcrossSegments(t *testing.T) {
-	s := seedPaged(t, 200)
-	seen := []int{}
-	for p := 0; ; p++ {
-		page, err := s.Read(time.Unix(25, 0), p, 3)
-		require.NoError(t, err)
-		seen = append(tsSeconds(t, page), seen...)
-		if !page.HasMore {
-			break
+	for _, size := range []int{1, 3, 7} {
+		s, _ := seedPaged(t, 200)
+		seen := []int{}
+		for _, p := range walk(t, s, size) {
+			seen = append(p, seen...)
 		}
-		require.Len(t, page.Lines, 3)
+		assert.Equal(t, seq(1, 25), seen, "size %d", size)
 	}
-	assert.Equal(t, seq(1, 25), seen)
 }
 
-// The cutoff is milliseconds: a line stamped inside the cutoff second is
-// included, a line stamped 1ms into the next second is not.
-func TestRead_CutoffIsInclusiveToTheMillisecond(t *testing.T) {
-	s := openStore(t, Options{})
-	clock := &fakeClock{}
-	logger := loggerFor(s, clock)
-	clock.Set(time.UnixMilli(10_999))
-	logger.Info("in")
-	clock.Set(time.UnixMilli(11_001))
-	logger.Info("out")
-
-	page, err := s.Read(time.Unix(11, 0), 0, 10)
+// The token pins the walk: lines logged after the first page was read never
+// shift the pages behind it, and a fresh first page sees them.
+func TestRead_ContinuationIsStableWhileTheAgentKeepsLogging(t *testing.T) {
+	s, clock := seedPaged(t, 400)
+	first, err := s.Read(5)
 	require.NoError(t, err)
-	require.Len(t, page.Lines, 1)
-	assert.Equal(t, "in", parseLine(t, page.Lines[0]).Msg)
+	assert.Equal(t, seq(21, 25), tsSeconds(t, first))
+
+	logger := loggerFor(s, clock)
+	for i := 26; i <= 30; i++ {
+		clock.Set(time.Unix(int64(i), 0))
+		logger.Info("entry", zap.Int("i", i))
+	}
+
+	second, err := s.Continue(first.Next, 5)
+	require.NoError(t, err)
+	assert.Equal(t, seq(16, 20), tsSeconds(t, second))
+
+	fresh, err := s.Read(5)
+	require.NoError(t, err)
+	assert.Equal(t, seq(26, 30), tsSeconds(t, fresh))
+}
+
+func TestRead_RejectsBadToken(t *testing.T) {
+	s, _ := seedPaged(t, 400)
+	enc := func(v string) string { return base64.RawURLEncoding.EncodeToString([]byte(v)) }
+	for _, tok := range []string{"", "not base64!", enc("1"), enc("1:2:3"), enc("a:b"), enc("-1:0"), enc("1:-5")} {
+		_, err := s.Continue(tok, 10)
+		assert.ErrorIs(t, err, ErrBadToken, "token %q", tok)
+	}
+}
+
+func TestRead_RejectsBadSize(t *testing.T) {
+	s, _ := seedPaged(t, 400)
+	_, err := s.Read(0)
+	assert.Error(t, err)
+	page, err := s.Read(10)
+	require.NoError(t, err)
+	_, err = s.Continue(page.Next, -1)
+	assert.Error(t, err)
 }
 
 func TestRead_SkipsPartialTrailingLineUntilTerminated(t *testing.T) {
@@ -123,7 +156,7 @@ func TestRead_SkipsPartialTrailingLineUntilTerminated(t *testing.T) {
 	_, err = f.WriteString(`{"ts":99,"msg":"partial"`)
 	require.NoError(t, err)
 
-	page, err := s.Read(time.Now(), 0, 10)
+	page, err := s.Read(10)
 	require.NoError(t, err)
 	require.Len(t, page.Lines, 1)
 
@@ -131,7 +164,7 @@ func TestRead_SkipsPartialTrailingLineUntilTerminated(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, f.Close())
 
-	page, err = s.Read(time.Now(), 0, 10)
+	page, err = s.Read(10)
 	require.NoError(t, err)
 	require.Len(t, page.Lines, 2)
 	assert.Equal(t, "partial", parseLine(t, page.Lines[1]).Msg)
@@ -148,42 +181,53 @@ func TestRead_SkipsLinesThatAreNotJSON(t *testing.T) {
 	require.NoError(t, f.Close())
 	loggerFor(s, nil).Info("good too")
 
-	page, err := s.Read(time.Now(), 0, 10)
+	page, err := s.Read(10)
 	require.NoError(t, err)
 	require.Len(t, page.Lines, 2)
+	assert.Equal(t, "good", parseLine(t, page.Lines[0]).Msg)
+	assert.Equal(t, "good too", parseLine(t, page.Lines[1]).Msg)
 }
 
 // Pruning can remove a segment between the reader listing the directory and
 // opening it. Only the oldest segments are ever pruned, so skipping is the
 // right answer, not an error.
 func TestRead_ToleratesSegmentRemovedMidWalk(t *testing.T) {
-	s := seedPaged(t, 200)
+	s, _ := seedPaged(t, 200)
 	files := segmentFiles(t, s.opts.Path)
 	require.NoError(t, os.Remove(files[0]))
 	require.NoError(t, os.Remove(files[1]))
 
-	page, err := s.Read(time.Unix(25, 0), 0, 25)
+	page, err := s.Read(25)
 	require.NoError(t, err)
 	assert.Less(t, len(page.Lines), 25)
 	assert.Equal(t, 25, tsSeconds(t, page)[len(page.Lines)-1])
 }
 
-func TestRead_EmptyStoreReturnsEmptyPage(t *testing.T) {
-	s := openStore(t, Options{})
-	page, err := s.Read(time.Now(), 0, 10)
+// A token handed out before pruning may point past what is left. The walk
+// ends cleanly on what remains rather than failing.
+func TestRead_ContinueAfterPruningEndsCleanly(t *testing.T) {
+	s, _ := seedPaged(t, 200)
+	page, err := s.Read(3)
 	require.NoError(t, err)
-	assert.Equal(t, []string{}, page.Lines)
-	assert.False(t, page.HasMore)
+	require.NotEmpty(t, page.Next)
+
+	files := segmentFiles(t, s.opts.Path)
+	for _, f := range files[:len(files)-1] {
+		require.NoError(t, os.Remove(f))
+	}
+
+	for page.Next != "" {
+		page, err = s.Continue(page.Next, 3)
+		require.NoError(t, err)
+	}
 }
 
-func TestRead_RejectsBadArguments(t *testing.T) {
+func TestRead_EmptyStoreReturnsEmptyPage(t *testing.T) {
 	s := openStore(t, Options{})
-	_, err := s.Read(time.Now(), -1, 10)
-	assert.Error(t, err)
-	_, err = s.Read(time.Now(), 0, 0)
-	assert.Error(t, err)
-	_, err = s.Read(time.Now(), 1<<40, 1<<40)
-	assert.Error(t, err, "page*size overflow")
+	page, err := s.Read(10)
+	require.NoError(t, err)
+	assert.Equal(t, []string{}, page.Lines)
+	assert.Empty(t, page.Next)
 }
 
 func TestListSegments_IgnoresForeignFiles(t *testing.T) {

@@ -59,7 +59,8 @@ func loggerFor(s *Store, clock zapcore.Clock) *zap.Logger {
 	if clock != nil {
 		opts = append(opts, zap.WithClock(clock))
 	}
-	return zap.New(s.Core(), opts...)
+	opts = append(opts, s.ZapOption())
+	return zap.New(zapcore.NewNopCore(), opts...)
 }
 
 func segmentFiles(t *testing.T, dir string) []string {
@@ -190,7 +191,7 @@ func TestLevel_StarCapturesDebugWhileTeedCoreStaysAtInfo(t *testing.T) {
 
 	var stderrLines countingSyncer
 	stderrCore := zapcore.NewCore(zapcore.NewJSONEncoder(zap.NewProductionEncoderConfig()), &stderrLines, zapcore.InfoLevel)
-	logger := zap.New(zapcore.NewTee(stderrCore, s.Core()))
+	logger := zap.New(stderrCore, s.ZapOption())
 
 	logger.Debug("debug only on disk")
 	logger.Info("both")
@@ -337,14 +338,17 @@ func TestDisabled_IsInertAndNilSafe(t *testing.T) {
 	assert.Equal(t, 6, n)
 	assert.NoError(t, err)
 
-	_, err = d.Read(time.Now(), 0, 10)
+	_, err = d.Read(10)
+	assert.ErrorIs(t, err, ErrDisabled)
+	_, err = d.Continue("anything", 10)
 	assert.ErrorIs(t, err, ErrDisabled)
 
-	// Logging through a disabled store's core must touch nothing.
-	dir := t.TempDir()
-	zap.New(d.Core()).Info("x")
-	entries, _ := os.ReadDir(dir)
-	assert.Empty(t, entries)
+	// A disabled or nil store's option leaves the logger as it was, so the
+	// caller can add it without checking first.
+	var stderrLines countingSyncer
+	stderrCore := zapcore.NewCore(zapcore.NewJSONEncoder(zap.NewProductionEncoderConfig()), &stderrLines, zapcore.InfoLevel)
+	zap.New(stderrCore, d.ZapOption(), nilStore.ZapOption()).Info("x")
+	assert.Equal(t, 1, stderrLines.n)
 }
 
 func TestNewFromConfig_OffWhenNotConfigured(t *testing.T) {
@@ -416,7 +420,7 @@ func TestConcurrentWritesAndReads(t *testing.T) {
 	readErr := make(chan error, 1)
 	go func() {
 		for i := 0; i < 50; i++ {
-			page, err := s.Read(time.Now().Add(time.Minute), 0, 50)
+			page, err := s.Read(50)
 			if err != nil {
 				readErr <- err
 				return

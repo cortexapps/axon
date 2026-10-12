@@ -80,25 +80,17 @@ scenario_axon_endpoints() {
 # pinned now has to make page 1 disjoint from page 0.
 scenario_remote_logs() {
     echo "Checking remote logs paging..."
-    local p0 p1 now count has_more sorted
+    local p0 p1 next count sorted
     p0=$(curlw "$DISPATCH_URL/__axon/logs?size=3")
 
     count=$(echo "$p0" | jq -r '.lines | length')
-    if [ "$count" -lt 1 ] 2>/dev/null; then
-        scenario_fail "Expected at least one captured log line, got '$count'" "=== Page 0: $p0 ==="
-    elif [ -z "$count" ]; then
-        scenario_fail "Expected a lines array" "=== Page 0: $p0 ==="
+    if [ "$count" != "3" ]; then
+        scenario_fail "Expected a full first page of 3 captured log lines, got '$count'" "=== Page 0: $p0 ==="
     fi
-    if [ "$(echo "$p0" | jq -r '.page')" != "0" ] || [ "$(echo "$p0" | jq -r '.size')" != "3" ]; then
-        scenario_fail "Expected page 0 of size 3 echoed back" "=== Page 0: $p0 ==="
-    fi
-    has_more=$(echo "$p0" | jq -r '.has_more | type')
-    if [ "$has_more" != "boolean" ]; then
-        scenario_fail "Expected has_more to be a boolean" "=== Page 0: $p0 ==="
-    fi
-    now=$(echo "$p0" | jq -r '.now')
-    if ! [ "$now" -gt 0 ] 2>/dev/null; then
-        scenario_fail "Expected a numeric now, got '$now'" "=== Page 0: $p0 ==="
+    # Startup alone logs more than three lines, so there must be a continuation.
+    next=$(echo "$p0" | jq -r '.next // empty')
+    if [ -z "$next" ]; then
+        scenario_fail "Expected a continuation token on the first page" "=== Page 0: $p0 ==="
     fi
 
     # Each line is a JSON document and the page is chronological.
@@ -107,9 +99,9 @@ scenario_remote_logs() {
         scenario_fail "Expected lines in chronological order" "=== Page 0: $p0 ==="
     fi
 
-    p1=$(curlw "$DISPATCH_URL/__axon/logs?size=3&page=1&now=$now")
-    if [ "$(echo "$p1" | jq -r '.now')" != "$now" ] || [ "$(echo "$p1" | jq -r '.page')" != "1" ]; then
-        scenario_fail "Expected page 1 pinned at now=$now" "=== Page 1: $p1 ==="
+    p1=$(curlw "$DISPATCH_URL/__axon/logs?size=3&next=$next")
+    if [ "$(echo "$p1" | jq -r '.lines | length')" != "3" ]; then
+        scenario_fail "Expected a full second page via the continuation token" "=== Page 1: $p1 ==="
     fi
 
     local overlap
@@ -118,17 +110,15 @@ scenario_remote_logs() {
         scenario_fail "Pages 0 and 1 overlap" "=== Overlap: $overlap ==="
     fi
 
-    # Page 1 is older than page 0 when it has anything in it.
-    if [ "$(echo "$p1" | jq -r '.lines | length')" -gt 0 ]; then
-        local p0_first p1_last
-        p0_first=$(echo "$p0" | jq -r '.lines[0] | fromjson | .ts')
-        p1_last=$(echo "$p1" | jq -r '.lines[-1] | fromjson | .ts')
-        if [ "$(jq -n --argjson a "$p1_last" --argjson b "$p0_first" '$a <= $b')" != "true" ]; then
-            scenario_fail "Expected page 1 to be older than page 0" "p0 first ts: $p0_first" "p1 last ts: $p1_last"
-        fi
+    # The second page is older than the first.
+    local p0_first p1_last
+    p0_first=$(echo "$p0" | jq -r '.lines[0] | fromjson | .ts')
+    p1_last=$(echo "$p1" | jq -r '.lines[-1] | fromjson | .ts')
+    if [ "$(jq -n --argjson a "$p1_last" --argjson b "$p0_first" '$a <= $b')" != "true" ]; then
+        scenario_fail "Expected the second page to be older than the first" "p0 first ts: $p0_first" "p1 last ts: $p1_last"
     fi
 
-    echo "Success: remote logs page back through the relay (page 0 had $count lines, now=$now)"
+    echo "Success: remote logs page back through the relay with a continuation token"
 }
 
 # A plain relayed GET: python-server serves /tmp, so a file written here must

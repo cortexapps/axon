@@ -1,8 +1,8 @@
 package http
 
 import (
+	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"io"
 	nethttp "net/http"
 	"net/http/httptest"
@@ -70,61 +70,78 @@ func TestLogs_RejectsNonGet(t *testing.T) {
 
 func TestLogs_RejectsBadQuery(t *testing.T) {
 	srv := logsServer(t, openTestStore(t))
-	for _, q := range []string{"?now=abc", "?now=-1", "?page=-1", "?page=x", "?size=0", "?size=1001", "?size=big"} {
+	badToken := base64.RawURLEncoding.EncodeToString([]byte("1:2:3"))
+	for _, q := range []string{"?size=0", "?size=10001", "?size=big", "?next=garbage", "?next=" + badToken} {
 		status, body, _ := getLogs(t, srv, q)
 		assert.Equal(t, nethttp.StatusBadRequest, status, q)
 		assert.NotEmpty(t, body["error"], q)
 	}
 }
 
-func TestLogs_DefaultsAreEchoed(t *testing.T) {
+func TestLogs_EmptyStoreIsAnEmptyPage(t *testing.T) {
 	srv := logsServer(t, openTestStore(t))
-	before := time.Now().Unix()
 	status, body, headers := getLogs(t, srv, "")
 	require.Equal(t, nethttp.StatusOK, status)
 	assert.Equal(t, "application/json", headers.Get("Content-Type"))
-	assert.Equal(t, float64(0), body["page"])
-	assert.Equal(t, float64(logstore.DefaultPageSize), body["size"])
-	assert.InDelta(t, before, body["now"], 2, "now defaults to the server clock so the client can pin it")
 	assert.Equal(t, []any{}, body["lines"], "lines is an array even when empty")
-	assert.Equal(t, false, body["has_more"])
+	assert.NotContains(t, body, "next", "no continuation when nothing is older")
 }
 
-func TestLogs_PagesBackwardsFromAPinnedNow(t *testing.T) {
+func TestLogs_DefaultPageSizeIs1000(t *testing.T) {
+	store := openTestStore(t)
+	logger := zap.New(zapcore.NewNopCore(), store.ZapOption())
+	for i := 1; i <= 1001; i++ {
+		logger.Info("entry", zap.Int("i", i))
+	}
+	srv := logsServer(t, store)
+
+	status, body, _ := getLogs(t, srv, "")
+	require.Equal(t, nethttp.StatusOK, status)
+	assert.Len(t, body["lines"], 1000)
+	assert.NotEmpty(t, body["next"])
+	assert.Equal(t, 2, entryIndexes(t, body)[0])
+
+	status, body, _ = getLogs(t, srv, "?size=10000")
+	require.Equal(t, nethttp.StatusOK, status)
+	assert.Len(t, body["lines"], 1001)
+	assert.NotContains(t, body, "next")
+}
+
+func TestLogs_PagesBackwardsWithContinuationToken(t *testing.T) {
 	store := openTestStore(t)
 	clock := &stepClock{now: time.Unix(1_000, 0)}
-	logger := zap.New(store.Core(), zap.WithClock(clock))
+	logger := zap.New(zapcore.NewNopCore(), zap.WithClock(clock), store.ZapOption())
 	for i := 1; i <= 7; i++ {
 		clock.now = time.Unix(1_000+int64(i), 0)
 		logger.Info("entry", zap.Int("i", i))
 	}
 	srv := logsServer(t, store)
 
-	status, p0, _ := getLogs(t, srv, "?size=3&now=1007")
+	status, p0, _ := getLogs(t, srv, "?size=3")
 	require.Equal(t, nethttp.StatusOK, status)
-	assert.Equal(t, float64(1007), p0["now"])
-	assert.Equal(t, true, p0["has_more"])
 	assert.Equal(t, []int{5, 6, 7}, entryIndexes(t, p0))
+	next, _ := p0["next"].(string)
+	require.NotEmpty(t, next)
 
-	now := int64(p0["now"].(float64))
-	status, p1, _ := getLogs(t, srv, fmt.Sprintf("?size=3&page=1&now=%d", now))
+	status, p1, _ := getLogs(t, srv, "?size=3&next="+next)
 	require.Equal(t, nethttp.StatusOK, status)
-	assert.Equal(t, float64(1), p1["page"])
 	assert.Equal(t, []int{2, 3, 4}, entryIndexes(t, p1))
+	next, _ = p1["next"].(string)
+	require.NotEmpty(t, next)
 
-	status, p2, _ := getLogs(t, srv, fmt.Sprintf("?size=3&page=2&now=%d", now))
+	status, p2, _ := getLogs(t, srv, "?size=3&next="+next)
 	require.Equal(t, nethttp.StatusOK, status)
 	assert.Equal(t, []int{1}, entryIndexes(t, p2))
-	assert.Equal(t, false, p2["has_more"])
+	assert.NotContains(t, p2, "next")
 }
 
 // Each line is handed back as the JSON document the store holds, as a string.
 func TestLogs_LinesAreStructuredJSONStrings(t *testing.T) {
 	store := openTestStore(t)
-	zap.New(store.Core()).Named("axon").Warn("something odd", zap.String("k", "v"))
+	zap.New(zapcore.NewNopCore(), store.ZapOption()).Named("axon").Warn("something odd", zap.String("k", "v"))
 	srv := logsServer(t, store)
 
-	status, body, _ := getLogs(t, srv, "?now="+fmt.Sprint(time.Now().Unix()+1))
+	status, body, _ := getLogs(t, srv, "")
 	require.Equal(t, nethttp.StatusOK, status)
 	lines := body["lines"].([]any)
 	require.Len(t, lines, 1)

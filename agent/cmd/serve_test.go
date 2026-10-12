@@ -82,9 +82,7 @@ func TestBuildServeStackRemoteLogs(t *testing.T) {
 	app := fx.New(buildServeStack(&cobra.Command{}, config))
 	require.NoError(t, app.Start(context.Background()))
 
-	// now is one second ahead so the lines written during startup, in the
-	// current second, fall inside the cutoff.
-	url := fmt.Sprintf("http://localhost:%d/__axon/logs?size=5&now=%d", config.HttpServerPort, time.Now().Unix()+1)
+	url := fmt.Sprintf("http://localhost:%d/__axon/logs?size=5", config.HttpServerPort)
 	resp, err := http.Get(url)
 	require.NoError(t, err)
 	body, err := io.ReadAll(resp.Body)
@@ -93,13 +91,11 @@ func TestBuildServeStackRemoteLogs(t *testing.T) {
 	require.Equal(t, http.StatusOK, resp.StatusCode, string(body))
 
 	var page struct {
-		Count   int      `json:"count"`
-		Lines   []string `json:"lines"`
-		HasMore bool     `json:"has_more"`
+		Lines []string `json:"lines"`
+		Next  string   `json:"next"`
 	}
 	require.NoError(t, json.Unmarshal(body, &page), string(body))
-	require.Greater(t, page.Count, 0, "fx logs its own startup, so the store cannot be empty")
-	require.Len(t, page.Lines, page.Count)
+	require.NotEmpty(t, page.Lines, "fx logs its own startup, so the store cannot be empty")
 	for _, line := range page.Lines {
 		var entry map[string]any
 		require.NoError(t, json.Unmarshal([]byte(line), &entry), "not a JSON line: %s", line)

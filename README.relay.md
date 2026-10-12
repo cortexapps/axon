@@ -295,7 +295,7 @@ relay:
     REMOTE_LOGS_VISIBLE: "info"
 ```
 
-Only the agent's own log output is captured. In snyk-broker mode the broker's own output is not. Whether the feature is on is reported by `/__axon/info` as `remote_logs`, and Cortex reads the captured logs through `/__axon/logs`. The captured lines are the same structured JSON the agent writes in production mode, regardless of `ENV`.
+Only the agent's own log output is captured. In snyk-broker mode the broker's own output is not. Whether the feature is on is reported by `/__axon/info` as `remote_logs`, and Cortex reads the captured logs through `/__axon/logs`, newest first, following the `next` continuation token from each page to the older one. The captured lines are the same structured JSON the agent writes in production mode, regardless of `ENV`.
 
 ## Understanding the Agent configuration
 

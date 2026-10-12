@@ -23,14 +23,15 @@ import (
 	"time"
 
 	"github.com/cortexapps/axon/config"
+	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
 
 const (
 	// DefaultPageSize is what a request gets when it names no size.
-	DefaultPageSize = 100
+	DefaultPageSize = 1000
 	// MaxPageSize caps a single page so a request cannot ask for the whole store.
-	MaxPageSize = 1000
+	MaxPageSize = 10000
 
 	minSegmentBytes = int64(1 << 20)
 	maxSegmentBytes = int64(8 << 20)
@@ -264,13 +265,24 @@ func (s *Store) Err() error {
 	return s.initErr
 }
 
-// Core is the zap core to tee next to the stderr core. It carries its own
-// JSON encoder: the on-disk format must not follow whatever ENV picks for
-// stderr, because the reader depends on these key names.
-func (s *Store) Core() zapcore.Core {
-	if !s.Enabled() {
-		return zapcore.NewNopCore()
-	}
+// ZapOption is what the agent adds to its logger so entries also land in
+// the store. It tees the store's core next to whatever core the logger
+// already has, so the logger's own level and encoder keep governing stderr.
+// For a disabled or nil store it leaves the logger untouched, so the caller
+// adds it unconditionally.
+func (s *Store) ZapOption() zap.Option {
+	return zap.WrapCore(func(c zapcore.Core) zapcore.Core {
+		if !s.Enabled() {
+			return c
+		}
+		return zapcore.NewTee(c, s.core())
+	})
+}
+
+// core carries its own JSON encoder: the on-disk format must not follow
+// whatever ENV picks for stderr, because the reader depends on these key
+// names.
+func (s *Store) core() zapcore.Core {
 	return zapcore.NewCore(fileEncoder(), s, s.opts.Level)
 }
 
