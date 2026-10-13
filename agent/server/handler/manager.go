@@ -8,6 +8,7 @@ import (
 	"time"
 
 	pb "github.com/cortexapps/axon/.generated/proto/github.com/cortexapps/axon"
+	"github.com/cortexapps/axon/config"
 	"github.com/cortexapps/axon/server/cron"
 	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/zap"
@@ -116,6 +117,16 @@ func NewHandlerManager(logger *zap.Logger, cron cron.Cron, metrics *prometheus.R
 		metrics.MustRegister(mgr.timeoutCounter)
 	}
 	return mgr
+}
+
+// NewHandlerManagerFromConfig is the fx constructor: it carries the
+// liveness policy from the agent config, which fx cannot pass through the
+// variadic options of NewHandlerManager.
+func NewHandlerManagerFromConfig(cfg config.AgentConfig, logger *zap.Logger, cron cron.Cron, metrics *prometheus.Registry) Manager {
+	return NewHandlerManager(logger, cron, metrics, WithLivenessPolicy(LivenessPolicy{
+		TimeoutThreshold: cfg.LivenessTimeoutThreshold,
+		MinFailureAge:    cfg.LivenessMinFailureAge,
+	}))
 }
 
 func (s *handlerManager) Liveness() *Liveness {

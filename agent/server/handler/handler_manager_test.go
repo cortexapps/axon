@@ -9,6 +9,7 @@ import (
 	"time"
 
 	pb "github.com/cortexapps/axon/.generated/proto/github.com/cortexapps/axon"
+	"github.com/cortexapps/axon/config"
 	"github.com/cortexapps/axon/server/cron"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
@@ -342,4 +343,10 @@ func TestTriggerDoesNotCountReportedErrors(t *testing.T) {
 	require.ErrorIs(t, mgr.Trigger(rejected), ErrDispatchQueueFull)
 	<-rejected.Done()
 	require.Equal(t, 0, mgr.Liveness().Snapshot().ConsecutiveTimeouts)
+}
+
+func TestNewHandlerManagerFromConfig_AppliesLivenessPolicy(t *testing.T) {
+	cfg := config.AgentConfig{LivenessTimeoutThreshold: 7, LivenessMinFailureAge: time.Minute}
+	mgr := NewHandlerManagerFromConfig(cfg, zap.NewNop(), cron.New(), nil)
+	require.Equal(t, LivenessPolicy{TimeoutThreshold: 7, MinFailureAge: time.Minute}, mgr.Liveness().Policy())
 }

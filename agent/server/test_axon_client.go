@@ -21,6 +21,9 @@ type clientResult struct {
 	done   bool
 	err    error
 	result string
+	// skipReport leaves the invocation unreported, like an SDK whose
+	// worker never comes back.
+	skipReport bool
 }
 
 type testAxonClient struct {
@@ -54,6 +57,26 @@ func (c *testAxonClient) RegisterHandler(ctx context.Context,
 	req := &pb.RegisterHandlerRequest{
 		DispatchId:  c.dispatchId,
 		HandlerName: name,
+		Options:     options,
+	}
+	resp, err := c.client.RegisterHandler(ctx, req)
+	if err != nil {
+		return "", err
+	}
+	return resp.Id, nil
+}
+
+// RegisterHandlerWithTimeout registers a handler whose invocations the agent
+// times out after timeout; RegisterHandler leaves it at the 5 minute default.
+func (c *testAxonClient) RegisterHandlerWithTimeout(ctx context.Context,
+	name string,
+	timeout time.Duration,
+	options ...*pb.HandlerOption,
+) (string, error) {
+	req := &pb.RegisterHandlerRequest{
+		DispatchId:  c.dispatchId,
+		HandlerName: name,
+		TimeoutMs:   int32(timeout.Milliseconds()),
 		Options:     options,
 	}
 	resp, err := c.client.RegisterHandler(ctx, req)
@@ -103,7 +126,7 @@ func (c *testAxonClient) Run(ctx context.Context) error {
 
 		end := time.Now()
 		invoke := m.GetInvoke()
-		if invoke != nil {
+		if invoke != nil && !result.skipReport {
 
 			report := &pb.ReportInvocationRequest{
 				HandlerInvoke:        invoke,
