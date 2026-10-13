@@ -2,12 +2,14 @@ package snykbroker
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/cortexapps/axon/common"
 	"github.com/cortexapps/axon/config"
@@ -17,8 +19,14 @@ import (
 // Where the integration uses the Cortex API Key plus the integration+alias combo to
 // receive a token and a server URI to be used for snyk-broker
 type Registration interface {
-	Register(integration common.Integration, alias string) (*RegistrationInfoResponse, error)
+	Register(ctx context.Context, integration common.Integration, alias string) (*RegistrationInfoResponse, error)
 }
+
+// registrationTimeout bounds a Register call whose caller set no deadline.
+// A hung registration must not hold the auto-register poll, the broker
+// start loop or a tunnel worker forever. A package variable so tests can
+// shorten it.
+var registrationTimeout = 30 * time.Second
 
 var ErrUnauthorized = os.ErrPermission
 
@@ -30,6 +38,12 @@ type RegistrationError struct {
 
 func (e *RegistrationError) Error() string {
 	return fmt.Sprintf("registration error: %s (%v)", e.Message, e.error)
+}
+
+// Unwrap exposes the underlying error so callers can match on causes such
+// as context.DeadlineExceeded.
+func (e *RegistrationError) Unwrap() error {
+	return e.error
 }
 
 type registration struct {
@@ -52,7 +66,13 @@ func (r *registration) SetProxyPort(port int) {
 	r.proxyPort = port
 }
 
-func (r *registration) Register(integration common.Integration, alias string) (*RegistrationInfoResponse, error) {
+func (r *registration) Register(ctx context.Context, integration common.Integration, alias string) (*RegistrationInfoResponse, error) {
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, registrationTimeout)
+		defer cancel()
+	}
+
 	// Call the Cortex API to get
 	//
 	// Relay server URL
@@ -76,10 +96,9 @@ func (r *registration) Register(integration common.Integration, alias string) (*
 		return nil, fmt.Errorf("error marshalling request body: %v", err)
 	}
 
-	req, err := http.NewRequest("POST", target, bytes.NewBuffer(jsonBody))
+	req, err := http.NewRequestWithContext(ctx, "POST", target, bytes.NewBuffer(jsonBody))
 	if err != nil {
-		fmt.Printf("Error creating request: %v\n", err)
-		panic(err)
+		return nil, &RegistrationError{error: err, Message: "error creating relay registration request"}
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", r.config.CortexApiToken))
@@ -94,6 +113,12 @@ func (r *registration) Register(integration common.Integration, alias string) (*
 
 		return nil, &RegistrationError{error: err, Message: "error making relay registration request"}
 	}
+	// The decoder can stop before the end of a chunked body. Read to EOF so
+	// the connection goes back to the pool instead of holding a slot forever.
+	defer func() {
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}()
 
 	switch resp.StatusCode {
 	case http.StatusOK:

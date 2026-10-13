@@ -3,12 +3,28 @@ package cmd
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"net"
 	gohttp "net/http"
 	"time"
 
 	"github.com/cortexapps/axon/config"
 	"github.com/cortexapps/axon/util"
 	"go.uber.org/zap"
+)
+
+const (
+	httpDialTimeout         = 30 * time.Second
+	httpTLSHandshakeTimeout = 30 * time.Second
+	// httpResponseHeaderTimeout matches the tunnel's MaxRequestTimeout and the
+	// default handler timeout, so a request the agent would wait on anyway is
+	// never cut shorter here, but nothing waits longer.
+	httpResponseHeaderTimeout = 5 * time.Minute
+	httpExpectContinueTimeout = 1 * time.Second
+	// httpMaxIdleConnsPerHost only sizes the idle pool; it never blocks.
+	// net/http's default of 2 would turn the handler path's concurrent calls
+	// into fresh handshakes.
+	httpMaxIdleConnsPerHost = 16
+	httpIdleConnTimeout     = 90 * time.Second
 )
 
 func createHttpTransport(config config.AgentConfig, logger *zap.Logger) *gohttp.Transport {
@@ -41,24 +57,27 @@ func createHttpTransport(config config.AgentConfig, logger *zap.Logger) *gohttp.
 		}
 	}
 
-	// Connection pooling matters more here than in a typical client: every
-	// tunnelled call becomes an upstream request, and they concentrate on a
-	// handful of hosts. net/http's default MaxIdleConnsPerHost of 2 would
-	// mean all but two concurrent calls open a fresh TCP+TLS connection and
-	// discard it on completion, turning throughput into handshakes.
+	// This transport is shared by the Cortex API proxy, the reflector and
+	// relay registration. It is deliberately uncapped: MaxConnsPerHost queues
+	// instead of failing, so one caller that leaks connections (registration
+	// bodies left unclosed, in one incident) would starve every other user of
+	// the same host with no error anywhere. The gRPC tunnel, whose upstream is
+	// a customer service with unknown capacity, clones this transport and
+	// applies UpstreamMaxConnsPerHost to its own copy; see
+	// grpctunnel.NewTunnelClient.
 	//
-	// MaxConnsPerHost is the ceiling that actually protects something real:
-	// the upstream is the customer's own service, whose capacity we neither
-	// control nor can discover, so the agent must not fan out without limit.
-	// It bounds concurrency rather than failing — requests over the line
-	// wait for a connection.
+	// Every phase is bounded so a hung upstream becomes an error instead of a
+	// connection held for the life of the process. Per-request contexts are
+	// the primary bound; these are the backstop for any caller that forgets.
 	return &gohttp.Transport{
-		Proxy:               gohttp.ProxyFromEnvironment,
-		TLSClientConfig:     tlsConfig,
-		MaxIdleConns:        config.UpstreamMaxConnsPerHost * 2,
-		MaxIdleConnsPerHost: config.UpstreamMaxConnsPerHost,
-		MaxConnsPerHost:     config.UpstreamMaxConnsPerHost,
-		IdleConnTimeout:     90 * time.Second,
+		Proxy:                 gohttp.ProxyFromEnvironment,
+		TLSClientConfig:       tlsConfig,
+		DialContext:           (&net.Dialer{Timeout: httpDialTimeout, KeepAlive: 30 * time.Second}).DialContext,
+		TLSHandshakeTimeout:   httpTLSHandshakeTimeout,
+		ResponseHeaderTimeout: httpResponseHeaderTimeout,
+		ExpectContinueTimeout: httpExpectContinueTimeout,
+		MaxIdleConnsPerHost:   httpMaxIdleConnsPerHost,
+		IdleConnTimeout:       httpIdleConnTimeout,
 	}
 }
 

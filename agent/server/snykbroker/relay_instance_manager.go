@@ -199,32 +199,45 @@ func (r *relayInstanceManager) getSnykBrokerPort() int {
 	return r.config.SnykBrokerPort
 }
 
+// systemCheckTimeout bounds the proxied call to the broker's /systemcheck.
+// A package variable so tests can shorten it.
+var systemCheckTimeout = 10 * time.Second
+
 func (r *relayInstanceManager) handleSystemCheck(w http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
 
-	resp, err := http.Get(fmt.Sprintf("http://localhost:%d/systemcheck", r.getSnykBrokerPort()))
-	if err != nil {
-		r.logger.Error("Unable to get system check", zap.Error(err))
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte("Unable to get system check"))
-		return
-	}
-	defer resp.Body.Close()
-	for k, v := range resp.Header {
-		w.Header().Set(k, strings.Join(v, ","))
-	}
-	w.WriteHeader(resp.StatusCode)
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		r.logger.Error("Unable to read system check response", zap.Error(err))
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-	w.Write(body)
+	ctx, cancel := context.WithTimeout(req.Context(), systemCheckTimeout)
+	defer cancel()
 
+	upstream, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		fmt.Sprintf("http://localhost:%d/systemcheck", r.getSnykBrokerPort()), nil)
+	if err == nil {
+		var resp *http.Response
+		resp, err = http.DefaultClient.Do(upstream)
+		if err == nil {
+			defer resp.Body.Close()
+			// Read before writing any header, so a body that dies mid-way is
+			// one 500 rather than a 200 header followed by a truncated body.
+			body, readErr := io.ReadAll(resp.Body)
+			if readErr != nil {
+				r.logger.Error("Unable to read system check response", zap.Error(readErr))
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			for k, v := range resp.Header {
+				w.Header().Set(k, strings.Join(v, ","))
+			}
+			w.WriteHeader(resp.StatusCode)
+			w.Write(body)
+			return
+		}
+	}
+	r.logger.Error("Unable to get system check", zap.Error(err))
+	w.WriteHeader(http.StatusInternalServerError)
+	w.Write([]byte("Unable to get system check"))
 }
 
 // requestRestart sends a restart request for the given generation.
@@ -450,7 +463,7 @@ func (r *relayInstanceManager) getUrlAndTokenCore() (string, string, error) {
 		return "", "", errSkipBroker
 	}
 
-	reg, err := r.registration.Register(r.integrationInfo.Integration, r.integrationInfo.Alias)
+	reg, err := r.registration.Register(context.Background(), r.integrationInfo.Integration, r.integrationInfo.Alias)
 	r.emitOperationCounter("register", err == nil)
 	if err != nil {
 		return "", "", err

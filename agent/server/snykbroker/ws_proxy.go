@@ -186,7 +186,7 @@ func (wp *WebSocketProxy) dialThroughProxy(proxyURL *url.URL, targetAddr string,
 			zap.String("serverName", tlsConfig.ServerName))
 
 		tlsConn := tls.Client(proxyConn, tlsConfig)
-		if err := tlsConn.Handshake(); err != nil {
+		if err := tlsConn.HandshakeContext(ctx); err != nil {
 			tlsConn.Close()
 			return nil, fmt.Errorf("TLS handshake failed: %w", err)
 		}

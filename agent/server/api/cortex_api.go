@@ -50,6 +50,12 @@ func (s *cortexApiServer) Call(ctx context.Context, req *pb.CallRequest) (*pb.Ca
 	if err != nil {
 		return nil, fmt.Errorf("failed to call cortex api: %w", err)
 	}
+	// Drain and close on every path so the connection returns to the pool;
+	// an unclosed body holds its connection for the life of the process.
+	defer func() {
+		io.Copy(io.Discard, httpResponse.Body)
+		httpResponse.Body.Close()
+	}()
 
 	headers := make(map[string]string)
 	for k, v := range httpResponse.Header {

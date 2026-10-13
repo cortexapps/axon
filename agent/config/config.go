@@ -108,13 +108,17 @@ type AgentConfig struct {
 	// is whatever the agent can actually serve rather than a number anyone
 	// has to pick.
 	TunnelConns int
-	// UpstreamMaxConnsPerHost bounds concurrent connections the agent opens
-	// to any single upstream host, and sets the idle-connection pool size to
+	// UpstreamMaxConnsPerHost bounds concurrent connections the gRPC tunnel
+	// opens to any single upstream host, and sets its idle-connection pool to
 	// match so concurrent calls reuse connections instead of handshaking.
 	//
-	// Unlike the tunnel, this bounds something we do not control: the
-	// upstream is the customer's own service, whose capacity we can neither
-	// discover nor safely exceed.
+	// Tunnel only. The shared transport used for Cortex API calls,
+	// registration and the reflector is deliberately uncapped, because a cap
+	// queues rather than fails and would hide a connection leak; see
+	// cmd/http_client.go. The tunnel clones that transport and applies this
+	// cap to its own copy (grpctunnel.NewTunnelClient), since its upstream is
+	// the customer's own service, whose capacity we can neither discover nor
+	// safely exceed.
 	UpstreamMaxConnsPerHost int
 	// MaxInflightRequests caps concurrent in-flight requests dispatched into the
 	// agent across all streams. Requests over the cap queue until capacity

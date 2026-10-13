@@ -288,6 +288,48 @@ func TestWebSocketProxyDialDirect(t *testing.T) {
 	})
 }
 
+// newConnectProxy is a minimal HTTP CONNECT proxy that tunnels bytes to
+// whatever host the client asked for.
+func newConnectProxy(t *testing.T) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "CONNECT" {
+			http.Error(w, "Expected CONNECT", http.StatusMethodNotAllowed)
+			return
+		}
+
+		targetConn, err := net.Dial("tcp", r.Host)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+
+		hijacker, ok := w.(http.Hijacker)
+		if !ok {
+			targetConn.Close()
+			http.Error(w, "Hijacking not supported", http.StatusInternalServerError)
+			return
+		}
+
+		clientConn, _, err := hijacker.Hijack()
+		if err != nil {
+			targetConn.Close()
+			return
+		}
+
+		clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
+
+		go func() {
+			io.Copy(targetConn, clientConn)
+			targetConn.Close()
+		}()
+		go func() {
+			io.Copy(clientConn, targetConn)
+			clientConn.Close()
+		}()
+	}))
+}
+
 func TestWebSocketProxyDialThroughProxy(t *testing.T) {
 	logger := newTestLogger(t)
 
@@ -307,43 +349,7 @@ func TestWebSocketProxyDialThroughProxy(t *testing.T) {
 			}
 		}()
 
-		// Create HTTP CONNECT proxy
-		proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Method != "CONNECT" {
-				http.Error(w, "Expected CONNECT", http.StatusMethodNotAllowed)
-				return
-			}
-
-			targetConn, err := net.Dial("tcp", r.Host)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusBadGateway)
-				return
-			}
-
-			hijacker, ok := w.(http.Hijacker)
-			if !ok {
-				targetConn.Close()
-				http.Error(w, "Hijacking not supported", http.StatusInternalServerError)
-				return
-			}
-
-			clientConn, _, err := hijacker.Hijack()
-			if err != nil {
-				targetConn.Close()
-				return
-			}
-
-			clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
-
-			go func() {
-				io.Copy(targetConn, clientConn)
-				targetConn.Close()
-			}()
-			go func() {
-				io.Copy(clientConn, targetConn)
-				clientConn.Close()
-			}()
-		}))
+		proxyServer := newConnectProxy(t)
 		defer proxyServer.Close()
 
 		proxyURL, _ := url.Parse(proxyServer.URL)
@@ -361,6 +367,41 @@ func TestWebSocketProxyDialThroughProxy(t *testing.T) {
 
 		time.Sleep(100 * time.Millisecond)
 		assert.True(t, targetConnected.Load(), "should have connected to target through proxy")
+	})
+
+	t.Run("TLS handshake times out", func(t *testing.T) {
+		// A target that accepts the tunnelled connection and never answers
+		// the ClientHello. Without a deadline on the handshake, the dial
+		// would block forever.
+		targetListener, err := net.Listen("tcp", "127.0.0.1:0")
+		require.NoError(t, err)
+		defer targetListener.Close()
+		go func() {
+			for {
+				conn, err := targetListener.Accept()
+				if err != nil {
+					return
+				}
+				defer conn.Close()
+			}
+		}()
+
+		proxyServer := newConnectProxy(t)
+		defer proxyServer.Close()
+
+		proxyURL, _ := url.Parse(proxyServer.URL)
+		wsProxy := NewWebSocketProxy(logger, nil)
+		wsProxy.DialTimeout = 300 * time.Millisecond
+		wsProxy.HandshakeTimeout = 300 * time.Millisecond
+
+		start := time.Now()
+		conn, err := wsProxy.dialThroughProxy(proxyURL, targetListener.Addr().String(),
+			&tls.Config{ServerName: "target", InsecureSkipVerify: true})
+
+		require.Error(t, err)
+		assert.Nil(t, conn)
+		assert.Contains(t, err.Error(), "TLS handshake failed")
+		assert.Less(t, time.Since(start), 2*time.Second)
 	})
 
 	t.Run("proxy rejects CONNECT", func(t *testing.T) {

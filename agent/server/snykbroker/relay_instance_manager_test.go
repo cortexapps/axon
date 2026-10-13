@@ -323,6 +323,60 @@ func TestSystemCheck(t *testing.T) {
 	require.Equal(t, jsonPayload, w.Body.String())
 }
 
+// A broker that never answers /systemcheck must not hold the agent's HTTP
+// handler open indefinitely.
+func TestSystemCheck_UpstreamTimeout(t *testing.T) {
+	previous := systemCheckTimeout
+	systemCheckTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { systemCheckTimeout = previous })
+
+	release := make(chan struct{})
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release
+	}))
+	defer mockServer.Close()
+	defer close(release)
+
+	mgr := &relayInstanceManager{
+		config: config.AgentConfig{SnykBrokerPort: mockServer.Listener.Addr().(*net.TCPAddr).Port},
+		logger: zap.NewNop(),
+	}
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/__axon/broker/systemcheck", nil)
+	router := mux.NewRouter()
+	mgr.RegisterRoutes(router)
+
+	start := time.Now()
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusInternalServerError, w.Code)
+	require.Equal(t, "Unable to get system check", w.Body.String())
+	require.Less(t, time.Since(start), 2*time.Second)
+}
+
+// A broker response that dies mid-body is reported as a single 500, not a
+// 200 header followed by a truncated body.
+func TestSystemCheck_ReadErrorIsSingle500(t *testing.T) {
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "100")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("short"))
+	}))
+	defer mockServer.Close()
+
+	mgr := &relayInstanceManager{
+		config: config.AgentConfig{SnykBrokerPort: mockServer.Listener.Addr().(*net.TCPAddr).Port},
+		logger: zap.NewNop(),
+	}
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/__axon/broker/systemcheck", nil)
+	router := mux.NewRouter()
+	mgr.RegisterRoutes(router)
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
 type wrappedRelayInstanceManager struct {
 	RelayInstanceManager
 	mockRegistration *MockRegistration
@@ -410,9 +464,9 @@ func createTestRelayInstanceManager(t *testing.T, controller *gomock.Controller,
 	mgr.serverUri = testServer.URL
 
 	if expectedError != nil {
-		mockRegistration.EXPECT().Register(gomock.Eq(common.IntegrationGithub), gomock.Eq("")).MinTimes(1).Return(nil, expectedError)
+		mockRegistration.EXPECT().Register(gomock.Any(), gomock.Eq(common.IntegrationGithub), gomock.Eq("")).MinTimes(1).Return(nil, expectedError)
 	} else {
-		mockRegistration.EXPECT().Register(gomock.Eq(common.IntegrationGithub), gomock.Eq("")).MinTimes(1).Return(response, nil)
+		mockRegistration.EXPECT().Register(gomock.Any(), gomock.Eq(common.IntegrationGithub), gomock.Eq("")).MinTimes(1).Return(response, nil)
 	}
 
 	os.Setenv("TEST_SERVER_URL", testServer.URL)

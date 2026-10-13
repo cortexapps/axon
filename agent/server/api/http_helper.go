@@ -30,7 +30,10 @@ func newHttpRequestHelper(config config.AgentConfig, logger *zap.Logger) *httpRe
 	return &httpRequestHelper{
 		BaseURL: fmt.Sprintf("%s/%s", config.HttpBaseUrl(), cortexApiRoot),
 		logger:  logger.With(zap.String("component", "httpRequestHelper")),
-		client:  &http.Client{},
+		// No Client.Timeout on purpose: doRequest caps a deadline-less ctx at
+		// maxCallDuration, which bounds the whole call without cutting off a
+		// long body read the way a client-wide timeout would.
+		client: &http.Client{},
 	}
 }
 
@@ -71,6 +74,7 @@ func (h *httpRequestHelper) doRequest(ctx context.Context, method string, url st
 		}
 
 		if resp.StatusCode == http.StatusTooManyRequests {
+			io.Copy(io.Discard, resp.Body)
 			resp.Body.Close()
 			retryAfter := resp.Header.Get("Retry-After")
 			if retryAfter == "" {

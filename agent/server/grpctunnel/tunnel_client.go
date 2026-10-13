@@ -237,30 +237,37 @@ type TunnelClientParams struct {
 	IntegrationInfo common.IntegrationInfo
 	HttpServer      cortexHttp.Server
 	Registration    snykbroker.Registration
-	HttpClient      *http.Client         `optional:"true"`
+	Transport       *http.Transport      `optional:"true"`
 	Registry        *prometheus.Registry `optional:"true"`
 }
 
 func NewTunnelClient(p TunnelClientParams) snykbroker.RelayInstanceManager {
-	httpClient := p.HttpClient
-	if httpClient == nil {
-		// Mirrors the pooling of the injected client (see createHttpTransport):
-		// the default transport's 2 idle connections per host would serialize
-		// concurrent calls behind fresh handshakes.
-		maxConns := p.Config.UpstreamMaxConnsPerHost
-		if maxConns < 1 {
-			maxConns = 128
-		}
-		httpClient = &http.Client{
-			Transport: &http.Transport{
-				Proxy:               http.ProxyFromEnvironment,
-				MaxIdleConns:        maxConns * 2,
-				MaxIdleConnsPerHost: maxConns,
-				MaxConnsPerHost:     maxConns,
-				IdleConnTimeout:     90 * time.Second,
-			},
-		}
+	// Connection pooling matters more here than in a typical client: every
+	// tunnelled call becomes an upstream request, and they concentrate on a
+	// handful of hosts. net/http's default MaxIdleConnsPerHost of 2 would
+	// mean all but two concurrent calls open a fresh TCP+TLS connection and
+	// discard it on completion, turning throughput into handshakes.
+	//
+	// MaxConnsPerHost is the ceiling that actually protects something real:
+	// the upstream is the customer's own service, whose capacity we neither
+	// control nor can discover, so the agent must not fan out without limit.
+	// It bounds concurrency rather than failing: requests over the line wait
+	// for a connection. That is also why the cap lives on a clone: the shared
+	// transport serves the Cortex API and registration, where a queued wait
+	// with no error would hide a leak instead of containing fan-out.
+	base := p.Transport
+	if base == nil {
+		base = http.DefaultTransport.(*http.Transport)
 	}
+	transport := base.Clone()
+	maxConns := p.Config.UpstreamMaxConnsPerHost
+	if maxConns < 1 {
+		maxConns = 128
+	}
+	transport.MaxIdleConns = maxConns * 2
+	transport.MaxIdleConnsPerHost = maxConns
+	transport.MaxConnsPerHost = maxConns
+	httpClient := &http.Client{Transport: transport}
 
 	tc := &tunnelClient{
 		config:          p.Config,
@@ -495,7 +502,13 @@ func (tc *tunnelClient) resolveRegistration() (token, serverAddr string, fromEnv
 		return envToken, envServerURL, true, nil
 	}
 
-	regInfo, err := tc.registration.Register(tc.integrationInfo.Integration, tc.integrationInfo.Alias)
+	// Close() cancels parentCtx, so an in-flight registration ends with the
+	// client; Register applies its own bound when the ctx carries none.
+	ctx := tc.parentCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	regInfo, err := tc.registration.Register(ctx, tc.integrationInfo.Integration, tc.integrationInfo.Alias)
 	if err != nil {
 		return "", "", false, err
 	}
