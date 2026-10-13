@@ -2,11 +2,12 @@ package snykbroker
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
-	"time"
 
 	"github.com/cortexapps/axon/common"
 	"github.com/cortexapps/axon/config"
@@ -144,38 +145,50 @@ func createMockRegistrationServer(
 	}))
 }
 
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+type trackedBody struct {
+	io.Reader
+	eof    bool
+	closed bool
+}
+
+func (b *trackedBody) Read(p []byte) (int, error) {
+	n, err := b.Reader.Read(p)
+	if err == io.EOF {
+		b.eof = true
+	}
+	return n, err
+}
+
+func (b *trackedBody) Close() error {
+	b.closed = true
+	return nil
+}
+
+// A connection goes back to the transport's pool only when its body is read
+// to EOF and closed. Trailing bytes after the JSON value stand in for the end
+// of a chunked body, which a decoder does not need to read.
 func TestRegister_ReleasesConnection(t *testing.T) {
 	for _, status := range []int{http.StatusOK, http.StatusUnauthorized, http.StatusNotFound} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
-			// Sending the end of the chunked body late is what lets a
-			// decoder return before it reaches EOF.
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(status)
-				w.Write([]byte(`{"serverUri":"http://example.com","token":"the_broker_token"}` + "\n"))
-				w.(http.Flusher).Flush()
-				time.Sleep(50 * time.Millisecond)
-			}))
-			defer server.Close()
-
-			client := &http.Client{Transport: &http.Transport{MaxConnsPerHost: 1}}
+			body := &trackedBody{Reader: strings.NewReader(
+				`{"serverUri":"http://example.com","token":"the_broker_token"}` + "\n\n",
+			)}
+			client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: status, Body: body, Header: http.Header{}, Request: r}, nil
+			})}
 			reg := NewRegistration(config.AgentConfig{
-				CortexApiBaseUrl: server.URL,
+				CortexApiBaseUrl: "http://cortex.example.com",
 				CortexApiToken:   "test_token",
 			}, client)
 
-			for i := 0; i < 3; i++ {
-				done := make(chan struct{})
-				go func() {
-					defer close(done)
-					reg.Register(common.Integration("test_integration"), "test_alias")
-				}()
-				select {
-				case <-done:
-				case <-time.After(5 * time.Second):
-					t.Fatalf("register %d is waiting for a connection held by an earlier call", i+1)
-				}
-			}
+			reg.Register(common.Integration("test_integration"), "test_alias")
+
+			require.True(t, body.eof, "body was not read to EOF")
+			require.True(t, body.closed, "body was not closed")
 		})
 	}
 }
