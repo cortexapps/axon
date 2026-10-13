@@ -34,6 +34,19 @@ type Manager interface {
 	Dequeue(ctx context.Context, id string, waitTime time.Duration) (Invocable, error)
 	Close() error
 	IsFinished() bool
+	// Liveness reports whether the SDK is still draining invocations; see
+	// Liveness. Never nil for a manager built by NewHandlerManager.
+	Liveness() *Liveness
+}
+
+// ManagerOption customises NewHandlerManager. Variadic so that fx, which
+// ignores variadic parameters, and the many direct callers keep working.
+type ManagerOption func(*handlerManager)
+
+// WithLivenessPolicy sets when a run of agent-side timeouts is reported as
+// the SDK having stalled. The default matches the production config.
+func WithLivenessPolicy(policy LivenessPolicy) ManagerOption {
+	return func(m *handlerManager) { m.livenessPolicy = policy }
 }
 
 type handlerManager struct {
@@ -47,9 +60,12 @@ type handlerManager struct {
 	invokeCounter       *prometheus.CounterVec
 	queueDepthGauge     *prometheus.GaugeVec
 	handlerLatencyGauge *prometheus.HistogramVec
+	timeoutCounter      *prometheus.CounterVec
+	livenessPolicy      LivenessPolicy
+	liveness            *Liveness
 }
 
-func NewHandlerManager(logger *zap.Logger, cron cron.Cron, metrics *prometheus.Registry) Manager {
+func NewHandlerManager(logger *zap.Logger, cron cron.Cron, metrics *prometheus.Registry, opts ...ManagerOption) Manager {
 
 	mgr := &handlerManager{
 		logger:              logger.Named("handler-manager"),
@@ -79,14 +95,38 @@ func NewHandlerManager(logger *zap.Logger, cron cron.Cron, metrics *prometheus.R
 			},
 			[]string{"handler", "result"},
 		),
-		done: make(chan struct{}),
+		timeoutCounter: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "axon_handler_timeouts_total",
+				Help: "Invocations that ended in an agent-side timeout: expired in the dispatch queue or sent and never reported",
+			},
+			[]string{"handler"},
+		),
+		livenessPolicy: LivenessPolicy{TimeoutThreshold: 3, MinFailureAge: 3 * time.Minute},
+		done:           make(chan struct{}),
 	}
+	for _, opt := range opts {
+		opt(mgr)
+	}
+	mgr.liveness = NewLiveness(mgr.logger, mgr.livenessPolicy, metrics)
 	if metrics != nil {
 		metrics.MustRegister(mgr.invokeCounter)
 		metrics.MustRegister(mgr.queueDepthGauge)
 		metrics.MustRegister(mgr.handlerLatencyGauge)
+		metrics.MustRegister(mgr.timeoutCounter)
 	}
 	return mgr
+}
+
+func (s *handlerManager) Liveness() *Liveness {
+	return s.liveness
+}
+
+// isInvocationTimeout tells an agent-side timeout from an error the SDK
+// reported: the Trigger deadline (queued too long, or sent and never
+// reported) and the server's sent-time timer sentinel.
+func isInvocationTimeout(err error) bool {
+	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrInvocationTimeout)
 }
 
 func (s *handlerManager) Close() error {
@@ -273,6 +313,12 @@ func (s *handlerManager) Trigger(handler Invocable) error {
 		if err != nil {
 			logger.Error("handler error", zap.Error(err))
 			s.invokeCounter.WithLabelValues(handlerName, "error").Inc()
+			// This goroutine runs once per triggered invocation (Complete is
+			// CAS-guarded), so it is the one place to classify the outcome.
+			if isInvocationTimeout(err) {
+				s.timeoutCounter.WithLabelValues(handlerName).Inc()
+				s.liveness.RecordTimeout()
+			}
 		} else {
 			logger.Info("Handler completed", zap.Int("result-length", len(result)))
 			s.invokeCounter.WithLabelValues(handlerName, "success").Inc()
