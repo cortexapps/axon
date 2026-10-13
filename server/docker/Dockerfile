@@ -1,4 +1,4 @@
-FROM golang:1.25-bookworm AS builder
+FROM golang:1.26.9-bookworm AS builder
 
 RUN apt-get update && apt-get install -y protobuf-compiler
 
