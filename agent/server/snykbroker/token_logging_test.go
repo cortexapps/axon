@@ -27,7 +27,7 @@ func TestRefreshTokenInfo_LogsTokenHashNotRawToken(t *testing.T) {
 	t.Setenv("BROKER_TOKEN", "")
 
 	mockRegistration := NewMockRegistration(ctrl)
-	mockRegistration.EXPECT().Register(gomock.Any(), gomock.Any()).Return(
+	mockRegistration.EXPECT().Register(gomock.Any(), gomock.Any(), gomock.Any()).Return(
 		&RegistrationInfoResponse{
 			ServerUri: "https://relay.example.com",
 			Token:     rawToken,

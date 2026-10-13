@@ -1,12 +1,14 @@
 package snykbroker
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -34,7 +36,7 @@ func TestRegister_Success(t *testing.T) {
 	cfg.CortexApiBaseUrl = server.URL
 	reg := NewRegistration(*cfg, nil)
 
-	resp, err := reg.Register(common.Integration("test_integration"), "test_alias")
+	resp, err := reg.Register(context.Background(), common.Integration("test_integration"), "test_alias")
 	require.NoError(t, err)
 	require.Equal(t, "the_broker_token", resp.Token)
 	require.Equal(t, "http://example.com", resp.ServerUri)
@@ -58,7 +60,7 @@ func TestRegister_Unauthorized(t *testing.T) {
 	cfg.CortexApiBaseUrl = server.URL
 	reg := NewRegistration(*cfg, nil)
 
-	resp, err := reg.Register(common.Integration("test_integration"), "test_alias")
+	resp, err := reg.Register(context.Background(), common.Integration("test_integration"), "test_alias")
 	require.Nil(t, resp)
 	require.Equal(t, err, ErrUnauthorized)
 }
@@ -81,7 +83,7 @@ func TestRegister_OtherError(t *testing.T) {
 	cfg.CortexApiBaseUrl = server.URL
 	reg := NewRegistration(*cfg, nil)
 
-	resp, err := reg.Register(common.Integration("test_integration"), "test_alias")
+	resp, err := reg.Register(context.Background(), common.Integration("test_integration"), "test_alias")
 	require.Nil(t, resp)
 	require.IsType(t, err, &RegistrationError{})
 	re := err.(*RegistrationError)
@@ -103,7 +105,7 @@ func TestRegister_ConnectError(t *testing.T) {
 	cfg.CortexApiBaseUrl = server.URL
 	reg := NewRegistration(*cfg, nil)
 
-	resp, err := reg.Register(common.Integration("test_integration"), "test_alias")
+	resp, err := reg.Register(context.Background(), common.Integration("test_integration"), "test_alias")
 	require.Nil(t, resp)
 	require.IsType(t, err, &RegistrationError{})
 	re := err.(*RegistrationError)
@@ -186,7 +188,7 @@ func TestRegister_ReleasesConnection(t *testing.T) {
 				CortexApiToken:   "test_token",
 			}, client)
 
-			reg.Register(common.Integration("test_integration"), "test_alias")
+			reg.Register(context.Background(), common.Integration("test_integration"), "test_alias")
 
 			require.True(t, body.eof, "body was not read to EOF")
 			require.True(t, body.closed, "body was not closed")
@@ -217,8 +219,59 @@ func TestRegister_ReleasesPooledConnection(t *testing.T) {
 	}, client)
 
 	for i := 0; i < 2; i++ {
-		resp, err := reg.Register(common.Integration("test_integration"), "test_alias")
+		resp, err := reg.Register(context.Background(), common.Integration("test_integration"), "test_alias")
 		require.NoError(t, err, "call %d", i+1)
 		require.Equal(t, "the_broker_token", resp.Token)
 	}
+}
+
+// newHangingServer answers nothing until release is called. The handler is
+// released explicitly rather than through r.Context(): the server only
+// notices a client disconnect once the request body has been read, and
+// Register's POST body is never read here, so server.Close() would wait on
+// the handler forever.
+func newHangingServer() (*httptest.Server, func()) {
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release
+	}))
+	var once sync.Once
+	return server, func() { once.Do(func() { close(release) }) }
+}
+
+// A caller's deadline bounds the whole call: a server that never answers
+// cannot hold Register past it.
+func TestRegister_HonoursCallerDeadline(t *testing.T) {
+	server, release := newHangingServer()
+	defer server.Close()
+	defer release()
+	reg := NewRegistration(config.AgentConfig{CortexApiBaseUrl: server.URL, CortexApiToken: "test_token"}, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := reg.Register(ctx, common.Integration("test_integration"), "test_alias")
+
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Less(t, time.Since(start), 2*time.Second)
+}
+
+// A caller with no deadline still cannot hang: Register applies its own
+// bound, which is what keeps the periodic re-registration poll from
+// blocking forever on a hung Cortex API.
+func TestRegister_DefaultTimeoutWhenNoDeadline(t *testing.T) {
+	previous := registrationTimeout
+	registrationTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { registrationTimeout = previous })
+
+	server, release := newHangingServer()
+	defer server.Close()
+	defer release()
+	reg := NewRegistration(config.AgentConfig{CortexApiBaseUrl: server.URL, CortexApiToken: "test_token"}, nil)
+
+	start := time.Now()
+	_, err := reg.Register(context.Background(), common.Integration("test_integration"), "test_alias")
+
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Less(t, time.Since(start), 2*time.Second)
 }

@@ -410,9 +410,9 @@ func createTestRelayInstanceManager(t *testing.T, controller *gomock.Controller,
 	mgr.serverUri = testServer.URL
 
 	if expectedError != nil {
-		mockRegistration.EXPECT().Register(gomock.Eq(common.IntegrationGithub), gomock.Eq("")).MinTimes(1).Return(nil, expectedError)
+		mockRegistration.EXPECT().Register(gomock.Any(), gomock.Eq(common.IntegrationGithub), gomock.Eq("")).MinTimes(1).Return(nil, expectedError)
 	} else {
-		mockRegistration.EXPECT().Register(gomock.Eq(common.IntegrationGithub), gomock.Eq("")).MinTimes(1).Return(response, nil)
+		mockRegistration.EXPECT().Register(gomock.Any(), gomock.Eq(common.IntegrationGithub), gomock.Eq("")).MinTimes(1).Return(response, nil)
 	}
 
 	os.Setenv("TEST_SERVER_URL", testServer.URL)

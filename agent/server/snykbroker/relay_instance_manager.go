@@ -450,7 +450,7 @@ func (r *relayInstanceManager) getUrlAndTokenCore() (string, string, error) {
 		return "", "", errSkipBroker
 	}
 
-	reg, err := r.registration.Register(r.integrationInfo.Integration, r.integrationInfo.Alias)
+	reg, err := r.registration.Register(context.Background(), r.integrationInfo.Integration, r.integrationInfo.Alias)
 	r.emitOperationCounter("register", err == nil)
 	if err != nil {
 		return "", "", err

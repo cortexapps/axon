@@ -46,7 +46,7 @@ type fakeRegistration struct {
 	calls     int32
 }
 
-func (r *fakeRegistration) Register(integration common.Integration, alias string) (*snykbroker.RegistrationInfoResponse, error) {
+func (r *fakeRegistration) Register(_ context.Context, integration common.Integration, alias string) (*snykbroker.RegistrationInfoResponse, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	atomic.AddInt32(&r.calls, 1)

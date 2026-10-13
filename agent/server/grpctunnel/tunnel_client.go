@@ -502,7 +502,13 @@ func (tc *tunnelClient) resolveRegistration() (token, serverAddr string, fromEnv
 		return envToken, envServerURL, true, nil
 	}
 
-	regInfo, err := tc.registration.Register(tc.integrationInfo.Integration, tc.integrationInfo.Alias)
+	// Close() cancels parentCtx, so an in-flight registration ends with the
+	// client; Register applies its own bound when the ctx carries none.
+	ctx := tc.parentCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	regInfo, err := tc.registration.Register(ctx, tc.integrationInfo.Integration, tc.integrationInfo.Alias)
 	if err != nil {
 		return "", "", false, err
 	}
