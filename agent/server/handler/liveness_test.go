@@ -27,7 +27,7 @@ func newTestLiveness(t *testing.T, policy LivenessPolicy) (*Liveness, *time.Time
 func TestLiveness_Healthy(t *testing.T) {
 	timeouts := func(l *Liveness, n int) {
 		for i := 0; i < n; i++ {
-			l.RecordTimeout()
+			l.RecordTimeout("handler1")
 		}
 	}
 
@@ -154,7 +154,7 @@ func TestLiveness_Healthy(t *testing.T) {
 func TestLiveness_NilReceiverIsHealthy(t *testing.T) {
 	var l *Liveness
 	l.RecordStreamConnected()
-	l.RecordTimeout()
+	l.RecordTimeout("handler1")
 	l.RecordSuccess()
 	l.RecordStreamDisconnected()
 	healthy, reason := l.Healthy(time.Now())
@@ -166,10 +166,11 @@ func TestLiveness_NilReceiverIsHealthy(t *testing.T) {
 func TestLiveness_SnapshotReportsState(t *testing.T) {
 	l, clock := newTestLiveness(t, testPolicy)
 	l.RecordStreamConnected()
-	l.RecordTimeout()
-	l.RecordTimeout()
+	l.RecordTimeout("handler1")
+	l.RecordTimeout("handler2")
 
 	snap := l.Snapshot()
+	require.Equal(t, "handler2", snap.LastTimeoutHandler)
 	require.True(t, snap.Enabled)
 	require.True(t, snap.EverConnected)
 	require.Equal(t, 1, snap.StreamsConnected)
@@ -191,7 +192,7 @@ func TestLiveness_TransitionsLogOnceAndSetGauge(t *testing.T) {
 
 	l.RecordStreamConnected()
 	for i := 0; i < 3; i++ {
-		l.RecordTimeout()
+		l.RecordTimeout("slow_batch")
 	}
 	require.Equal(t, float64(1), testutil.ToFloat64(l.gauge), "streak too young: still healthy")
 	require.Empty(t, logs.FilterMessage("handler liveness unhealthy").All())
@@ -203,7 +204,10 @@ func TestLiveness_TransitionsLogOnceAndSetGauge(t *testing.T) {
 	l.Healthy(clock)
 	require.Equal(t, float64(0), testutil.ToFloat64(l.gauge))
 	require.Len(t, logs.FilterMessage("handler liveness unhealthy").All(), 1, "one warn per transition")
-	require.Equal(t, zapcore.WarnLevel, logs.FilterMessage("handler liveness unhealthy").All()[0].Level)
+	unhealthy := logs.FilterMessage("handler liveness unhealthy").All()[0]
+	require.Equal(t, zapcore.WarnLevel, unhealthy.Level)
+	require.Equal(t, "slow_batch", unhealthy.ContextMap()["last_timeout_handler"],
+		"an operator needs the handler name to tell a misconfigured timeout from a wedged pool")
 
 	l.RecordSuccess()
 	require.Equal(t, float64(1), testutil.ToFloat64(l.gauge))
@@ -222,7 +226,7 @@ func TestLiveness_ConcurrentRecordsAreRaceFree(t *testing.T) {
 				case 0:
 					l.RecordStreamConnected()
 				case 1:
-					l.RecordTimeout()
+					l.RecordTimeout("h")
 				case 2:
 					l.RecordSuccess()
 				case 3:

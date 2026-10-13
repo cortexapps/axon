@@ -12,9 +12,11 @@ import (
 
 // ErrInvocationTimeout marks an agent-side timeout: the SDK was sent the
 // invocation and never reported before its deadline. The server's timer path
-// wraps it so the manager can tell it from an error the SDK reported itself;
-// both SDKs report code "timeout" for their own deadlines, and a report of
-// any kind proves the SDK's dispatch loop is alive.
+// wraps it so the manager can tell it from an error the SDK reported itself.
+// The Go SDK reports code "timeout" for its own deadline and the Python SDK
+// runs a handler to completion regardless of TimeoutMs, so the pb error code
+// cannot classify; a report of any kind proves the SDK's dispatch loop is
+// alive, and only the agent's own paths produce this sentinel.
 var ErrInvocationTimeout = errors.New("invocation timed out")
 
 // LivenessPolicy says when a run of agent-side timeouts means the SDK has
@@ -39,6 +41,7 @@ type LivenessSnapshot struct {
 	TotalTimeouts       uint64     `json:"total_timeouts"`
 	StreakStartedAt     *time.Time `json:"streak_started_at,omitempty"`
 	LastReportAt        *time.Time `json:"last_report_at,omitempty"`
+	LastTimeoutHandler  string     `json:"last_timeout_handler,omitempty"`
 }
 
 // Liveness decides whether the SDK handler loop is still draining work.
@@ -64,6 +67,7 @@ type Liveness struct {
 	totalTimeouts       uint64
 	streakStartedAt     time.Time
 	lastReportAt        time.Time
+	lastTimeoutHandler  string
 	unhealthy           bool // last published state, for transition logging
 }
 
@@ -110,9 +114,11 @@ func (l *Liveness) RecordStreamDisconnected() {
 	l.evaluateLocked(l.now())
 }
 
-// RecordTimeout notes an invocation that ended in an agent-side timeout:
-// expired waiting in the dispatch queue, or sent and never reported.
-func (l *Liveness) RecordTimeout() {
+// RecordTimeout notes an invocation of handler that ended in an agent-side
+// timeout: expired waiting in the dispatch queue, or sent and never reported.
+// The handler name is kept so an operator can tell a handler whose TimeoutMs
+// is shorter than its real runtime from a wedged worker pool.
+func (l *Liveness) RecordTimeout(handler string) {
 	if l == nil {
 		return
 	}
@@ -124,6 +130,7 @@ func (l *Liveness) RecordTimeout() {
 	}
 	l.consecutiveTimeouts++
 	l.totalTimeouts++
+	l.lastTimeoutHandler = handler
 	l.evaluateLocked(now)
 }
 
@@ -167,6 +174,7 @@ func (l *Liveness) Snapshot() LivenessSnapshot {
 		EverConnected:       l.everConnected,
 		ConsecutiveTimeouts: l.consecutiveTimeouts,
 		TotalTimeouts:       l.totalTimeouts,
+		LastTimeoutHandler:  l.lastTimeoutHandler,
 	}
 	if !l.streakStartedAt.IsZero() {
 		t := l.streakStartedAt
@@ -202,6 +210,7 @@ func (l *Liveness) evaluateLocked(now time.Time) (bool, string) {
 		l.gauge.Set(0)
 		l.logger.Warn("handler liveness unhealthy",
 			zap.Int("consecutive_timeouts", l.consecutiveTimeouts),
+			zap.String("last_timeout_handler", l.lastTimeoutHandler),
 			zap.Duration("streak_age", now.Sub(l.streakStartedAt)),
 			zap.Time("last_report_at", l.lastReportAt),
 			zap.String("reason", reason))

@@ -369,7 +369,6 @@ func TestGRPCServer_HealthcheckReflectsStalledSDK(t *testing.T) {
 	defer httpServer.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
 
 	var stalled atomic.Bool
 	stalled.Store(true)
@@ -379,13 +378,24 @@ func TestGRPCServer_HealthcheckReflectsStalledSDK(t *testing.T) {
 		}
 		return clientResult{result: "ok"}, nil
 	})
-	defer client.Close()
 
 	_, err := client.RegisterHandlerWithTimeout(ctx, "handler123", 100*time.Millisecond,
 		&pb.HandlerOption{Option: &pb.HandlerOption_Invoke{Invoke: &pb.HandlerInvokeOption{
 			Type: pb.HandlerInvokeType_RUN_INTERVAL, Value: "20ms"}}})
 	require.NoError(t, err)
-	go client.Run(ctx)
+	runDone := make(chan struct{})
+	go func() {
+		defer close(runDone)
+		client.Run(ctx)
+	}()
+	// The fake SDK reports every 20ms once un-stalled; stop it and wait for
+	// Run to return before closing its connection, or a report in flight
+	// fails on a closing client.
+	defer func() {
+		cancel()
+		<-runDone
+		client.Close()
+	}()
 
 	healthURL := fmt.Sprintf("http://localhost:%d%s/healthcheck", httpServer.Port(), cortexHttp.AxonPathRoot)
 	probe := func() (int, map[string]any) {

@@ -149,6 +149,10 @@ func (c *testAxonClient) Run(ctx context.Context) error {
 			}
 
 			_, err = c.client.ReportInvocation(ctx, report)
+			if ctx.Err() != nil {
+				// Shutting down; a report that lost the race is not a failure.
+				return ctx.Err()
+			}
 			require.NoError(c.t, err)
 		}
 	}

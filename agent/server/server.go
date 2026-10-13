@@ -43,6 +43,10 @@ type AxonAgent struct {
 	inflightLock        sync.RWMutex
 	outstandingRequests map[string]inflightRequest
 	historyManager      handler.HistoryManager
+	// closed is closed by Close so expiry timers still pending stop instead
+	// of finishing invocations against a torn-down agent.
+	closed    chan struct{}
+	closeOnce sync.Once
 }
 
 type inflightRequest struct {
@@ -69,6 +73,7 @@ func NewAxonAgent(
 		cortexApiServer:     api.NewCortexApiServer(logger, p.Config),
 		outstandingRequests: make(map[string]inflightRequest),
 		historyManager:      handler.NewHistoryManager(p.Config, logger),
+		closed:              make(chan struct{}),
 	}
 
 	if p.Lifecycle != nil {
@@ -214,10 +219,7 @@ func (s *AxonAgent) sendInvocations(dispatchId string, stream pb.AxonAgent_Dispa
 				invocable: invoke,
 				sentAt:    now,
 			})
-			go func() {
-				<-time.After(time.Duration(msg.TimeoutMs) * time.Millisecond)
-				s.expireInvocation(msg)
-			}()
+			go s.waitForExpiry(msg)
 		}
 	}()
 	return nil
@@ -277,6 +279,18 @@ func (s *AxonAgent) ReportInvocation(ctx context.Context, req *pb.ReportInvocati
 	}
 	s.finishInvocation(ctx, req, requestErr)
 	return &pb.ReportInvocationResponse{}, nil
+}
+
+// waitForExpiry expires msg once its TimeoutMs has elapsed, unless the agent
+// closes first.
+func (s *AxonAgent) waitForExpiry(msg *pb.DispatchHandlerInvoke) {
+	timer := time.NewTimer(time.Duration(msg.TimeoutMs) * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		s.expireInvocation(msg)
+	case <-s.closed:
+	}
 }
 
 // expireInvocation is the agent's timer path: the SDK was sent the
@@ -417,9 +431,11 @@ func (s *AxonAgent) Close() {
 		s.grpcServer.Stop()
 		s.grpcServer = nil
 	}
-	if s.historyManager != nil {
-		s.historyManager.Close()
-		s.historyManager = nil
+	s.closeOnce.Do(func() { close(s.closed) })
+	// Closed, not nilled: a report racing Close still has a manager to call,
+	// and a closed manager fails a write rather than panicking.
+	s.historyManager.Close()
+	if s.Manager != nil {
+		s.Manager.Close()
 	}
-	s.Manager.Close()
 }

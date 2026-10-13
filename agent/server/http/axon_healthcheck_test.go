@@ -29,7 +29,7 @@ func TestHealthcheck_503WhenSDKStalled(t *testing.T) {
 	mgr := handler.NewHandlerManager(zap.NewNop(), cron.New(), nil,
 		handler.WithLivenessPolicy(handler.LivenessPolicy{TimeoutThreshold: 1}))
 	mgr.Liveness().RecordStreamConnected()
-	mgr.Liveness().RecordTimeout()
+	mgr.Liveness().RecordTimeout("handler1")
 	h := NewAxonHandler(AxonHandlerParams{Logger: zap.NewNop(), Config: config.AgentConfig{}, HandlerManager: mgr}).(*axonHandler)
 
 	code, body := probeHealth(t, h)
@@ -53,7 +53,7 @@ func TestHealthcheck_DisabledStaysHealthy(t *testing.T) {
 	mgr := handler.NewHandlerManager(zap.NewNop(), cron.New(), nil,
 		handler.WithLivenessPolicy(handler.LivenessPolicy{TimeoutThreshold: 0}))
 	mgr.Liveness().RecordStreamConnected()
-	mgr.Liveness().RecordTimeout()
+	mgr.Liveness().RecordTimeout("handler1")
 	h := NewAxonHandler(AxonHandlerParams{Logger: zap.NewNop(), Config: config.AgentConfig{}, HandlerManager: mgr}).(*axonHandler)
 
 	code, body := probeHealth(t, h)

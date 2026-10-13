@@ -328,7 +328,7 @@ func (s *handlerManager) Trigger(handler Invocable) error {
 			// CAS-guarded), so it is the one place to classify the outcome.
 			if isInvocationTimeout(err) {
 				s.timeoutCounter.WithLabelValues(handlerName).Inc()
-				s.liveness.RecordTimeout()
+				s.liveness.RecordTimeout(handlerName)
 			}
 		} else {
 			logger.Info("Handler completed", zap.Int("result-length", len(result)))

@@ -239,6 +239,11 @@ livenessProbe:
 
 Relay-only agents, and agents whose SDK has not connected yet, always answer `200`.
 
+Two things to know before relying on the probe:
+
+* **A handler's timeout must exceed its real runtime.** The Python SDK runs a handler to completion and only uses the handler timeout as the deadline for its Cortex API calls, so a handler that legitimately runs longer than its timeout (5 minutes unless set) is reported as an agent-side timeout every time. A few such runs in parallel will trip the probe and restart the container mid-job. For long batch handlers, set a longer handler timeout, raise `AXON_LIVENESS_MIN_FAILURE_AGE`, or disable the guard. The `503` body and the `handler liveness unhealthy` log line name the last handler that timed out, so a misconfigured timeout is easy to tell from a stuck pod.
+* **The probe restarts the container it runs in.** If your handler process runs in a separate container from the agent, a failing probe restarts only the agent; give the handler container its own probe or run both in one container as the published image does.
+
 ### Monitoring
 
 The agent exposes a Prometheus endpoint at `/metrics` on the default port (80), that has the following metrics:
