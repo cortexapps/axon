@@ -45,7 +45,7 @@ func (s *cortexApiServer) Call(ctx context.Context, req *pb.CallRequest) (*pb.Ca
 		}
 	}
 
-	httpResponse, err := s.helper.Do(req.Method, req.Path, body)
+	httpResponse, err := s.helper.Do(ctx, req.Method, req.Path, body)
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to call cortex api: %w", err)

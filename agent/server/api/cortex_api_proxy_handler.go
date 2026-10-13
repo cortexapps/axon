@@ -134,7 +134,11 @@ func (a *apiProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		a.proxy.ServeHTTP(recorder, request)
 
 		if wait := a.retryAfter(recorder); wait > 0 {
-			time.Sleep(wait)
+			if err := sleepContext(r.Context(), wait); err != nil {
+				a.logger.Warn("Request cancelled while rate limited", zap.String("url", r.URL.String()))
+				w.WriteHeader(http.StatusRequestTimeout)
+				return
+			}
 			continue
 		}
 
