@@ -220,6 +220,25 @@ Note this will run everything inside the same container so you do NOT need to ru
 
 You can then deloy this container into your Kubernetes environment, there is an example `docker-compose.yml` and `helm-chart` in the `examples/relay`directory.
 
+### Health
+
+The agent serves a liveness probe at `/__axon/healthcheck` on the default port (80). It answers `200` with `{"OK": true, "build_version": ...}` normally.
+
+It answers `503` once the SDK has stopped draining invocations: when `AXON_LIVENESS_TIMEOUT_THRESHOLD` (default `3`) consecutive invocations have timed out on the agent side, either expired waiting in the dispatch queue or sent to the SDK and never reported, and that streak has lasted at least `AXON_LIVENESS_MIN_FAILURE_AGE` (default `3m`) with no report of any kind from the SDK. Any report, result or error, on time or late, resets the streak. The `503` body carries a `reason` and a `liveness` snapshot. Set the threshold to `0` to disable the guard.
+
+Because the agent and your handler process run in the same container, pointing a Kubernetes liveness probe at this endpoint is what restarts a handler process whose workers are all stuck:
+
+```yaml
+livenessProbe:
+  httpGet:
+    path: /__axon/healthcheck
+    port: 80
+  periodSeconds: 10
+  failureThreshold: 3
+```
+
+Relay-only agents, and agents whose SDK has not connected yet, always answer `200`.
+
 ### Monitoring
 
 The agent exposes a Prometheus endpoint at `/metrics` on the default port (80), that has the following metrics:
@@ -228,6 +247,8 @@ The agent exposes a Prometheus endpoint at `/metrics` on the default port (80), 
 * `axon_handler_invokes` (counter) the number of times a handler has been invoked, with labels for the handler name and the status of the invocation (success or failure)
 * `axon_handler_queue_depth` (gauge) the number of handlers that are waiting to be invoked, with labels for the handler name
 * `axon_handler_latency` (histogram) the latency of the handler invocation, with labels for the handler name and the status of the invocation (success or failure)
+* `axon_handler_timeouts_total` (counter) invocations that ended in an agent-side timeout, either expired waiting in the dispatch queue or sent to the SDK and never reported, with a label for the handler name
+* `axon_handler_liveness` (gauge) `1` while the SDK handler loop is draining invocations, `0` once the healthcheck reports it stalled
 * `axon_http_requests` (counter) the number of HTTP requests made to the agent, with labels for the method, path, and status of the request
 * `axon_http_request_latency_seconds` (histogram) the latency of the HTTP request, with labels for the method, path, and status of the request
 * `broker_operations` (counter) the number of operations made to the broker, with labels for the operation type (`broker_start`, `broker_restart`, `broker_register`, `broker-exit`) and status of the request
