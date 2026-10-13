@@ -167,7 +167,7 @@ gRPC-tunnel-specific settings (all optional):
 | Variable | Default | Meaning |
 |----------|---------|---------|
 | `AXON_GRPC_TUNNEL_CONNS` | `4` | Connections the agent opens outbound |
-| `AXON_UPSTREAM_MAX_CONNS_PER_HOST` | `128` | Concurrent connections to any one upstream host |
+| `AXON_UPSTREAM_MAX_CONNS_PER_HOST` | `128` | Concurrent connections the tunnel opens to any one upstream host (tunnel only; calls to the Cortex API are never capped) |
 | `AXON_GRPC_TUNNEL_INSECURE` | `false` | Skip TLS on the tunnel dial (dev only) |
 | `AXON_GRPC_TUNNEL_MAX_REQUEST_TIMEOUT` | `5m` | Hard ceiling on any single relayed call |
 
@@ -185,6 +185,23 @@ distinguish a saturated tunnel from a slow upstream.
 
 The design, wire protocol, and rollout plan are documented in
 [docs/design/grpc-tunnel-v2.md](docs/design/grpc-tunnel-v2.md).
+
+### Network timeouts
+
+Every outbound call the agent makes is bounded, so a hung upstream or proxy
+becomes an error instead of a connection held for the life of the process.
+These are fixed constants, not settings; a per-call deadline, where one
+exists, takes precedence.
+
+| Phase | Bound |
+|-------|-------|
+| TCP dial | 30s |
+| TLS handshake | 30s |
+| Waiting for response headers | 5m (matches `AXON_GRPC_TUNNEL_MAX_REQUEST_TIMEOUT`) |
+| Idle connection kept in the pool | 90s |
+| Relay registration (`/register`) | 30s |
+| Broker `/systemcheck` proxy | 10s |
+| WebSocket proxy dial, CONNECT and TLS handshake | 30s |
 
 ## How it works
 
