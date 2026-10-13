@@ -5,7 +5,7 @@ import threading
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
-from time import sleep
+from time import monotonic, sleep
 from typing import Any, Optional
 from urllib.parse import quote_plus
 
@@ -231,8 +231,8 @@ class AxonClient:
                 return h
         return None
 
-    def _handler_context(self, args):
-        return HandlerContext(self.cortex_stub, args)
+    def _handler_context(self, args, timeout_ms: int = 0):
+        return HandlerContext(self.cortex_stub, args, timeout_ms)
 
     def _submit_handler(self, handler_to_invoke, invoke):
         # Blocks once every worker is busy. That is deliberate: the agent then
@@ -257,7 +257,7 @@ class AxonClient:
         handler_result = None
         result = None
         now = datetime.now()
-        ctx = self._handler_context(invoke.args)
+        ctx = self._handler_context(invoke.args, invoke.timeout_ms)
         duration_ms = 0
 
         try:
@@ -355,11 +355,15 @@ class HandlerContext:
     args: dict
     obj: dict[str, Any]
 
-    def __init__(self, api: cortex_api_pb2_grpc.CortexApiStub, args: dict):
+    def __init__(self, api: cortex_api_pb2_grpc.CortexApiStub, args: dict, timeout_ms: int = 0):
         self.api = api
         self.args = args
         self.logs = []
         self.obj = {}
+        # Without a deadline, a Cortex API call that never returns holds its
+        # worker after the agent has given up on the invocation, and once
+        # every worker is held the client stops taking new invocations.
+        self.deadline = monotonic() + timeout_ms / 1000 if timeout_ms > 0 else None
 
     def log(self, message: str, level="INFO"):
         """
@@ -388,5 +392,8 @@ class HandlerContext:
             body=body,
             content_type=content_type,
         )
-        response = self.api.Call(request)
+        timeout = None
+        if self.deadline is not None:
+            timeout = max(self.deadline - monotonic(), 0)
+        response = self.api.Call(request, timeout=timeout)
         return CortexResponse(response.status_code, response.body, response.headers)
