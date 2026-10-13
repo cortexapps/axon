@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"testing"
+	"time"
 
 	"github.com/cortexapps/axon/common"
 	"github.com/cortexapps/axon/config"
@@ -141,4 +142,40 @@ func createMockRegistrationServer(
 
 		json.NewEncoder(w).Encode(expectedResponse)
 	}))
+}
+
+func TestRegister_ReleasesConnection(t *testing.T) {
+	for _, status := range []int{http.StatusOK, http.StatusUnauthorized, http.StatusNotFound} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			// Sending the end of the chunked body late is what lets a
+			// decoder return before it reaches EOF.
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(status)
+				w.Write([]byte(`{"serverUri":"http://example.com","token":"the_broker_token"}` + "\n"))
+				w.(http.Flusher).Flush()
+				time.Sleep(50 * time.Millisecond)
+			}))
+			defer server.Close()
+
+			client := &http.Client{Transport: &http.Transport{MaxConnsPerHost: 1}}
+			reg := NewRegistration(config.AgentConfig{
+				CortexApiBaseUrl: server.URL,
+				CortexApiToken:   "test_token",
+			}, client)
+
+			for i := 0; i < 3; i++ {
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					reg.Register(common.Integration("test_integration"), "test_alias")
+				}()
+				select {
+				case <-done:
+				case <-time.After(5 * time.Second):
+					t.Fatalf("register %d is waiting for a connection held by an earlier call", i+1)
+				}
+			}
+		})
+	}
 }

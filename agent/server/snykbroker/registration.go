@@ -94,6 +94,12 @@ func (r *registration) Register(integration common.Integration, alias string) (*
 
 		return nil, &RegistrationError{error: err, Message: "error making relay registration request"}
 	}
+	// The decoder can stop before the end of a chunked body. Read to EOF so
+	// the connection goes back to the pool instead of holding a slot forever.
+	defer func() {
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}()
 
 	switch resp.StatusCode {
 	case http.StatusOK:
