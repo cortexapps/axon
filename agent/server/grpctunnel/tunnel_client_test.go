@@ -3,6 +3,7 @@ package grpctunnel
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
@@ -16,11 +17,13 @@ import (
 	pb "github.com/cortexapps/axon/.generated/proto/github.com/cortexapps/axon/tunnelpb"
 	"github.com/cortexapps/axon/common"
 	"github.com/cortexapps/axon/config"
+	cortexHttp "github.com/cortexapps/axon/server/http"
 	"github.com/cortexapps/axon/server/snykbroker"
 	"github.com/cortexapps/axon/server/snykbroker/acceptfile"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/require"
+	gomock "go.uber.org/mock/gomock"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest"
 	"google.golang.org/grpc"
@@ -890,4 +893,48 @@ type backendFunc func(ctx context.Context, req *BackendRequest) (*BackendRespons
 
 func (f backendFunc) Do(ctx context.Context, req *BackendRequest) (*BackendResponse, error) {
 	return f(ctx, req)
+}
+
+// The upstream connection cap belongs to the tunnel alone: NewTunnelClient
+// clones the shared transport (keeping proxy, TLS and timeouts) and applies
+// UpstreamMaxConnsPerHost to its own copy, leaving the base untouched.
+func TestNewTunnelClient_ClonesTransportWithUpstreamCap(t *testing.T) {
+	newParams := func(t *testing.T, tr *http.Transport, maxConns int) TunnelClientParams {
+		ctrl := gomock.NewController(t)
+		server := cortexHttp.NewMockServer(ctrl)
+		server.EXPECT().RegisterHandler(gomock.Any()).AnyTimes()
+		return TunnelClientParams{
+			Config:          config.AgentConfig{UpstreamMaxConnsPerHost: maxConns, TunnelConns: 1},
+			Logger:          zaptest.NewLogger(t),
+			IntegrationInfo: common.IntegrationInfo{Integration: common.IntegrationGithub},
+			HttpServer:      server,
+			Registration:    &fakeRegistration{serverURI: "localhost:1", tokens: []string{"tok"}},
+			Transport:       tr,
+		}
+	}
+
+	t.Run("clones the injected transport", func(t *testing.T) {
+		base := &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			IdleConnTimeout: 90 * time.Second,
+		}
+		tc := NewTunnelClient(newParams(t, base, 7)).(*tunnelClient)
+
+		tr := tc.httpClient.Transport.(*http.Transport)
+		require.NotSame(t, base, tr)
+		require.Equal(t, 7, tr.MaxConnsPerHost)
+		require.Equal(t, 7, tr.MaxIdleConnsPerHost)
+		require.Equal(t, 14, tr.MaxIdleConns)
+		require.Equal(t, 90*time.Second, tr.IdleConnTimeout)
+		require.True(t, tr.TLSClientConfig.InsecureSkipVerify, "TLS config must carry over")
+		require.Equal(t, 0, base.MaxConnsPerHost, "base transport must stay uncapped")
+	})
+
+	t.Run("falls back to a capped default transport", func(t *testing.T) {
+		tc := NewTunnelClient(newParams(t, nil, 0)).(*tunnelClient)
+
+		tr := tc.httpClient.Transport.(*http.Transport)
+		require.Equal(t, 128, tr.MaxConnsPerHost)
+		require.NotNil(t, tr.Proxy)
+	})
 }

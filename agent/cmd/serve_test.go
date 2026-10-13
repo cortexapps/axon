@@ -159,3 +159,27 @@ func TestBuildRelayStack(t *testing.T) {
 	testAxonHealthcheck(t, config.HttpServerPort)
 	app.Stop(context.Background())
 }
+
+// The gRPC tunnel takes the shared *http.Transport through an optional fx
+// parameter; validating the graph proves the dependency resolves without
+// dialing anything.
+func TestBuildRelayStackGrpcTunnel_Validates(t *testing.T) {
+	oldEnv := util.SaveEnv(false)
+	defer util.RestoreEnv(oldEnv)
+
+	common.ApplyEnv(map[string]string{
+		"DRYRUN":         "true",
+		"PORT":           "0",
+		"ACCEPTFILE_DIR": "../server/snykbroker/accept_files",
+		"GITHUB_TOKEN":   "the-token",
+		"GITHUB_API":     "api.github.com",
+		"GITHUB_GRAPHQL": "api.github.com/graphql",
+	})
+
+	cfg := config.NewAgentEnvConfig()
+	cfg.RelayMode = string(config.RelayModeGrpcTunnel)
+	require.True(t, cfg.IsGRPCTunnel())
+
+	stack := buildRelayStack(&cobra.Command{}, cfg, common.IntegrationInfo{Integration: common.IntegrationGithub})
+	require.NoError(t, fx.ValidateApp(stack))
+}
