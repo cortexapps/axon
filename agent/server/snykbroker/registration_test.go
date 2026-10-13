@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cortexapps/axon/common"
 	"github.com/cortexapps/axon/config"
@@ -190,5 +191,34 @@ func TestRegister_ReleasesConnection(t *testing.T) {
 			require.True(t, body.eof, "body was not read to EOF")
 			require.True(t, body.closed, "body was not closed")
 		})
+	}
+}
+
+// The production failure: a chunked response whose terminator arrives after
+// the JSON value. With a one-connection pool, a Register that does not drain
+// and close the body holds that connection forever and the next call blocks.
+func TestRegister_ReleasesPooledConnection(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"serverUri":"http://example.com","token":"the_broker_token"}`))
+		w.(http.Flusher).Flush() // data chunk on the wire; terminator only when the handler returns
+		time.Sleep(100 * time.Millisecond)
+	}))
+	defer server.Close()
+
+	client := &http.Client{
+		Transport: &http.Transport{MaxConnsPerHost: 1},
+		Timeout:   2 * time.Second,
+	}
+	reg := NewRegistration(config.AgentConfig{
+		CortexApiBaseUrl: server.URL,
+		CortexApiToken:   "test_token",
+	}, client)
+
+	for i := 0; i < 2; i++ {
+		resp, err := reg.Register(common.Integration("test_integration"), "test_alias")
+		require.NoError(t, err, "call %d", i+1)
+		require.Equal(t, "the_broker_token", resp.Token)
 	}
 }

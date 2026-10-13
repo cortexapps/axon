@@ -71,6 +71,7 @@ func (h *httpRequestHelper) doRequest(ctx context.Context, method string, url st
 		}
 
 		if resp.StatusCode == http.StatusTooManyRequests {
+			io.Copy(io.Discard, resp.Body)
 			resp.Body.Close()
 			retryAfter := resp.Header.Get("Retry-After")
 			if retryAfter == "" {
