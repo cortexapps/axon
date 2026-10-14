@@ -5,3 +5,7 @@ venv
 .idea/*
 sdks/python/dist
 .qodo
+
+# Ignore claude output files and configurations
+**/.claude/
+CLAUDE.md
