@@ -20,6 +20,7 @@ import (
 	cortexHttp "github.com/cortexapps/axon/server/http"
 	"github.com/cortexapps/axon/server/snykbroker"
 	"github.com/cortexapps/axon/server/snykbroker/acceptfile"
+	"github.com/cortexapps/axon/test/httpfake"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/require"
@@ -98,7 +99,7 @@ func (s *stubBackend) Do(ctx context.Context, req *BackendRequest) (*BackendResp
 	return &BackendResponse{
 		StatusCode: s.statusCode,
 		Header:     http.Header{"Content-Type": []string{"text/plain"}},
-		Body:       io.NopCloser(bytes.NewReader(s.body)),
+		Body:       httpfake.NewBody(ctx, bytes.NewReader(s.body)),
 		Trailer:    func() http.Header { return nil },
 	}, nil
 }
@@ -707,7 +708,7 @@ func TestCall_StreamedRequestBody(t *testing.T) {
 		return &BackendResponse{
 			StatusCode: 201,
 			Header:     http.Header{},
-			Body:       io.NopCloser(bytes.NewReader(nil)),
+			Body:       httpfake.NewBody(ctx, bytes.NewReader(nil)),
 			Trailer:    func() http.Header { return nil },
 		}, nil
 	})

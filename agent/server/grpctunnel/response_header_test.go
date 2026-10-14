@@ -3,12 +3,12 @@ package grpctunnel
 import (
 	"bytes"
 	"context"
-	"io"
 	"net/http"
 	"testing"
 
 	pb "github.com/cortexapps/axon/.generated/proto/github.com/cortexapps/axon/tunnelpb"
 	"github.com/cortexapps/axon/config"
+	"github.com/cortexapps/axon/test/httpfake"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -26,7 +26,7 @@ func TestResponse_CarriesRelayInstanceHeader(t *testing.T) {
 		return &BackendResponse{
 			StatusCode: 200,
 			Header:     http.Header{"Content-Type": []string{"text/plain"}},
-			Body:       io.NopCloser(bytes.NewReader([]byte("ok"))),
+			Body:       httpfake.NewBody(ctx, bytes.NewReader([]byte("ok"))),
 			Trailer:    func() http.Header { return nil },
 		}, nil
 	})
@@ -57,7 +57,7 @@ func TestResponse_OmitsRelayInstanceHeaderWhenUnset(t *testing.T) {
 		return &BackendResponse{
 			StatusCode: 200,
 			Header:     http.Header{},
-			Body:       io.NopCloser(bytes.NewReader(nil)),
+			Body:       httpfake.NewBody(ctx, bytes.NewReader(nil)),
 			Trailer:    func() http.Header { return nil },
 		}, nil
 	})

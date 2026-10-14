@@ -36,6 +36,12 @@ type Body struct {
 	Closed bool
 }
 
+// NewBody returns a Body bound to ctx, for fakes that sit above the HTTP
+// client but still hand a response body to code that must drain and close it.
+func NewBody(ctx context.Context, r io.Reader) *Body {
+	return &Body{Reader: r, ctx: ctx}
+}
+
 func (b *Body) Read(p []byte) (int, error) {
 	if b.Closed {
 		return 0, http.ErrBodyReadAfterClose
@@ -79,7 +85,7 @@ func (t *Transport) RoundTrip(r *http.Request) (*http.Response, error) {
 		return nil, fmt.Errorf("httpfake: reading canned response %d: %w", i+1, err)
 	}
 	resp := *t.Responses[i]
-	body := &Body{Reader: bytes.NewReader(data), ctx: r.Context()}
+	body := NewBody(r.Context(), bytes.NewReader(data))
 	resp.Body = body
 	resp.Request = r
 	t.Bodies = append(t.Bodies, body)
