@@ -322,3 +322,38 @@ func TestCall_RateLimitedBodyIsDrainedAndClosed(t *testing.T) {
 	require.True(t, ok.eof)
 	require.True(t, ok.closed)
 }
+
+// ctxBody fails reads once its request context is done, as a net/http
+// response body does.
+type ctxBody struct {
+	io.Reader
+	ctx context.Context
+}
+
+func (b *ctxBody) Read(p []byte) (int, error) {
+	if err := b.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return b.Reader.Read(p)
+}
+
+func (b *ctxBody) Close() error { return nil }
+
+func TestCall_ReadsBodyBeforeDefaultDeadlineIsCancelled(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{},
+			Body:       &ctxBody{Reader: strings.NewReader(`{"ok":true}`), ctx: r.Context()},
+			Request:    r,
+		}, nil
+	})}
+	server := &cortexApiServer{
+		logger: zap.NewNop(),
+		helper: &httpRequestHelper{BaseURL: "http://cortex.example.com", logger: zap.NewNop(), client: client},
+	}
+
+	resp, err := server.Call(context.Background(), &pb.CallRequest{Method: "GET", Path: "/test"})
+	require.NoError(t, err)
+	require.Equal(t, `{"ok":true}`, resp.Body)
+}
