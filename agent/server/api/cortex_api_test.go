@@ -5,7 +5,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +12,7 @@ import (
 	"github.com/cortexapps/axon/common"
 	"github.com/cortexapps/axon/config"
 	cortex_http "github.com/cortexapps/axon/server/http"
+	"github.com/cortexapps/axon/test/httpfake"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 )
@@ -251,109 +251,42 @@ func TestHelper_RateLimited_StopsAtDeadline(t *testing.T) {
 	require.Less(t, time.Since(start), time.Second)
 }
 
-type roundTripFunc func(*http.Request) (*http.Response, error)
-
-func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
-
-// trackedBody records whether a response body was read to EOF and closed,
-// which is what net/http needs before it returns a connection to the pool.
-type trackedBody struct {
-	io.Reader
-	eof    bool
-	closed bool
-}
-
-func (b *trackedBody) Read(p []byte) (int, error) {
-	n, err := b.Reader.Read(p)
-	if err == io.EOF {
-		b.eof = true
-	}
-	return n, err
-}
-
-func (b *trackedBody) Close() error {
-	b.closed = true
-	return nil
-}
-
-func newTrackedServer(bodies ...*http.Response) (*cortexApiServer, func() int) {
-	calls := 0
-	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-		resp := bodies[calls]
-		calls++
-		resp.Request = r
-		return resp, nil
-	})}
+func newFakeServer(responses ...*http.Response) (*cortexApiServer, *httpfake.Transport) {
+	client, tr := httpfake.Client(responses...)
 	return &cortexApiServer{
 		logger: zap.NewNop(),
 		helper: &httpRequestHelper{BaseURL: "http://cortex.example.com", logger: zap.NewNop(), client: client},
-	}, func() int { return calls }
+	}, tr
 }
 
-func TestCall_ClosesResponseBody(t *testing.T) {
+// Every fake body fails reads once the request context is done, so this
+// also covers the default deadline staying in force until the body is read.
+func TestCall_ReadsDrainsAndClosesResponseBody(t *testing.T) {
 	for _, status := range []int{http.StatusOK, http.StatusNotFound} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
-			body := &trackedBody{Reader: strings.NewReader(`{"ok":true}` + "\n\n")}
-			server, _ := newTrackedServer(&http.Response{StatusCode: status, Body: body, Header: http.Header{}})
+			server, tr := newFakeServer(httpfake.Response(status, `{"ok":true}`+"\n\n"))
 
 			resp, err := server.Call(context.Background(), &pb.CallRequest{Method: "GET", Path: "/test"})
 			require.NoError(t, err)
 			require.Equal(t, int32(status), resp.StatusCode)
-			require.True(t, body.eof, "body was not read to EOF")
-			require.True(t, body.closed, "body was not closed")
+			require.Equal(t, `{"ok":true}`+"\n\n", resp.Body)
+			require.True(t, tr.Bodies[0].EOF, "body was not read to EOF")
+			require.True(t, tr.Bodies[0].Closed, "body was not closed")
 		})
 	}
 }
 
 func TestCall_RateLimitedBodyIsDrainedAndClosed(t *testing.T) {
-	limited := &trackedBody{Reader: strings.NewReader(`{"error":"slow down"}` + "\n\n")}
-	ok := &trackedBody{Reader: strings.NewReader(`{"ok":true}`)}
-	server, calls := newTrackedServer(
-		&http.Response{StatusCode: http.StatusTooManyRequests, Body: limited, Header: http.Header{"Retry-After": {".01"}}},
-		&http.Response{StatusCode: http.StatusOK, Body: ok, Header: http.Header{}},
-	)
+	limited := httpfake.Response(http.StatusTooManyRequests, `{"error":"slow down"}`+"\n\n")
+	limited.Header.Set("Retry-After", ".01")
+	server, tr := newFakeServer(limited, httpfake.Response(http.StatusOK, `{"ok":true}`))
 
 	resp, err := server.Call(context.Background(), &pb.CallRequest{Method: "GET", Path: "/test"})
 	require.NoError(t, err)
 	require.Equal(t, int32(http.StatusOK), resp.StatusCode)
-	require.Equal(t, 2, calls())
-	require.True(t, limited.eof, "429 body was not drained")
-	require.True(t, limited.closed, "429 body was not closed")
-	require.True(t, ok.eof)
-	require.True(t, ok.closed)
-}
-
-// ctxBody fails reads once its request context is done, as a net/http
-// response body does.
-type ctxBody struct {
-	io.Reader
-	ctx context.Context
-}
-
-func (b *ctxBody) Read(p []byte) (int, error) {
-	if err := b.ctx.Err(); err != nil {
-		return 0, err
-	}
-	return b.Reader.Read(p)
-}
-
-func (b *ctxBody) Close() error { return nil }
-
-func TestCall_ReadsBodyBeforeDefaultDeadlineIsCancelled(t *testing.T) {
-	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Header:     http.Header{},
-			Body:       &ctxBody{Reader: strings.NewReader(`{"ok":true}`), ctx: r.Context()},
-			Request:    r,
-		}, nil
-	})}
-	server := &cortexApiServer{
-		logger: zap.NewNop(),
-		helper: &httpRequestHelper{BaseURL: "http://cortex.example.com", logger: zap.NewNop(), client: client},
-	}
-
-	resp, err := server.Call(context.Background(), &pb.CallRequest{Method: "GET", Path: "/test"})
-	require.NoError(t, err)
-	require.Equal(t, `{"ok":true}`, resp.Body)
+	require.Len(t, tr.Bodies, 2)
+	require.True(t, tr.Bodies[0].EOF, "429 body was not drained")
+	require.True(t, tr.Bodies[0].Closed, "429 body was not closed")
+	require.True(t, tr.Bodies[1].EOF)
+	require.True(t, tr.Bodies[1].Closed)
 }
