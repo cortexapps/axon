@@ -57,6 +57,9 @@ services:
       GITLAB_TOKEN: gitlab-test-token
       PORT: 7433
       PLUGIN_DIRS: /agent/plugins
+      # Turns on the captured-log store so the shared scenarios can page
+      # /__axon/logs back through the relay.
+      REMOTE_LOGS_VISIBLE: "*"
       RELAY_MODE: grpc-tunnel
       AXON_GRPC_TUNNEL_CONNS: 2
       BROKER_SERVER_URL: grpc-tunnel-server:50052

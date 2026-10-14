@@ -89,3 +89,54 @@ func TestEnvConfig_MaxRequestTimeout(t *testing.T) {
 	t.Setenv("AXON_GRPC_TUNNEL_MAX_REQUEST_TIMEOUT", "90s")
 	assert.Equal(t, "1m30s", NewAgentEnvConfig().MaxRequestTimeout.String())
 }
+
+// REMOTE_LOGS_VISIBLE turns on the on-disk log capture that __axon/logs
+// serves. Unset means off, so an agent that never heard of the feature
+// writes nothing to disk.
+func TestEnvConfig_RemoteLogsDefaultsOff(t *testing.T) {
+	cfg := NewAgentEnvConfig()
+	assert.False(t, cfg.RemoteLogsEnabled())
+	assert.Equal(t, "", cfg.RemoteLogsVisible)
+	assert.Equal(t, "/tmp/axon-agent/logs", cfg.RemoteLogsPath)
+	assert.Equal(t, int64(50<<20), cfg.RemoteLogsMaxSizeBytes)
+}
+
+func TestEnvConfig_RemoteLogsVisibleAcceptsLevelsAndStar(t *testing.T) {
+	for _, v := range []string{"*", "debug", "info", "warn", "error"} {
+		t.Setenv("REMOTE_LOGS_VISIBLE", v)
+		cfg := NewAgentEnvConfig()
+		assert.True(t, cfg.RemoteLogsEnabled(), v)
+		assert.Equal(t, v, cfg.RemoteLogsVisible)
+	}
+}
+
+// Customers type these by hand into a compose file; a stray space or
+// capital should not silently disable the feature or be rejected.
+func TestEnvConfig_RemoteLogsVisibleIsNormalized(t *testing.T) {
+	t.Setenv("REMOTE_LOGS_VISIBLE", " WARN ")
+	assert.Equal(t, "warn", NewAgentEnvConfig().RemoteLogsVisible)
+}
+
+func TestEnvConfig_RemoteLogsVisibleRejectsNonsense(t *testing.T) {
+	for _, v := range []string{"trace", "yes", "2"} {
+		t.Setenv("REMOTE_LOGS_VISIBLE", v)
+		assert.Panics(t, func() { NewAgentEnvConfig() }, v)
+	}
+}
+
+func TestEnvConfig_RemoteLogsPathAndSize(t *testing.T) {
+	t.Setenv("REMOTE_LOGS_PATH", "/var/log/axon/logs")
+	t.Setenv("REMOTE_LOGS_MAX_SIZE_BYTES", "2097152")
+	cfg := NewAgentEnvConfig()
+	assert.Equal(t, "/var/log/axon/logs", cfg.RemoteLogsPath)
+	assert.Equal(t, int64(2<<20), cfg.RemoteLogsMaxSizeBytes)
+}
+
+// Below a megabyte the store cannot hold even one segment, so it would
+// rotate on every line. Rejecting it at startup is kinder than that.
+func TestEnvConfig_RemoteLogsMaxSizeRejectsTooSmallOrNonsense(t *testing.T) {
+	for _, v := range []string{"0", "1024", "abc"} {
+		t.Setenv("REMOTE_LOGS_MAX_SIZE_BYTES", v)
+		assert.Panics(t, func() { NewAgentEnvConfig() }, v)
+	}
+}

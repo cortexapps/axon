@@ -288,6 +288,32 @@ proxy:
 
   Your docker or kubernetes instance will also need to reach ghcr.io in order to pull the agent docker image.
 
+## Remote log access
+
+When something goes wrong, the detail is usually in the agent's own log output, which only you can see. Setting `REMOTE_LOGS_VISIBLE` lets the agent keep a bounded copy of that output on disk and serve it to Cortex over the relay, so Cortex support can read it without asking you to collect and send logs.
+
+| Variable | Values | Default |
+|---|---|---|
+| `REMOTE_LOGS_VISIBLE` | Unset or empty turns the feature off. `*` captures every level, including debug. `debug`, `info`, `warn` or `error` captures that level and above. | off |
+| `REMOTE_LOGS_PATH` | Directory the captured logs are written to. | `/var/log/axon/logs` in the container image |
+| `REMOTE_LOGS_MAX_SIZE_BYTES` | Upper bound on the captured logs on disk; the oldest are dropped first. Must be at least 1048576. | `52428800` (50MB) |
+
+For example, with Docker:
+
+```bash
+docker run ... -e REMOTE_LOGS_VISIBLE=info ... cortex-axon-agent:latest relay -i github -a github-relay
+```
+
+or with the Helm chart, under `relay.env`:
+
+```yaml
+relay:
+  env:
+    REMOTE_LOGS_VISIBLE: "info"
+```
+
+Only the agent's own log output is captured. In snyk-broker mode the broker's own output is not. Whether the feature is on is reported by `/__axon/info` as `remote_logs`, and Cortex reads the captured logs through `/__axon/logs`, newest first, following the `next` continuation token from each page to the older one. The captured lines are the same structured JSON the agent writes in production mode, regardless of `ENV`.
+
 ## Understanding the Agent configuration
 
 Agent configuration is driven with an `accept.json` file which defines which outbound routes the agent can call in your environment.  There are built-in files for all of the supported integrations [here](agent/server/snykbroker/accept_files), but these files are not special, you can always create your own file and pass it with the `-f` flag, for example:

@@ -10,6 +10,10 @@ relay:
     #
     # GITHUB_API: "https://api.github.com"
     # GITHUB_GRAPHQL_API: "https://api.github.com/graphql"
+    #
+    # Let Cortex support read this agent's logs. See "Remote log access"
+    # in README.relay.md. "*" captures everything; or name a level.
+    # REMOTE_LOGS_VISIBLE: "info"
   verbose: false # set to true to enable verbose logging
 
 replicaCount: 2

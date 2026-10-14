@@ -7,6 +7,7 @@ import (
 	"github.com/cortexapps/axon/server/api"
 	"github.com/cortexapps/axon/server/handler"
 	cortexHttp "github.com/cortexapps/axon/server/http"
+	"github.com/cortexapps/axon/server/logstore"
 	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/fx"
 	"go.uber.org/zap"
@@ -20,6 +21,7 @@ type MainHttpServerParams struct {
 	Registry       *prometheus.Registry
 	Transport      *http.Transport
 	HandlerManager handler.Manager `optional:"true"`
+	LogStore       *logstore.Store `optional:"true"`
 }
 
 func NewMainHttpServer(p MainHttpServerParams) cortexHttp.Server {
@@ -40,6 +42,7 @@ func NewMainHttpServer(p MainHttpServerParams) cortexHttp.Server {
 		Logger:         p.Logger,
 		Config:         p.Config,
 		HandlerManager: p.HandlerManager,
+		LogStore:       p.LogStore,
 	}
 	axonHandler := cortexHttp.NewAxonHandler(params)
 	httpServer.RegisterHandler(axonHandler)
