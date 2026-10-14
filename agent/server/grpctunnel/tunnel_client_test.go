@@ -986,3 +986,24 @@ func TestCall_ServerCancelKeepsCallInTableUntilGoroutineExits(t *testing.T) {
 	fc.waitDone(t, 1)
 	waitFor(t, 5*time.Second, func() bool { return !table.active() })
 }
+
+// Close has to wait for the goroutine Start launched. That goroutine
+// registers, opens the workers and logs that the tunnel started, and a Close
+// that raced it returned with all of that still to happen: workers were
+// added to the wait group after Wait had returned, and the startup log line
+// landed after the caller had torn the client down, which under the test
+// logger is a panic. Looping makes the race wide enough to hit on every run
+// under -race.
+func TestStartThenClose_WaitsForStartup(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		t.Run(fmt.Sprintf("%d", i), func(t *testing.T) {
+			svc := &fakeTunnelService{behavior: serverBehavior{serverID: "fast-close"}}
+			addr, stop := startFakeServer(t, svc)
+			defer stop()
+
+			tc, _ := newTestClient(t, config.AgentConfig{}, &fakeRegistration{serverURI: addr, tokens: []string{"t"}})
+			startClientWithEnv(t, tc, addr, "t")
+			require.NoError(t, tc.Close())
+		})
+	}
+}
