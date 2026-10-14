@@ -2,13 +2,17 @@ package handler
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sort"
 	"testing"
 	"time"
 
 	pb "github.com/cortexapps/axon/.generated/proto/github.com/cortexapps/axon"
+	"github.com/cortexapps/axon/config"
 	"github.com/cortexapps/axon/server/cron"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 )
@@ -110,11 +114,12 @@ func TestTriggerAndDequeue(t *testing.T) {
 	time.Sleep(time.Millisecond * 10)
 	metrics, err := registry.Gather()
 	require.NoError(t, err)
-	require.Equal(t, 3, len(metrics))
+	require.Equal(t, 4, len(metrics))
 
 	expected := []string{
 		"axon_handler_invokes",
 		"axon_handler_latency",
+		"axon_handler_liveness",
 		"axon_handler_queue_depth",
 	}
 	sort.Strings(expected)
@@ -247,4 +252,101 @@ func TestTriggerRejectsWhenQueueIsFull(t *testing.T) {
 	}
 	_, err = rejected.GetResult()
 	require.Error(t, err)
+}
+
+// newLivenessManager returns a started manager with one webhook-only handler
+// whose invocations expire after 20ms, and a liveness policy that trips on
+// the first timeout.
+func newLivenessManager(t *testing.T, registry *prometheus.Registry) (*handlerManager, HandlerEntry) {
+	t.Helper()
+	logger, _ := zap.NewDevelopment()
+	mgr := NewHandlerManager(logger, cron.New(), registry,
+		WithLivenessPolicy(LivenessPolicy{TimeoutThreshold: 1})).(*handlerManager)
+
+	webhookOnly := &pb.HandlerOption{
+		Option: &pb.HandlerOption_Invoke{
+			Invoke: &pb.HandlerInvokeOption{Type: pb.HandlerInvokeType_WEBHOOK},
+		},
+	}
+	_, err := mgr.RegisterHandler("1", "handler1", 20*time.Millisecond, webhookOnly)
+	require.NoError(t, err)
+	require.NoError(t, mgr.Start("1"))
+	return mgr, mgr.ListHandlers()[0]
+}
+
+// An invocation that expires waiting in the dispatch queue is an agent-side
+// timeout: the SDK never read it.
+func TestTriggerCountsQueueExpiryAsTimeout(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	mgr, entry := newLivenessManager(t, registry)
+
+	invoke := NewHandlerInvoke(entry, pb.HandlerInvokeType_WEBHOOK, nil)
+	require.NoError(t, mgr.Trigger(invoke))
+	<-invoke.Done()
+
+	require.Eventually(t, func() bool {
+		return mgr.Liveness().Snapshot().ConsecutiveTimeouts == 1
+	}, 2*time.Second, 10*time.Millisecond)
+	require.Equal(t, float64(1), testutil.ToFloat64(mgr.timeoutCounter.WithLabelValues("handler1")))
+}
+
+// The server's sent-time timer completes an invocation with
+// ErrInvocationTimeout; that is the other agent-side timeout.
+func TestTriggerCountsServerTimeoutSentinel(t *testing.T) {
+	mgr, entry := newLivenessManager(t, nil)
+
+	invoke := NewHandlerInvoke(entry, pb.HandlerInvokeType_WEBHOOK, nil)
+	require.NoError(t, mgr.Trigger(invoke))
+	dequeued, err := mgr.Dequeue(context.Background(), "1", time.Second)
+	require.NoError(t, err)
+	require.NotNil(t, dequeued)
+	require.NoError(t, dequeued.Complete("", fmt.Errorf("%w: handler did not report a result", ErrInvocationTimeout)))
+
+	require.Eventually(t, func() bool {
+		return mgr.Liveness().Snapshot().ConsecutiveTimeouts == 1
+	}, 2*time.Second, 10*time.Millisecond)
+}
+
+// An error the SDK reported, or a rejection because the queue is full, says
+// nothing about whether the SDK is draining; neither counts as a timeout.
+func TestTriggerDoesNotCountReportedErrors(t *testing.T) {
+	mgr, entry := newLivenessManager(t, nil)
+
+	invoke := NewHandlerInvoke(entry, pb.HandlerInvokeType_WEBHOOK, nil)
+	require.NoError(t, mgr.Trigger(invoke))
+	dequeued, err := mgr.Dequeue(context.Background(), "1", time.Second)
+	require.NoError(t, err)
+	require.NoError(t, dequeued.Complete("", errors.New("boom")))
+	require.Eventually(t, func() bool {
+		return testutil.ToFloat64(mgr.invokeCounter.WithLabelValues("handler1", "error")) == 1
+	}, 2*time.Second, 10*time.Millisecond)
+	require.Equal(t, 0, mgr.Liveness().Snapshot().ConsecutiveTimeouts)
+	require.Equal(t, float64(0), testutil.ToFloat64(mgr.timeoutCounter.WithLabelValues("handler1")))
+
+	// Fill the queue with long-lived invocations, then get one refused.
+	_, err = mgr.RegisterHandler("2", "handler2", time.Hour, &pb.HandlerOption{
+		Option: &pb.HandlerOption_Invoke{Invoke: &pb.HandlerInvokeOption{Type: pb.HandlerInvokeType_WEBHOOK}},
+	})
+	require.NoError(t, err)
+	require.NoError(t, mgr.Start("2"))
+	var entry2 HandlerEntry
+	for _, e := range mgr.ListHandlers() {
+		if e.Name() == "handler2" {
+			entry2 = e
+		}
+	}
+	require.NotNil(t, entry2)
+	for i := 0; i < dispatchQueueDepth; i++ {
+		require.NoError(t, mgr.Trigger(NewHandlerInvoke(entry2, pb.HandlerInvokeType_WEBHOOK, nil)))
+	}
+	rejected := NewHandlerInvoke(entry2, pb.HandlerInvokeType_WEBHOOK, nil)
+	require.ErrorIs(t, mgr.Trigger(rejected), ErrDispatchQueueFull)
+	<-rejected.Done()
+	require.Equal(t, 0, mgr.Liveness().Snapshot().ConsecutiveTimeouts)
+}
+
+func TestNewHandlerManagerFromConfig_AppliesLivenessPolicy(t *testing.T) {
+	cfg := config.AgentConfig{LivenessTimeoutThreshold: 7, LivenessMinFailureAge: time.Minute}
+	mgr := NewHandlerManagerFromConfig(cfg, zap.NewNop(), cron.New(), nil)
+	require.Equal(t, LivenessPolicy{TimeoutThreshold: 7, MinFailureAge: time.Minute}, mgr.Liveness().Policy())
 }

@@ -43,6 +43,10 @@ type AxonAgent struct {
 	inflightLock        sync.RWMutex
 	outstandingRequests map[string]inflightRequest
 	historyManager      handler.HistoryManager
+	// closed is closed by Close so expiry timers still pending stop instead
+	// of finishing invocations against a torn-down agent.
+	closed    chan struct{}
+	closeOnce sync.Once
 }
 
 type inflightRequest struct {
@@ -69,6 +73,7 @@ func NewAxonAgent(
 		cortexApiServer:     api.NewCortexApiServer(logger, p.Config),
 		outstandingRequests: make(map[string]inflightRequest),
 		historyManager:      handler.NewHistoryManager(p.Config, logger),
+		closed:              make(chan struct{}),
 	}
 
 	if p.Lifecycle != nil {
@@ -115,6 +120,13 @@ func (s *AxonAgent) Dispatch(stream pb.AxonAgent_DispatchServer) error {
 		return fmt.Errorf("handler manager is not initialized")
 	}
 
+	connected := false
+	defer func() {
+		if connected {
+			s.liveness().RecordStreamDisconnected()
+		}
+	}()
+
 	firstRequest := true
 	for {
 		req, err := stream.Recv()
@@ -123,14 +135,17 @@ func (s *AxonAgent) Dispatch(stream pb.AxonAgent_DispatchServer) error {
 			return nil
 		}
 
-		if firstRequest {
-			s.logger.Info("received dispatch request", zap.String("dispatch-id", req.DispatchId), zap.String("client-version", req.ClientVersion))
-			firstRequest = false
-		}
-
 		if err != nil {
 			s.logger.Error("failed to receive message", zap.Error(err))
 			return err
+		}
+
+		if firstRequest {
+			s.logger.Info("received dispatch request", zap.String("dispatch-id", req.DispatchId), zap.String("client-version", req.ClientVersion))
+			firstRequest = false
+			// One connect per stream, not per DispatchRequest received.
+			s.liveness().RecordStreamConnected()
+			connected = true
 		}
 
 		s.sendInvocations(req.DispatchId, stream)
@@ -204,18 +219,7 @@ func (s *AxonAgent) sendInvocations(dispatchId string, stream pb.AxonAgent_Dispa
 				invocable: invoke,
 				sentAt:    now,
 			})
-			go func(requestId string) {
-				<-time.After(time.Duration(msg.TimeoutMs) * time.Millisecond)
-				s.ReportInvocation(context.Background(), &pb.ReportInvocationRequest{
-					HandlerInvoke: msg,
-					Message: &pb.ReportInvocationRequest_Error{Error: &pb.Error{
-						Code: "timeout",
-						Message: fmt.Sprintf(
-							"handler did not report a result within %dms",
-							msg.TimeoutMs),
-					}},
-				})
-			}(msg.InvocationId)
+			go s.waitForExpiry(msg)
 		}
 	}()
 	return nil
@@ -249,23 +253,75 @@ func describeError(e *pb.Error) string {
 	return "unknown"
 }
 
+// liveness is the manager's tracker, or nil (every method of which is a
+// no-op) when there is no manager.
+func (s *AxonAgent) liveness() *handler.Liveness {
+	if s.Manager == nil {
+		return nil
+	}
+	return s.Manager.Liveness()
+}
+
 // ReportInvocation is called by the client to report the result of an invocation, which will
 // log the result of an invocation into the history path.
+//
+// It is SDK-originated only: the agent's own timeout path is expireInvocation.
+// That split is what liveness classification rests on. Any report, result or
+// error, on time or late, proves the SDK's dispatch loop is reading and
+// reporting, so it is recorded before the outstanding lookup, which a late
+// report no longer passes.
 func (s *AxonAgent) ReportInvocation(ctx context.Context, req *pb.ReportInvocationRequest) (*pb.ReportInvocationResponse, error) {
+	s.liveness().RecordSuccess()
+
+	var requestErr error
+	if e := req.GetError(); e != nil {
+		requestErr = fmt.Errorf("invocation error: %s", describeError(e))
+	}
+	s.finishInvocation(ctx, req, requestErr)
+	return &pb.ReportInvocationResponse{}, nil
+}
+
+// waitForExpiry expires msg once its TimeoutMs has elapsed, unless the agent
+// closes first.
+func (s *AxonAgent) waitForExpiry(msg *pb.DispatchHandlerInvoke) {
+	timer := time.NewTimer(time.Duration(msg.TimeoutMs) * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		s.expireInvocation(msg)
+	case <-s.closed:
+	}
+}
+
+// expireInvocation is the agent's timer path: the SDK was sent the
+// invocation and never reported within its timeout. The history record is
+// the same as a reported timeout, but the invocation completes with
+// handler.ErrInvocationTimeout so the manager counts it as agent-side.
+func (s *AxonAgent) expireInvocation(msg *pb.DispatchHandlerInvoke) {
+	message := fmt.Sprintf("handler did not report a result within %dms", msg.TimeoutMs)
+	req := &pb.ReportInvocationRequest{
+		HandlerInvoke: msg,
+		Message: &pb.ReportInvocationRequest_Error{Error: &pb.Error{
+			Code:    "timeout",
+			Message: message,
+		}},
+	}
+	s.finishInvocation(context.Background(), req, fmt.Errorf("%w: %s", handler.ErrInvocationTimeout, message))
+}
+
+// finishInvocation completes an outstanding invocation with requestErr (nil
+// for a result) and writes its history record. Unknown ids are ignored: the
+// invocation already finished by the other path.
+func (s *AxonAgent) finishInvocation(ctx context.Context, req *pb.ReportInvocationRequest, requestErr error) {
 	s.inflightLock.RLock()
 	ifr, ok := s.outstandingRequests[req.HandlerInvoke.InvocationId]
 	s.inflightLock.RUnlock()
 
 	if !ok {
-		return &pb.ReportInvocationResponse{}, nil
+		return
 	}
 	defer s.setOutstandingRequest(req.HandlerInvoke.InvocationId, nil)
 
-	var requestErr error
-
-	if e := req.GetError(); e != nil {
-		requestErr = fmt.Errorf("invocation error: %s", describeError(e))
-	}
 	requestResult := ""
 
 	if rr := req.GetResult(); rr != nil {
@@ -278,7 +334,6 @@ func (s *AxonAgent) ReportInvocation(ctx context.Context, req *pb.ReportInvocati
 	if err != nil {
 		s.logger.Error("failed to write history file", zap.Error(err))
 	}
-	return &pb.ReportInvocationResponse{}, nil
 }
 
 // ListHandlers returns a list of all registered handlers
@@ -376,9 +431,11 @@ func (s *AxonAgent) Close() {
 		s.grpcServer.Stop()
 		s.grpcServer = nil
 	}
-	if s.historyManager != nil {
-		s.historyManager.Close()
-		s.historyManager = nil
+	s.closeOnce.Do(func() { close(s.closed) })
+	// Closed, not nilled: a report racing Close still has a manager to call,
+	// and a closed manager fails a write rather than panicking.
+	s.historyManager.Close()
+	if s.Manager != nil {
+		s.Manager.Close()
 	}
-	s.Manager.Close()
 }
