@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	pb "github.com/cortexapps/axon/.generated/proto/github.com/cortexapps/axon"
 	"github.com/cortexapps/axon/config"
@@ -26,11 +27,21 @@ func NewCortexApiServer(logger *zap.Logger, config config.AgentConfig) pb.Cortex
 	return server
 }
 
+// maxCallDuration bounds a call whose caller set no deadline, so that a
+// rate limited or hung request cannot hold its caller forever. The bound
+// covers reading the body, so it must stay in place until Call returns.
+const maxCallDuration = 5 * time.Minute
+
 // Call is a GRPC wrapper around a simple HTTP client optimized
 // for sending requests to the Cortex API.  The CallRequest allows
 // for a method, path, and optional body to be sent to the Cortex API.
 
 func (s *cortexApiServer) Call(ctx context.Context, req *pb.CallRequest) (*pb.CallResponse, error) {
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, maxCallDuration)
+		defer cancel()
+	}
 
 	var body *RequestBody = nil
 
