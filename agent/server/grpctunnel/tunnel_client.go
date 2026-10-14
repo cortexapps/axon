@@ -391,7 +391,15 @@ func (tc *tunnelClient) Start() error {
 	}
 	tc.resetForStart()
 
-	go tc.startAsync()
+	// Counted in wg so Close waits for it: startAsync registers, opens the
+	// workers and logs that the tunnel started, and a Close that raced it
+	// used to return with all of that still to happen, leaving goroutines
+	// and log lines to land after the caller thought the client was down.
+	tc.wg.Add(1)
+	go func() {
+		defer tc.wg.Done()
+		tc.startAsync()
+	}()
 	return nil
 }
 
