@@ -99,7 +99,7 @@ test: mocks
 # not yet: server, server/handler, server/http, server/snykbroker and cmd all
 # have known races (supervisor process lifecycle, handler manager, the fx
 # server stack). Move packages up here as those are fixed.
-RACE_CLEAN_PKGS := ./common/... ./config/... ./scaffold/... ./server/api/... ./server/cron/... ./server/snykbroker/acceptfile/... ./util/...
+RACE_CLEAN_PKGS := ./common/... ./config/... ./scaffold/... ./server/api/... ./server/cron/... ./server/snykbroker/acceptfile/... ./test/httpfake/... ./util/...
 
 # The reflector lives in server/snykbroker, whose other tests are not yet
 # race-clean, so it is gated at test granularity instead. Derived from the
