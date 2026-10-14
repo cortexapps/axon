@@ -90,7 +90,7 @@ func (tc *tunnelClient) handleCallFrame(sc *streamCtx, table *callTable, frame *
 	case *pb.CallFrame_Data:
 		c := table.get(frame.CallId)
 		if c == nil {
-			// Normal after cancellation: the server keeps sending until it
+			// Normal after a call ends: the server keeps sending until it
 			// processes our CallCancel.
 			tc.logger.Debug("Data for unknown call, dropping", zap.String("callId", frame.CallId))
 			return
@@ -98,6 +98,8 @@ func (tc *tunnelClient) handleCallFrame(sc *streamCtx, table *callTable, frame *
 		// Blocks when the upstream reads slowly; that's per-call
 		// backpressure. One call per stream, and heartbeat enforcement is
 		// relaxed while a call is active, so this cannot kill the stream.
+		// Fails at once for a call that was cancelled and has not yet left
+		// the table: its pipe is already closed.
 		if _, err := c.bodyW.Write(body.Data.Payload); err != nil {
 			tc.logger.Debug("Request body write failed; call is dead",
 				zap.String("callId", frame.CallId), zap.Error(err))
@@ -119,7 +121,11 @@ func (tc *tunnelClient) handleCallFrame(sc *streamCtx, table *callTable, frame *
 		tc.logger.Debug("Call cancelled by server",
 			zap.String("callId", frame.CallId),
 			zap.String("reason", body.Cancel.Reason))
-		table.remove(frame.CallId)
+		// Cancel, but do not remove: the entry leaves the table in the call
+		// goroutine's own defer, once it has finished with the backend and
+		// written its log lines. An entry in the table has to mean a
+		// goroutine is still running, which is what the heartbeat check
+		// relies on and what the test barrier waits for.
 		c.bodyW.CloseWithError(fmt.Errorf("cancelled by server: %s", body.Cancel.Reason))
 		c.cancel()
 	}

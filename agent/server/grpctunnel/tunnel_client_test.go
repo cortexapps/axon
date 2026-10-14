@@ -938,3 +938,51 @@ func TestNewTunnelClient_ClonesTransportWithUpstreamCap(t *testing.T) {
 		require.NotNil(t, tr.Proxy)
 	})
 }
+
+// A call stays in the table until its goroutine has finished, including
+// after a server-side cancel. The table is what the heartbeat check and the
+// test barrier in newTestCallTable use to mean "a call goroutine is still
+// running"; dropping the entry on the cancel frame, while the goroutine is
+// still unwinding the backend and logging, breaks both: the harness let a
+// test finish while its call goroutine still had a log line to write.
+func TestCall_ServerCancelKeepsCallInTableUntilGoroutineExits(t *testing.T) {
+	cfg := config.AgentConfig{MaxInflightRequests: 4, MaxRequestTimeout: 30 * time.Second}
+	tc, _ := newTestClient(t, cfg, &fakeRegistration{serverURI: "x", tokens: []string{"x"}})
+
+	entered := make(chan struct{})
+	cancelled := make(chan struct{})
+	release := make(chan struct{})
+	tc.backend = backendFunc(func(ctx context.Context, req *BackendRequest) (*BackendResponse, error) {
+		close(entered)
+		<-ctx.Done()
+		close(cancelled)
+		<-release // the goroutine is still alive, and will log, after this
+		return nil, ctx.Err()
+	})
+
+	fc := newFrameCollector()
+	sc := newTestStreamCtx(fc.sendFn)
+	table := newTestCallTable(t)
+
+	tc.startCall(sc, table, "c1", reqStart("GET", "/slow", 0))
+	// Cancel only once the call is in the backend; a cancel that lands while
+	// the call is still queued for a slot is rejected before any backend
+	// work, which is a different path.
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("backend was not entered")
+	}
+	tc.handleCallFrame(sc, table, &pb.CallFrame{CallId: "c1", Body: &pb.CallFrame_Cancel{Cancel: &pb.CallCancel{Reason: "caller gone"}}})
+
+	select {
+	case <-cancelled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("backend was not cancelled")
+	}
+	require.True(t, table.active(), "call left the table while its goroutine was still running")
+
+	close(release)
+	fc.waitDone(t, 1)
+	waitFor(t, 5*time.Second, func() bool { return !table.active() })
+}
