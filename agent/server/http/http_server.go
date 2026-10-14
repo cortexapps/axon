@@ -271,6 +271,14 @@ func metricPath(r *http.Request) string {
 
 var defaultReadTimeout = time.Second
 
+// defaultIdleTimeout is how long a keep-alive connection may sit between
+// requests. It is set explicitly because net/http otherwise reuses
+// ReadTimeout for this, and one second is shorter than the gaps between the
+// broker's requests: the broker keeps its connections open and would write
+// the next request into a socket this server had just closed, failing with
+// ECONNRESET and retrying.
+var defaultIdleTimeout = 5 * time.Minute
+
 func (h *httpServer) Start() (int, error) {
 
 	if h.server != nil {
@@ -292,6 +300,7 @@ func (h *httpServer) Start() (int, error) {
 	server := &http.Server{
 		Handler:     h.mux,
 		ReadTimeout: defaultReadTimeout,
+		IdleTimeout: defaultIdleTimeout,
 	}
 	h.server = server
 	go func() {
