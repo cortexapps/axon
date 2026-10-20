@@ -520,12 +520,12 @@ func (tc *tunnelClient) resolveRegistration() (token, serverAddr string, fromEnv
 	if err != nil {
 		return "", "", false, err
 	}
-	tc.logger.Info("Registered with Cortex API", zap.String("serverUri", regInfo.ServerUri))
 
 	serverAddr = regInfo.ServerUri
 	if envServerURL != "" {
 		serverAddr = envServerURL
 	}
+	tc.logger.Info("Registered with Cortex API", zap.String("serverUri", serverAddr))
 	return regInfo.Token, serverAddr, false, nil
 }
 
