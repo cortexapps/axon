@@ -9,6 +9,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -207,6 +208,33 @@ func TestHttpProxy(t *testing.T) {
 	require.Equal(t, "localhost,127.0.0.1", env["NO_PROXY"])
 	require.Equal(t, cfg.HttpCaCertFilePath, env["NODE_EXTRA_CA_CERTS"])
 
+}
+
+func TestHttpProxyDropsDistrustedCAs(t *testing.T) {
+	trusted, err := os.ReadFile("../../test/certs/selfsigned-1.pem")
+	require.NoError(t, err)
+	distrusted, err := os.ReadFile("../../test/certs/distrusted/emsign-ecc-root-ca-g3.pem")
+	require.NoError(t, err)
+	bundlePath := filepath.Join(t.TempDir(), "bundle.pem")
+	require.NoError(t, os.WriteFile(bundlePath, append(distrusted, trusted...), 0o600))
+
+	mgr := &relayInstanceManager{
+		config: config.AgentConfig{HttpCaCertFilePath: bundlePath},
+		integrationInfo: common.IntegrationInfo{
+			Integration: common.IntegrationGithub,
+			Alias:       "distrusted-ca-test",
+		},
+		logger: zap.NewNop(),
+	}
+	env := map[string]string{}
+	mgr.setHttpProxyEnvVars(env)
+
+	passed := env["NODE_EXTRA_CA_CERTS"]
+	require.NotEqual(t, bundlePath, passed)
+	t.Cleanup(func() { os.Remove(passed) })
+	got, err := os.ReadFile(passed)
+	require.NoError(t, err)
+	require.Equal(t, string(trusted), string(got))
 }
 
 // POST request successfully restarts supervisor and returns 200 OK

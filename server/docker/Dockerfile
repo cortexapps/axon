@@ -1,4 +1,4 @@
-FROM golang:1.26.9-bookworm AS builder
+FROM golang:1.26.10-bookworm AS builder
 
 RUN apt-get update && apt-get install -y protobuf-compiler
 
@@ -15,7 +15,7 @@ RUN go build -o /axon-tunnel-server ./cmd/...
 # Runtime image.
 FROM debian:bookworm-slim
 
-ARG APT_CACHE_BUST=2026-10-05
+ARG APT_CACHE_BUST=2026-10-21
 RUN echo "apt cache bust: $APT_CACHE_BUST" \
     && apt-get update && apt-get upgrade -y && apt-get install -y ca-certificates \
     && rm -rf /var/lib/apt/lists/*

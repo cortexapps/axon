@@ -751,7 +751,7 @@ func (r *relayInstanceManager) setHttpProxyEnvVars(brokerEnv map[string]string) 
 	brokerEnv["NO_PROXY"] = util.EnsureLocalhostNoProxy(false)
 
 	if certPath := r.getCertFilePath(r.config.HttpCaCertFilePath); certPath != "" {
-		brokerEnv["NODE_EXTRA_CA_CERTS"] = certPath
+		brokerEnv["NODE_EXTRA_CA_CERTS"] = r.withoutDistrustedCAs(certPath)
 	}
 
 	if r.config.HttpDisableTLS {
@@ -788,6 +788,35 @@ func (r *relayInstanceManager) getCertFilePath(certPath string) string {
 	}
 
 	return certPath
+}
+
+// withoutDistrustedCAs returns a path to the CA certs at certPath with any
+// distrusted CA removed. The broker's Node runtime has no blocklist of its own,
+// so a customer bundle that still carries one of these CAs would make the
+// broker trust certificates that anyone can forge. When nothing is removed the
+// original path is returned unchanged.
+func (r *relayInstanceManager) withoutDistrustedCAs(certPath string) string {
+	data, err := os.ReadFile(certPath)
+	if err != nil {
+		r.logger.Error("Error reading CA cert file", zap.String("path", certPath), zap.Error(err))
+		return certPath
+	}
+
+	filtered, removed := util.FilterDistrustedCAs(data)
+	if len(removed) == 0 {
+		return certPath
+	}
+
+	filteredPath := path.Join(os.TempDir(), fmt.Sprintf("axon-ca-certs.%s.%s.%v.pem", r.integrationInfo.Integration, r.integrationInfo.Alias, os.Getpid()))
+	if err := os.WriteFile(filteredPath, filtered, 0o644); err != nil {
+		r.logger.Error("Error writing filtered CA cert file, passing the original to the broker",
+			zap.String("path", filteredPath), zap.Error(err))
+		return certPath
+	}
+
+	r.logger.Warn("CA_CERT_PATH contains distrusted CA certificates; they are not passed to the broker. Remove them from the bundle.",
+		zap.String("path", certPath), zap.Strings("removed", removed))
+	return filteredPath
 }
 
 func (r *relayInstanceManager) applyClientValidationConfig(validationConfig *common.ValidationConfig, brokerEnv map[string]string) {
