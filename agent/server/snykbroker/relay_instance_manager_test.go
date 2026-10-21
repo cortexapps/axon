@@ -237,6 +237,64 @@ func TestHttpProxyDropsDistrustedCAs(t *testing.T) {
 	require.Equal(t, string(trusted), string(got))
 }
 
+func distrustedBundle(t *testing.T) string {
+	t.Helper()
+	trusted, err := os.ReadFile("../../test/certs/selfsigned-1.pem")
+	require.NoError(t, err)
+	distrusted, err := os.ReadFile("../../test/certs/distrusted/emsign-ecc-root-ca-g3.pem")
+	require.NoError(t, err)
+	bundlePath := filepath.Join(t.TempDir(), "bundle.pem")
+	require.NoError(t, os.WriteFile(bundlePath, append(distrusted, trusted...), 0o600))
+	return bundlePath
+}
+
+func TestHttpProxyReplacesPreviousFilteredCAFile(t *testing.T) {
+	mgr := &relayInstanceManager{
+		config: config.AgentConfig{HttpCaCertFilePath: distrustedBundle(t)},
+		logger: zap.NewNop(),
+	}
+
+	first := map[string]string{}
+	mgr.setHttpProxyEnvVars(first)
+	second := map[string]string{}
+	mgr.setHttpProxyEnvVars(second)
+	t.Cleanup(func() { os.Remove(second["NODE_EXTRA_CA_CERTS"]) })
+
+	require.NotEqual(t, first["NODE_EXTRA_CA_CERTS"], second["NODE_EXTRA_CA_CERTS"])
+	require.NoFileExists(t, first["NODE_EXTRA_CA_CERTS"])
+	require.FileExists(t, second["NODE_EXTRA_CA_CERTS"])
+}
+
+// The broker must never fall back to the unfiltered bundle.
+func TestHttpProxyPassesNoCAsWhenFilteredCopyCannotBeWritten(t *testing.T) {
+	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "missing"))
+	mgr := &relayInstanceManager{
+		config: config.AgentConfig{HttpCaCertFilePath: distrustedBundle(t)},
+		logger: zap.NewNop(),
+	}
+	env := map[string]string{}
+	mgr.setHttpProxyEnvVars(env)
+
+	require.NotContains(t, env, "NODE_EXTRA_CA_CERTS")
+}
+
+func TestWithOpenSSLCA(t *testing.T) {
+	cases := []struct {
+		name, broker, agent, want string
+	}{
+		{"unset", "", "", "--use-openssl-ca"},
+		{"agent value kept", "", "--max-old-space-size=512", "--max-old-space-size=512 --use-openssl-ca"},
+		{"broker value wins", "--trace-warnings", "--max-old-space-size=512", "--trace-warnings --use-openssl-ca"},
+		{"already set", "", "--use-openssl-ca", "--use-openssl-ca"},
+		{"explicit bundled store kept", "--use-bundled-ca", "", "--use-bundled-ca"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			require.Equal(t, c.want, withOpenSSLCA(c.broker, c.agent))
+		})
+	}
+}
+
 // POST request successfully restarts supervisor and returns 200 OK
 func TestRelayRestartServer(t *testing.T) {
 	ctrl := gomock.NewController(t)

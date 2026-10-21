@@ -16,8 +16,21 @@ import (
 // directly, so pointing CA_CERT_PATH at a directory left upstream requests
 // working and the tunnel refusing to connect with "is a directory".
 //
+// Distrusted CAs are dropped here, so no Go root pool built from CA_CERT_PATH
+// can hold them. The subjects of the dropped certificates are returned for the
+// caller to log.
+//
 // An empty path returns no bytes and no error — no custom CA is configured.
-func ReadCACertPEM(path string) ([]byte, error) {
+func ReadCACertPEM(path string) ([]byte, []string, error) {
+	data, err := readCACertPEM(path)
+	if err != nil || len(data) == 0 {
+		return data, nil, err
+	}
+	filtered, removed := FilterDistrustedCAs(data)
+	return filtered, removed, nil
+}
+
+func readCACertPEM(path string) ([]byte, error) {
 	if path == "" {
 		return nil, nil
 	}
