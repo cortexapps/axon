@@ -66,11 +66,15 @@ ARG SNYK_BROKER_VERSION=v1.0.22-axon
 # It has to happen in this same RUN: the nodejs package itself installs npm
 # under /usr/lib/node_modules/npm, and removing it in a later layer would leave
 # it in the image's lower layers, where customers' scanners still find it.
+# follow-redirects 1.16.0, pinned by the broker's lockfile, has two HIGH
+# advisories fixed in 1.16.1. The override is a no-op once the broker tag
+# pins 1.16.1 itself.
 RUN wget -q -O - https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash - && apt-get install -y nodejs && \
     npm install --global npm@11.18.0 typescript@4.9.3 && \
     git clone https://github.com/cortexapps/snyk-broker.git /tmp/snyk-broker && \
     cd /tmp/snyk-broker && \
     git checkout ${SNYK_BROKER_VERSION} && \
+    npm pkg set overrides.follow-redirects='^1.16.1' && \
     npm install && \
     cp -r . /usr/local/snyk-broker && \
     cd /usr/local/snyk-broker && \
