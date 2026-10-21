@@ -131,6 +131,16 @@ type AgentConfig struct {
 	// RegistrationRefreshInterval controls how often the agent re-registers with
 	// the Cortex API to pick up rotated tokens. 0 disables periodic refresh.
 	RegistrationRefreshInterval time.Duration
+	// LivenessTimeoutThreshold is how many consecutive invocations must end
+	// in an agent-side timeout (no SDK report before the deadline, or expired
+	// waiting in the dispatch queue) with no SDK report in between before
+	// /__axon/healthcheck reports 503. 0 disables the guard.
+	LivenessTimeoutThreshold int
+	// LivenessMinFailureAge is how long that timeout streak must have
+	// persisted before it is reported, so a short burst of slow upstream does
+	// not restart a pod that is still draining. 0 reports as soon as the
+	// threshold is met.
+	LivenessMinFailureAge time.Duration
 	// GrpcInsecure disables TLS on the gRPC tunnel connection (separate from HttpDisableTLS).
 	GrpcInsecure bool
 	// GrpcTunnelServer is the address of the gRPC tunnel server (host:port).
@@ -438,6 +448,30 @@ func NewAgentEnvConfig() AgentConfig {
 			panic(err)
 		}
 		cfg.RegistrationRefreshInterval = v
+	}
+
+	cfg.LivenessTimeoutThreshold = 3
+	if v := os.Getenv("AXON_LIVENESS_TIMEOUT_THRESHOLD"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			panic(err)
+		}
+		if n < 0 {
+			panic("AXON_LIVENESS_TIMEOUT_THRESHOLD must be >= 0")
+		}
+		cfg.LivenessTimeoutThreshold = n
+	}
+
+	cfg.LivenessMinFailureAge = 3 * time.Minute
+	if v := os.Getenv("AXON_LIVENESS_MIN_FAILURE_AGE"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			panic(err)
+		}
+		if d < 0 {
+			panic("AXON_LIVENESS_MIN_FAILURE_AGE must be >= 0")
+		}
+		cfg.LivenessMinFailureAge = d
 	}
 
 	return cfg

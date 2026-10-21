@@ -12,7 +12,7 @@ import (
 )
 
 var Module = fx.Module("handler",
-	fx.Provide(handler.NewHandlerManager),
+	fx.Provide(handler.NewHandlerManagerFromConfig),
 	fx.Provide(cron.New),
 	fx.Invoke(createWebhookHttpServer),
 )

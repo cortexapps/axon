@@ -2,6 +2,7 @@ package config
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -88,4 +89,23 @@ func TestEnvConfig_RelayModeLegacyAlias(t *testing.T) {
 func TestEnvConfig_MaxRequestTimeout(t *testing.T) {
 	t.Setenv("AXON_GRPC_TUNNEL_MAX_REQUEST_TIMEOUT", "90s")
 	assert.Equal(t, "1m30s", NewAgentEnvConfig().MaxRequestTimeout.String())
+}
+
+func TestEnvConfig_LivenessDefaults(t *testing.T) {
+	cfg := NewAgentEnvConfig()
+	assert.Equal(t, 3, cfg.LivenessTimeoutThreshold)
+	assert.Equal(t, 3*time.Minute, cfg.LivenessMinFailureAge)
+}
+
+func TestEnvConfig_Liveness(t *testing.T) {
+	t.Setenv("AXON_LIVENESS_TIMEOUT_THRESHOLD", "0")
+	t.Setenv("AXON_LIVENESS_MIN_FAILURE_AGE", "90s")
+	cfg := NewAgentEnvConfig()
+	assert.Equal(t, 0, cfg.LivenessTimeoutThreshold, "zero disables the guard")
+	assert.Equal(t, 90*time.Second, cfg.LivenessMinFailureAge)
+}
+
+func TestEnvConfig_LivenessRejectsNegative(t *testing.T) {
+	t.Setenv("AXON_LIVENESS_TIMEOUT_THRESHOLD", "-1")
+	assert.Panics(t, func() { NewAgentEnvConfig() })
 }
