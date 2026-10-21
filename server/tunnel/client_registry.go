@@ -18,6 +18,11 @@ type StreamHandle struct {
 	Send func(msg *pb.ServerFrame) error
 	// Cancel closes this stream.
 	Cancel func()
+	// Identity is what the agent that opened this stream claimed in its
+	// ClientHello, set at Register. The client entry keeps the first stream's
+	// identity, so with several agent replicas on one token it names the
+	// wrong agent for every other stream; logs about this stream use this.
+	Identity ClientIdentity
 	// LastSuccessAt holds the UnixNano timestamp of the most recent successful
 	// response received on this stream. Used by AcquireIdleStream to prefer
 	// healthy streams.
@@ -107,6 +112,10 @@ type clientEntry struct {
 	Streams                map[string]*StreamHandle // streamID -> handle
 	BrokerServerRegistered atomic.Bool
 
+	// instances counts streams per agent instance ID, so an agent arriving or
+	// leaving can be logged once rather than once per stream.
+	instances map[string]int
+
 	// idle is a stack of streams believed to be idle, so dispatch can take
 	// one in O(1) instead of scanning and sorting every stream on the token.
 	// It is a hint, not the truth — busy is: a handle may sit here while
@@ -178,17 +187,50 @@ func (r *ClientRegistry) SetMaxStreamsPerToken(n int) {
 	r.maxStreamsPerToken = n
 }
 
-// Register adds a new stream for a broker token, enforcing the per-token
-// stream cap. It reports whether this stream took the token from zero
-// connections to one, which is the only change BROKER_SERVER needs to hear
-// about — the mirror of the 1->0 edge Unregister returns. Stream count is the
-// counter behind both edges, and both are computed under this lock, so
-// concurrent stream opens cannot both see themselves as the transition. Identity is client-supplied and informational: a tenant
-// mismatch across streams of the same token is logged as likely agent
-// misconfiguration but never rejects the stream — the token, not the
-// claimed identity, is the credential (the first-seen identity remains
-// the entry's display identity).
+// RegisterResult describes what a Register changed.
+type RegisterResult struct {
+	// FirstForToken is the token's 0->1 connection edge.
+	FirstForToken bool
+	// FirstForInstance is the agent instance's 0->1 edge on this server.
+	FirstForInstance bool
+	// TokenStreams and InstanceStreams are the counts after the register.
+	TokenStreams    int
+	InstanceStreams int
+}
+
+// UnregisterResult describes what an Unregister changed.
+type UnregisterResult struct {
+	// Found is false when the token or stream was not registered.
+	Found bool
+	// TokenRemoved is the token's 1->0 edge: the entry was deleted.
+	TokenRemoved bool
+	// InstanceRemoved is the agent instance's 1->0 edge on this server.
+	InstanceRemoved bool
+	// Identity is the removed stream's own identity.
+	Identity ClientIdentity
+	// TokenStreams and InstanceStreams are the counts after the unregister.
+	TokenStreams    int
+	InstanceStreams int
+}
+
+// Register adds a new stream for a broker token. It reports whether this
+// stream took the token from zero connections to one; see RegisterStream.
 func (r *ClientRegistry) Register(token broker.Token, identity ClientIdentity, stream *StreamHandle) (bool, error) {
+	res, err := r.RegisterStream(token, identity, stream)
+	return res.FirstForToken, err
+}
+
+// RegisterStream adds a new stream for a broker token, enforcing the
+// per-token stream cap. FirstForToken reports the token's 0->1 connection
+// edge, which is the only change BROKER_SERVER needs to hear about — the
+// mirror of the 1->0 edge Unregister returns. Stream count is the counter
+// behind both edges, and both are computed under this lock, so concurrent
+// stream opens cannot both see themselves as the transition. Identity is
+// client-supplied and informational: a tenant mismatch across streams of the
+// same token is logged as likely agent misconfiguration but never rejects
+// the stream — the token, not the claimed identity, is the credential (the
+// first-seen identity remains the entry's display identity).
+func (r *ClientRegistry) RegisterStream(token broker.Token, identity ClientIdentity, stream *StreamHandle) (RegisterResult, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -202,9 +244,11 @@ func (r *ClientRegistry) Register(token broker.Token, identity ClientIdentity, s
 			)
 		}
 		if r.maxStreamsPerToken > 0 && len(existing.Streams) >= r.maxStreamsPerToken {
-			return false, fmt.Errorf("%w (%d)", ErrTokenStreamCap, r.maxStreamsPerToken)
+			return RegisterResult{}, fmt.Errorf("%w (%d)", ErrTokenStreamCap, r.maxStreamsPerToken)
 		}
+		stream.Identity = identity
 		existing.Streams[stream.StreamID] = stream
+		existing.instances[identity.InstanceID]++
 		stream.onRelease = r.makeOnRelease(key, stream)
 		existing.pushIdle(stream)
 		// Debug: the entry already existed, so the token's reachability here
@@ -216,13 +260,20 @@ func (r *ClientRegistry) Register(token broker.Token, identity ClientIdentity, s
 				zap.Int("totalStreams", len(existing.Streams)),
 			)...,
 		)
-		return false, nil
+		instanceStreams := existing.instances[identity.InstanceID]
+		return RegisterResult{
+			FirstForInstance: instanceStreams == 1,
+			TokenStreams:     len(existing.Streams),
+			InstanceStreams:  instanceStreams,
+		}, nil
 	}
 
+	stream.Identity = identity
 	entry := &clientEntry{
-		Identity: identity,
-		Token:    token,
-		Streams:  map[string]*StreamHandle{stream.StreamID: stream},
+		Identity:  identity,
+		Token:     token,
+		Streams:   map[string]*StreamHandle{stream.StreamID: stream},
+		instances: map[string]int{identity.InstanceID: 1},
 	}
 	stream.onRelease = r.makeOnRelease(key, stream)
 	entry.pushIdle(stream)
@@ -231,7 +282,12 @@ func (r *ClientRegistry) Register(token broker.Token, identity ClientIdentity, s
 	r.logger.Info("Registered new client",
 		append(identity.LogFields(token), zap.String("streamId", stream.StreamID))...,
 	)
-	return true, nil
+	return RegisterResult{
+		FirstForToken:    true,
+		FirstForInstance: true,
+		TokenStreams:     1,
+		InstanceStreams:  1,
+	}, nil
 }
 
 // IsBrokerServerRegistered reports whether the client-connected notification
@@ -266,35 +322,61 @@ func (r *ClientRegistry) makeOnRelease(key string, s *StreamHandle) func() {
 // If it was the last stream, the entire entry is removed.
 // Returns true if the entire entry was removed.
 func (r *ClientRegistry) Unregister(token broker.Token, streamID string) bool {
+	return r.UnregisterStream(token, streamID).TokenRemoved
+}
+
+// UnregisterStream removes a specific stream for a token, removing the entry
+// when it was the last one, and reports what changed.
+func (r *ClientRegistry) UnregisterStream(token broker.Token, streamID string) UnregisterResult {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	key := token.Hashed()
 	entry, ok := r.entries[key]
 	if !ok {
-		return false
+		return UnregisterResult{}
+	}
+	stream, ok := entry.Streams[streamID]
+	if !ok {
+		return UnregisterResult{}
 	}
 
 	delete(entry.Streams, streamID)
 	entry.removeIdle(streamID)
 
+	instanceID := stream.Identity.InstanceID
+	entry.instances[instanceID]--
+	instanceStreams := entry.instances[instanceID]
+	if instanceStreams <= 0 {
+		delete(entry.instances, instanceID)
+		instanceStreams = 0
+	}
+	res := UnregisterResult{
+		Found:           true,
+		InstanceRemoved: instanceStreams == 0,
+		Identity:        stream.Identity,
+		TokenStreams:    len(entry.Streams),
+		InstanceStreams: instanceStreams,
+	}
+
 	if len(entry.Streams) == 0 {
 		delete(r.entries, key)
+		res.TokenRemoved = true
 		r.logger.Info("Removed client entry (last stream closed)",
-			zap.String("tenantId", entry.Identity.TenantID),
-			zap.String("streamId", streamID),
+			append(stream.Identity.LogFields(token), zap.String("streamId", streamID))...,
 		)
-		return true
+		return res
 	}
 
 	// Debug: streams remain, so the token is still reachable here. Losing the
 	// last one is the event that matters, and it is logged at Info above.
 	r.logger.Debug("Removed stream from client entry",
-		zap.String("tenantId", entry.Identity.TenantID),
-		zap.String("streamId", streamID),
-		zap.Int("remainingStreams", len(entry.Streams)),
+		append(stream.Identity.LogFields(token),
+			zap.String("streamId", streamID),
+			zap.Int("remainingStreams", len(entry.Streams)),
+		)...,
 	)
-	return false
+	return res
 }
 
 // GetIdentity returns the identity for a token, or nil if not found.

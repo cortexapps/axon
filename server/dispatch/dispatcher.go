@@ -29,6 +29,92 @@ import (
 // ErrNoTunnel is returned when the token has no connected tunnel streams.
 var ErrNoTunnel = errors.New("no tunnel available")
 
+// ErrStreamClosed is delivered to calls in flight on a stream that closed.
+var ErrStreamClosed = errors.New("tunnel stream closed")
+
+var (
+	// errTunnelSend wraps a failed Send on the call's stream.
+	errTunnelSend = errors.New("tunnel send failed")
+	// errRequestBody wraps a failed read of the caller's request body.
+	errRequestBody = errors.New("request body read failed")
+	// errCallAborted covers a call that ended before its response started
+	// without any more specific error, so Dispatch never returns (nil, nil).
+	errCallAborted = errors.New("call ended before response started")
+)
+
+// FailureKind classifies why a dispatch failed, for logs and callers.
+type FailureKind string
+
+const (
+	// FailureNoTunnel: this server holds no stream for the token.
+	FailureNoTunnel FailureKind = "no_tunnel"
+	// FailureAcquireTimeout: every stream stayed busy until the deadline.
+	FailureAcquireTimeout FailureKind = "acquire_timeout"
+	// FailureSendFailed: sending a frame on the acquired stream failed.
+	FailureSendFailed FailureKind = "send_failed"
+	// FailureStreamClosed: the stream closed before the response started.
+	FailureStreamClosed FailureKind = "stream_closed"
+	// FailureAgentCancel: the agent cancelled the call (see CancelError).
+	FailureAgentCancel FailureKind = "agent_cancel"
+	// FailureResponseTimeout: no response started before the deadline.
+	FailureResponseTimeout FailureKind = "response_timeout"
+	// FailureCallerCanceled: the caller went away.
+	FailureCallerCanceled FailureKind = "caller_canceled"
+	// FailureRequestBody: reading the caller's request body failed.
+	FailureRequestBody FailureKind = "request_body_failed"
+	// FailureAborted: the call ended before the response with no other cause.
+	FailureAborted FailureKind = "aborted"
+)
+
+// DispatchError is returned by Dispatch for every failure. It wraps the
+// underlying error, so errors.Is(err, ErrNoTunnel), errors.As(err,
+// *CancelError) and errors.Is(err, context.DeadlineExceeded) still work, and
+// adds what a log line needs to name the call and the agent that had it.
+type DispatchError struct {
+	Kind FailureKind
+	// CallID and StreamID are empty when no stream was acquired.
+	CallID   string
+	StreamID string
+	// Agent is the identity of the agent that owns the stream, when one was
+	// acquired.
+	Agent tunnel.ClientIdentity
+	// AcquireWait is how long Dispatch waited for an idle stream.
+	AcquireWait time.Duration
+	Err         error
+}
+
+func (e *DispatchError) Error() string {
+	return fmt.Sprintf("dispatch %s: %v", e.Kind, e.Err)
+}
+
+func (e *DispatchError) Unwrap() error { return e.Err }
+
+// kindForContext maps a context error to the failure it means at the point
+// Dispatch was waiting.
+func kindForContext(err error, waiting FailureKind) FailureKind {
+	if errors.Is(err, context.Canceled) {
+		return FailureCallerCanceled
+	}
+	return waiting
+}
+
+// kindForPreStart classifies an error delivered before the response started.
+func kindForPreStart(err error) FailureKind {
+	var cancelErr *CancelError
+	switch {
+	case errors.As(err, &cancelErr):
+		return FailureAgentCancel
+	case errors.Is(err, ErrStreamClosed):
+		return FailureStreamClosed
+	case errors.Is(err, errTunnelSend):
+		return FailureSendFailed
+	case errors.Is(err, errRequestBody):
+		return FailureRequestBody
+	default:
+		return FailureAborted
+	}
+}
+
 // acquireRetryInterval is how often Dispatch re-polls for an idle stream
 // when all of a token's streams are busy. Bounded by the caller's deadline.
 const acquireRetryInterval = 10 * time.Millisecond
@@ -65,6 +151,11 @@ type Request struct {
 
 // Response is the agent's reply, streamed as it arrives.
 type Response struct {
+	// CallID, StreamID and Agent identify the call and the agent serving it,
+	// for logging failures after the response has started.
+	CallID   string
+	StreamID string
+	Agent    tunnel.ClientIdentity
 	// PseudoHeaders contains at least ":status".
 	PseudoHeaders map[string]string
 	// Headers are the response headers.
@@ -203,10 +294,16 @@ func (c *call) closeChans() {
 // it arrives. ctx bounds stream acquisition and time-to-response-start; once
 // the response has started, lifecycle is owned by Response.Body (Close to
 // abort).
+//
+// Every error it returns is a *DispatchError.
 func (d *Dispatcher) Dispatch(ctx context.Context, token broker.Token, req *Request) (*Response, error) {
-	stream, err := d.acquireStream(ctx, token)
+	stream, waited, err := d.acquireStream(ctx, token)
 	if err != nil {
-		return nil, err
+		kind := FailureNoTunnel
+		if !errors.Is(err, ErrNoTunnel) {
+			kind = kindForContext(err, FailureAcquireTimeout)
+		}
+		return nil, &DispatchError{Kind: kind, AcquireWait: waited, Err: err}
 	}
 
 	callID := uuid.New().String()
@@ -227,6 +324,17 @@ func (d *Dispatcher) Dispatch(ctx context.Context, token broker.Token, req *Requ
 
 	d.register(c)
 
+	fail := func(kind FailureKind, err error) error {
+		return &DispatchError{
+			Kind:        kind,
+			CallID:      callID,
+			StreamID:    stream.StreamID,
+			Agent:       stream.Identity,
+			AcquireWait: waited,
+			Err:         err,
+		}
+	}
+
 	// Send CallStart.
 	start := &pb.CallStart{
 		PseudoHeaders: req.PseudoHeaders,
@@ -237,7 +345,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, token broker.Token, req *Requ
 	}
 	if err := stream.Send(callFrame(callID, &pb.CallFrame_Start{Start: start})); err != nil {
 		d.finish(c, false)
-		return nil, fmt.Errorf("tunnel send failed: %w", err)
+		return nil, fail(FailureSendFailed, fmt.Errorf("%w: %w", errTunnelSend, err))
 	}
 
 	// Pump the request body in the background.
@@ -247,6 +355,9 @@ func (d *Dispatcher) Dispatch(ctx context.Context, token broker.Token, req *Requ
 	select {
 	case respStart := <-c.respStartC:
 		return &Response{
+			CallID:        callID,
+			StreamID:      stream.StreamID,
+			Agent:         stream.Identity,
 			PseudoHeaders: respStart.PseudoHeaders,
 			Headers:       respStart.Headers,
 			Body:          &callBody{c: c, d: d},
@@ -255,13 +366,19 @@ func (d *Dispatcher) Dispatch(ctx context.Context, token broker.Token, req *Requ
 		}, nil
 
 	case err := <-c.errC:
-		// Agent cancelled (or the stream died) before the response started.
+		// Agent cancelled, the stream died, or the request body failed
+		// before the response started. errC is closed when the call
+		// finishes, so a receive can also yield nil; that must still be an
+		// error, or the caller gets neither a response nor a reason.
 		d.cancelCall(c, "aborted before response", false)
-		return nil, err
+		if err == nil {
+			err = errCallAborted
+		}
+		return nil, fail(kindForPreStart(err), err)
 
 	case <-ctx.Done():
 		d.cancelCall(c, "caller timeout", true)
-		return nil, ctx.Err()
+		return nil, fail(kindForContext(ctx.Err(), FailureResponseTimeout), ctx.Err())
 	}
 }
 
@@ -271,24 +388,26 @@ func (d *Dispatcher) Dispatch(ctx context.Context, token broker.Token, req *Requ
 // mechanism: an agent at capacity stops offering idle streams, and that
 // shows up as latency to whoever made the request rather than as work
 // piling up invisibly inside the agent. The wait is measured so the
-// difference is visible.
-func (d *Dispatcher) acquireStream(ctx context.Context, token broker.Token) (*tunnel.StreamHandle, error) {
+// difference is visible, and returned so a failure can report it.
+func (d *Dispatcher) acquireStream(ctx context.Context, token broker.Token) (*tunnel.StreamHandle, time.Duration, error) {
 	start := time.Now()
 	waited := false
 	for {
 		handle, allBusy := d.registry.AcquireIdleStream(token)
 		if handle != nil {
-			if waited {
-				waitMs := time.Since(start).Milliseconds()
-				d.acquireWaitMs.Add(waitMs)
-				d.withIdentity(token, func(tenant, integration, alias string) {
-					d.metrics.DispatchAcquireWait(tenant, integration, alias, float64(waitMs))
-				})
+			if !waited {
+				return handle, 0, nil
 			}
-			return handle, nil
+			wait := time.Since(start)
+			waitMs := wait.Milliseconds()
+			d.acquireWaitMs.Add(waitMs)
+			d.withIdentity(token, func(tenant, integration, alias string) {
+				d.metrics.DispatchAcquireWait(tenant, integration, alias, float64(waitMs))
+			})
+			return handle, wait, nil
 		}
 		if !allBusy {
-			return nil, ErrNoTunnel
+			return nil, time.Since(start), ErrNoTunnel
 		}
 		if !waited {
 			waited = true
@@ -299,7 +418,7 @@ func (d *Dispatcher) acquireStream(ctx context.Context, token broker.Token) (*tu
 		}
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return nil, time.Since(start), ctx.Err()
 		case <-time.After(acquireRetryInterval):
 		}
 	}
@@ -338,7 +457,7 @@ func (d *Dispatcher) pumpRequestBody(c *call, body io.Reader) {
 				payload := append([]byte(nil), buf[:n]...)
 				frame := callFrame(c.id, &pb.CallFrame_Data{Data: &pb.CallData{Payload: payload}})
 				if err := c.stream.Send(frame); err != nil {
-					d.cancelCall(c, fmt.Sprintf("tunnel send failed: %v", err), false)
+					d.abortCall(c, fmt.Errorf("%w: %w", errTunnelSend, err), false)
 					return
 				}
 			}
@@ -346,7 +465,7 @@ func (d *Dispatcher) pumpRequestBody(c *call, body io.Reader) {
 				break
 			}
 			if readErr != nil {
-				d.cancelCall(c, fmt.Sprintf("request body read failed: %v", readErr), true)
+				d.abortCall(c, fmt.Errorf("%w: %w", errRequestBody, readErr), true)
 				return
 			}
 		}
@@ -356,7 +475,7 @@ func (d *Dispatcher) pumpRequestBody(c *call, body io.Reader) {
 		return
 	}
 	if err := c.stream.Send(callFrame(c.id, &pb.CallFrame_End{End: &pb.CallEnd{}})); err != nil {
-		d.cancelCall(c, fmt.Sprintf("tunnel send failed: %v", err), false)
+		d.abortCall(c, fmt.Errorf("%w: %w", errTunnelSend, err), false)
 		return
 	}
 
@@ -448,11 +567,18 @@ func (d *Dispatcher) HandleStreamClose(streamID string) {
 	d.mu.Unlock()
 
 	for _, c := range calls {
-		err := fmt.Errorf("tunnel stream closed")
-		d.deliverErr(c, err)
-		c.bodyW.CloseWithError(err)
-		d.cancelCall(c, "stream closed", false)
+		d.abortCall(c, ErrStreamClosed, false)
 	}
+}
+
+// abortCall fails a call with err: the waiting Dispatch (or, after the
+// response started, ErrC) receives it, the response body reader gets it
+// rather than blocking on a pipe no one will write to again, and the call
+// finishes. notifyAgent sends CallCancel, for failures the agent cannot see.
+func (d *Dispatcher) abortCall(c *call, err error, notifyAgent bool) {
+	d.deliverErr(c, err)
+	c.bodyW.CloseWithError(err)
+	d.cancelCall(c, err.Error(), notifyAgent)
 }
 
 // InflightCount returns the number of in-flight calls.
