@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 )
 
 // RegisterRequest represents the request body for the register endpoint
@@ -64,6 +65,18 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Error encoding response: %v", err), http.StatusInternalServerError)
 		return
+	}
+
+	// Cortex answers with a chunked body, and the final chunk can arrive in a
+	// later packet than the JSON. Flushing makes the response chunked, and the
+	// delay holds back the final chunk.
+	if delay := os.Getenv("REGISTER_FINAL_CHUNK_DELAY"); delay != "" {
+		d, err := time.ParseDuration(delay)
+		if err != nil {
+			log.Fatalf("invalid REGISTER_FINAL_CHUNK_DELAY: %v", err)
+		}
+		w.(http.Flusher).Flush()
+		time.Sleep(d)
 	}
 }
 
