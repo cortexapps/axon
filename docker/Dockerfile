@@ -32,7 +32,7 @@ WORKDIR /agent
 # when the scheduled Trivy scan flags OS-package CVEs whose fixes are already
 # in the archive — the cache is just serving a stale layer. Leaves the rest of
 # the build (Go, Node + snyk-broker install) hitting cache as normal.
-ARG APT_CACHE_BUST=2026-10-14
+ARG APT_CACHE_BUST=2026-10-21
 # NOTE: build-essential is deliberately NOT installed here. It pulls in a full
 # C/C++ toolchain whose libc6-dev dependency drags in linux-libc-dev (the Linux
 # kernel headers), and that single package generates a steady stream of HIGH
@@ -43,9 +43,18 @@ ARG APT_CACHE_BUST=2026-10-14
 # Go apps build with CGO_ENABLED=0 (set below). If a future scaffold genuinely
 # needs cgo, add a scoped `gcc`/`libc6-dev` layer to that scaffold's Dockerfile
 # rather than putting the toolchain back into this shared base image.
+#
+# protobuf-compiler is installed without recommends for the same reason: it
+# Recommends libprotobuf-dev, which depends on zlib1g-dev -> libc6-dev ->
+# linux-libc-dev. protoc itself does not need it. The final check fails the
+# build if anything pulls linux-libc-dev back in.
 RUN echo "apt cache bust: $APT_CACHE_BUST" \
     && apt-get update && apt-get upgrade -y && apt-get install -y \
-    protobuf-compiler git python3 python3-venv wget openssl jq
+    git python3 python3-venv wget openssl jq \
+    && apt-get install -y --no-install-recommends protobuf-compiler \
+    && if dpkg -s linux-libc-dev >/dev/null 2>&1; then \
+         echo "linux-libc-dev must not be installed in the runtime image" >&2; exit 1; \
+       fi
 
 # Install NodeJS and Snyk Broker
 ENV NODE_VERSION=20
