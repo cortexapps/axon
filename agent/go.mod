@@ -2,6 +2,8 @@ module github.com/cortexapps/axon
 
 go 1.26.5
 
+toolchain go1.26.10
+
 require (
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/mux v1.8.1

@@ -58,6 +58,10 @@ type relayInstanceManager struct {
 
 	reflector *RegistrationReflector
 	restartCh chan restartRequest
+
+	// filteredCAPath is the broker's copy of CA_CERT_PATH without distrusted
+	// CAs, removed when the next broker start writes a new one.
+	filteredCAPath string
 }
 
 type tokenInfo struct {
@@ -684,6 +688,7 @@ func (r *relayInstanceManager) Start() error {
 		}
 
 		r.setHttpProxyEnvVars(brokerEnv)
+		brokerEnv["NODE_OPTIONS"] = withOpenSSLCA(brokerEnv["NODE_OPTIONS"], os.Getenv("NODE_OPTIONS"))
 
 		validationConfig := r.integrationInfo.GetValidationConfig()
 		r.applyClientValidationConfig(validationConfig, brokerEnv)
@@ -751,7 +756,9 @@ func (r *relayInstanceManager) setHttpProxyEnvVars(brokerEnv map[string]string) 
 	brokerEnv["NO_PROXY"] = util.EnsureLocalhostNoProxy(false)
 
 	if certPath := r.getCertFilePath(r.config.HttpCaCertFilePath); certPath != "" {
-		brokerEnv["NODE_EXTRA_CA_CERTS"] = certPath
+		if trustedPath := r.withoutDistrustedCAs(certPath); trustedPath != "" {
+			brokerEnv["NODE_EXTRA_CA_CERTS"] = trustedPath
+		}
 	}
 
 	if r.config.HttpDisableTLS {
@@ -788,6 +795,64 @@ func (r *relayInstanceManager) getCertFilePath(certPath string) string {
 	}
 
 	return certPath
+}
+
+// withoutDistrustedCAs returns a path to the CA certs at certPath with any
+// distrusted CA removed. The broker's Node runtime has no blocklist of its own,
+// so a customer bundle that still carries one of these CAs would make the
+// broker trust certificates that anyone can forge. When nothing is removed the
+// original path is returned unchanged. On any error it returns "", so the
+// broker gets no extra CAs rather than the distrusted ones.
+func (r *relayInstanceManager) withoutDistrustedCAs(certPath string) string {
+	filtered, removed, err := util.ReadCACertPEM(certPath)
+	if err != nil {
+		r.logger.Error("Error reading CA cert file, passing no extra CAs to the broker", zap.String("path", certPath), zap.Error(err))
+		return ""
+	}
+	if len(removed) == 0 {
+		return certPath
+	}
+
+	if r.filteredCAPath != "" {
+		os.Remove(r.filteredCAPath)
+		r.filteredCAPath = ""
+	}
+	f, err := os.CreateTemp("", "axon-ca-certs-*.pem")
+	if err != nil {
+		r.logger.Error("Error creating filtered CA cert file, passing no extra CAs to the broker", zap.Error(err))
+		return ""
+	}
+	_, err = f.Write(filtered)
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		os.Remove(f.Name())
+		r.logger.Error("Error writing filtered CA cert file, passing no extra CAs to the broker",
+			zap.String("path", f.Name()), zap.Error(err))
+		return ""
+	}
+	r.filteredCAPath = f.Name()
+
+	r.logger.Warn("CA_CERT_PATH contains distrusted CA certificates; they are not passed to the broker. Remove them from the bundle.",
+		zap.String("path", certPath), zap.Strings("removed", removed))
+	return f.Name()
+}
+
+// withOpenSSLCA makes the broker's Node runtime use the OpenSSL (Debian) CA
+// store, which has the distrusted CAs removed. Node's bundled store still
+// trusts emSign ECC Root CA - G3, so the image's NODE_OPTIONS must not be lost
+// when a customer overrides it. An explicit --use-bundled-ca is kept, because
+// Node refuses to start with both flags.
+func withOpenSSLCA(brokerValue, agentValue string) string {
+	opts := brokerValue
+	if opts == "" {
+		opts = agentValue
+	}
+	if strings.Contains(opts, "--use-openssl-ca") || strings.Contains(opts, "--use-bundled-ca") {
+		return opts
+	}
+	return strings.TrimSpace(opts + " --use-openssl-ca")
 }
 
 func (r *relayInstanceManager) applyClientValidationConfig(validationConfig *common.ValidationConfig, brokerEnv map[string]string) {

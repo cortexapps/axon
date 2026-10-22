@@ -1471,9 +1471,13 @@ func (tc *tunnelClient) buildTransportCredentials() (credentials.TransportCreden
 	// Shared with the HTTP client's transport: CA_CERT_PATH may be a file or
 	// a directory of *.pem, and reading it two different ways is how the
 	// tunnel ended up rejecting a path the rest of the agent accepted.
-	caCert, err := util.ReadCACertPEM(tc.config.HttpCaCertFilePath)
+	caCert, removed, err := util.ReadCACertPEM(tc.config.HttpCaCertFilePath)
 	if err != nil {
 		return nil, err
+	}
+	if len(removed) > 0 {
+		tc.logger.Warn("CA_CERT_PATH contains distrusted CA certificates; the tunnel does not trust them. Remove them from the bundle.",
+			zap.String("path", tc.config.HttpCaCertFilePath), zap.Strings("removed", removed))
 	}
 	if len(caCert) > 0 {
 		caCertPool := x509.NewCertPool()

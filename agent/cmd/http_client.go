@@ -39,9 +39,13 @@ func createHttpTransport(config config.AgentConfig, logger *zap.Logger) *gohttp.
 	if config.HttpCaCertFilePath != "" {
 		logger.Info("CA_CERT_PATH set, looking for cert files", zap.String("path", config.HttpCaCertFilePath))
 	}
-	caPEM, err := util.ReadCACertPEM(config.HttpCaCertFilePath)
+	caPEM, removed, err := util.ReadCACertPEM(config.HttpCaCertFilePath)
 	if err != nil {
 		panic(err)
+	}
+	if len(removed) > 0 {
+		logger.Warn("CA_CERT_PATH contains distrusted CA certificates; they are not trusted. Remove them from the bundle.",
+			zap.String("path", config.HttpCaCertFilePath), zap.Strings("removed", removed))
 	}
 
 	if len(caPEM) > 0 {
