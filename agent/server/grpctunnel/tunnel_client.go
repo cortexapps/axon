@@ -1036,8 +1036,16 @@ func (tc *tunnelClient) manageStream(id int) {
 		}
 		first = false
 
-		retired, err := tc.runOneStream(id, recovering)
+		retired, established, err := tc.runOneStream(id, recovering)
 		recovering = false
+
+		// A stream that came up proves the server is reachable, however it
+		// ended, so the retry after it starts from scratch. Without this a
+		// slot kept the backoff of failures hours old, and every routine
+		// drop made its next reconnect wait longer.
+		if established {
+			backoff = minBackoff
+		}
 
 		// We cancelled this stream ourselves. Nothing failed, so nothing here
 		// escalates: no warning, no reconnect counted, and above all no
@@ -1093,11 +1101,16 @@ func (tc *tunnelClient) manageStream(id int) {
 			continue
 		}
 
-		if tc.consecFailures.Add(1) >= failuresBeforeReregister {
-			tc.logger.Warn("Repeated open failures; forcing re-registration",
-				zap.Int("slot", id), zap.Int32("consecutive", tc.consecFailures.Load()))
-			tc.reregister("repeated-failures", true)
-			tc.consecFailures.Store(0)
+		// Only streams that failed to open count: a drop of an established
+		// stream is routine, and several at once (a server restart) used to
+		// force a re-registration. The CompareAndSwap lets exactly one of the
+		// workers that cross the threshold together do it.
+		if !established {
+			if n := tc.consecFailures.Add(1); n >= failuresBeforeReregister && tc.consecFailures.CompareAndSwap(n, 0) {
+				tc.logger.Warn("Repeated open failures; forcing re-registration",
+					zap.Int("slot", id), zap.Int32("consecutive", n))
+				tc.reregister("repeated-failures", true)
+			}
 		}
 
 		recovering = true
@@ -1131,10 +1144,11 @@ func (tc *tunnelClient) handleTokenCap(id int) {
 // clean shutdown), and whether the stream ended because retireExcess
 // cancelled it — which reaches the worker as an ordinary Canceled error and
 // is otherwise indistinguishable from the connection breaking.
-func (tc *tunnelClient) runOneStream(id int, recovering bool) (retired bool, err error) {
+// established reports whether the stream got through the handshake.
+func (tc *tunnelClient) runOneStream(id int, recovering bool) (retired, established bool, err error) {
 	sc, err := tc.openSlot(id, recovering)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	tc.addStream(sc.ts)
 	defer func() {
@@ -1147,7 +1161,7 @@ func (tc *tunnelClient) runOneStream(id int, recovering bool) (retired bool, err
 	tc.consecFailures.Store(0)
 
 	err = tc.streamLoop(sc)
-	return sc.ts.retiring.Load(), err
+	return sc.ts.retiring.Load(), true, err
 }
 
 // openSlot borrows a pooled connection, opens a stream on it and performs
@@ -1505,8 +1519,8 @@ func nextBackoff(d time.Duration) time.Duration {
 }
 
 // jittered adds ±20% jitter to d so reconnect storms from many agents don't
-// align on the same wall-clock instants.
-func jittered(d time.Duration) time.Duration {
+// align on the same wall-clock instants. A var so tests can drop the wait.
+var jittered = func(d time.Duration) time.Duration {
 	if d <= 0 {
 		return d
 	}
