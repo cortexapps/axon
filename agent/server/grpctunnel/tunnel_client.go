@@ -1505,8 +1505,8 @@ func nextBackoff(d time.Duration) time.Duration {
 }
 
 // jittered adds ±20% jitter to d so reconnect storms from many agents don't
-// align on the same wall-clock instants.
-func jittered(d time.Duration) time.Duration {
+// align on the same wall-clock instants. A var so tests can drop the wait.
+var jittered = func(d time.Duration) time.Duration {
 	if d <= 0 {
 		return d
 	}
