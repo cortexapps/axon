@@ -25,6 +25,7 @@ import (
 	"github.com/cortexapps/axon-server/metrics"
 	"github.com/cortexapps/axon-server/tunnel"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 // failedDispatchDetailMax caps the raw upstream error text included in the
@@ -178,6 +179,14 @@ func (h *HttpAdapter) handleBrokerDispatch(w http.ResponseWriter, r *http.Reques
 		identity = h.registry.GetIdentity(token)
 	}
 
+	// The fields every failure line for this request carries. The path is
+	// logged without its query string, which can carry credentials.
+	reqFields := []zap.Field{
+		zap.String("tokenHash", token.Hashed()),
+		zap.String("method", r.Method),
+		zap.String("path", trimmed[slashIdx:]),
+	}
+
 	// Determine dispatch timeout from request context deadline, falling back
 	// to the configured default. Bail early if the deadline has already passed.
 	timeout := h.dispatchTimeout
@@ -185,6 +194,12 @@ func (h *HttpAdapter) handleBrokerDispatch(w http.ResponseWriter, r *http.Reques
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
 			h.metrics.DispatchErrors.Inc(1)
+			h.logger.Warn("Dispatch failed",
+				append(reqFields,
+					zap.String("kind", "deadline_passed"),
+					zap.Int("status", http.StatusGatewayTimeout),
+				)...,
+			)
 			http.Error(w, "request deadline already passed", http.StatusGatewayTimeout)
 			return
 		}
@@ -219,10 +234,17 @@ func (h *HttpAdapter) handleBrokerDispatch(w http.ResponseWriter, r *http.Reques
 	start := time.Now()
 	resp, err := h.dispatcher.Dispatch(ctx, token, req)
 	if err != nil {
-		h.writeDispatchError(w, err, token)
+		h.writeDispatchError(w, err, token,
+			append(reqFields, zap.Duration("elapsed", time.Since(start)))...)
 		return
 	}
 	defer resp.Body.Close()
+
+	// From here the call has an agent; failures name it and the call.
+	respFields := append(append(reqFields,
+		zap.String("callId", resp.CallID),
+		zap.String("streamId", resp.StreamID),
+	), agentFields(resp.Agent)...)
 
 	// Record tagged metrics if we have identity info.
 	tenantID, integration, alias := "", "", ""
@@ -235,7 +257,7 @@ func (h *HttpAdapter) handleBrokerDispatch(w http.ResponseWriter, r *http.Reques
 	statusCode, err := strconv.Atoi(resp.PseudoHeaders[":status"])
 	if err != nil || statusCode < 100 || statusCode > 599 {
 		h.logger.Error("Invalid :status from agent",
-			zap.String("status", resp.PseudoHeaders[":status"]))
+			append(respFields, zap.String("status", resp.PseudoHeaders[":status"]))...)
 		h.metrics.DispatchErrors.Inc(1)
 		http.Error(w, "invalid response status from agent", http.StatusBadGateway)
 		return
@@ -256,8 +278,20 @@ func (h *HttpAdapter) handleBrokerDispatch(w http.ResponseWriter, r *http.Reques
 	h.metrics.DispatchDuration(tenantID, integration, alias, float64(time.Since(start).Milliseconds()))
 
 	if copyErr != nil {
-		// Response already committed; nothing to send but log it.
-		h.logger.Warn("Response body aborted mid-stream", zap.Error(copyErr))
+		// Response already committed; nothing to send but log it. A failed
+		// write is the caller going away; anything else is the tunnel side.
+		side := "tunnel"
+		if errors.Is(copyErr, errCallerWrite) {
+			side = "caller"
+		}
+		h.logger.Warn("Response body aborted mid-stream",
+			append(respFields,
+				zap.Int("status", statusCode),
+				zap.String("side", side),
+				zap.Duration("elapsed", time.Since(start)),
+				zap.Error(copyErr),
+			)...,
+		)
 		h.metrics.DispatchErrors.Inc(1)
 		return
 	}
@@ -269,15 +303,57 @@ func (h *HttpAdapter) handleBrokerDispatch(w http.ResponseWriter, r *http.Reques
 	case <-resp.TrailersC:
 	case err := <-resp.ErrC:
 		if err != nil {
-			h.logger.Warn("Late failure after response completed", zap.Error(err))
+			h.logger.Warn("Late failure after response completed",
+				append(respFields, zap.Int("status", statusCode), zap.Error(err))...)
 		}
 	default:
 	}
 }
 
-// writeDispatchError maps Dispatch errors to HTTP responses.
-func (h *HttpAdapter) writeDispatchError(w http.ResponseWriter, err error, token broker.Token) {
+// agentFields names the agent serving a call, omitting what it did not send.
+func agentFields(id tunnel.ClientIdentity) []zap.Field {
+	var fields []zap.Field
+	for _, opt := range []struct{ key, value string }{
+		{"instanceId", id.InstanceID},
+		{"alias", id.Alias},
+		{"integration", id.Integration},
+		{"clientVersion", id.ClientVersion},
+	} {
+		if opt.value != "" {
+			fields = append(fields, zap.String(opt.key, opt.value))
+		}
+	}
+	return fields
+}
+
+// writeDispatchError maps Dispatch errors to HTTP responses and logs the
+// failure once, with its kind and everything that names the call: fields
+// carries the request's own (token hash, method, path, elapsed).
+func (h *HttpAdapter) writeDispatchError(w http.ResponseWriter, err error, token broker.Token, fields ...zap.Field) {
 	h.metrics.DispatchErrors.Inc(1)
+
+	if len(fields) == 0 {
+		fields = []zap.Field{zap.String("tokenHash", token.Hashed())}
+	}
+	var dispErr *dispatch.DispatchError
+	if errors.As(err, &dispErr) {
+		fields = append(fields, zap.String("kind", string(dispErr.Kind)))
+		if dispErr.CallID != "" {
+			fields = append(fields,
+				zap.String("callId", dispErr.CallID),
+				zap.String("streamId", dispErr.StreamID),
+			)
+		}
+		fields = append(fields, agentFields(dispErr.Agent)...)
+		if dispErr.AcquireWait > 0 {
+			fields = append(fields, zap.Duration("acquireWait", dispErr.AcquireWait))
+		}
+	}
+	// level is Warn unless the failure is routine; logf records the outcome.
+	logf := func(level zapcore.Level, status int) {
+		h.logger.Log(level, "Dispatch failed",
+			append(fields, zap.Int("status", status), zap.Error(err))...)
+	}
 
 	var cancelErr *dispatch.CancelError
 	switch {
@@ -286,7 +362,9 @@ func (h *HttpAdapter) writeDispatchError(w http.ResponseWriter, err error, token
 		if status < 100 || status > 599 {
 			status = http.StatusBadGateway
 		}
-		writeFailedDispatch(w, h.logger, status, cancelErr.Reason)
+		fields = append(fields, zap.Int32("agentCode", cancelErr.Code))
+		logf(zapcore.WarnLevel, status)
+		writeFailedDispatch(w, status, cancelErr.Reason)
 
 	case errors.Is(err, dispatch.ErrNoTunnel):
 		// This server holds no stream for the token, which is exactly the
@@ -297,36 +375,29 @@ func (h *HttpAdapter) writeDispatchError(w http.ResponseWriter, err error, token
 		// on, even with a healthy instance one entry further down the list.
 		//
 		// Routine rather than exceptional: it is how a caller gets moved off
-		// an instance that has lost its streams, so it is logged at debug —
-		// the same level the dispatcher logs the resulting 404 at — and the
-		// token is included, because with several agents per server the
-		// message is useless without knowing which one missed.
-		h.logger.Debug("No tunnel available for token; answering unknown-token 404",
-			zap.String("token", token.Hashed()),
-		)
+		// an instance that has lost its streams, so it is logged at Info
+		// rather than Warn.
+		logf(zapcore.InfoLevel, http.StatusNotFound)
 		writeBrokerJSON(w, http.StatusNotFound, brokerOKFalse)
 
 	case errors.Is(err, context.DeadlineExceeded):
+		logf(zapcore.WarnLevel, http.StatusGatewayTimeout)
 		http.Error(w, "gateway timeout", http.StatusGatewayTimeout)
 
 	case errors.Is(err, context.Canceled):
 		// Caller went away; nothing useful to write.
+		logf(zapcore.InfoLevel, 499)
 		http.Error(w, "client closed request", 499)
 
 	default:
-		h.logger.Error("Dispatch failed", zap.Error(err))
+		logf(zapcore.WarnLevel, http.StatusBadGateway)
 		http.Error(w, "tunnel dispatch failed", http.StatusBadGateway)
 	}
 }
 
 // writeFailedDispatch writes a JSON error response for a dispatch the agent
 // could not complete, carrying the raw agent error (truncated).
-func writeFailedDispatch(w http.ResponseWriter, logger *zap.Logger, status int, detail string) {
-	logger.Error("Dispatch failed",
-		zap.Int("status", status),
-		zap.String("error", detail),
-	)
-
+func writeFailedDispatch(w http.ResponseWriter, status int, detail string) {
 	if len(detail) > failedDispatchDetailMax {
 		detail = detail[:failedDispatchDetailMax]
 	}
@@ -356,7 +427,10 @@ func (fw *flushWriter) Write(p []byte) (int, error) {
 		fw.f.Flush()
 	}
 	if err != nil {
-		return n, fmt.Errorf("write to caller failed: %w", err)
+		return n, fmt.Errorf("%w: %w", errCallerWrite, err)
 	}
 	return n, nil
 }
+
+// errCallerWrite marks a copy failure as the caller's side of the response.
+var errCallerWrite = errors.New("write to caller failed")

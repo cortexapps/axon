@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -15,7 +16,31 @@ import (
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
+)
+
+// Causes the server sets when it closes a stream itself, so the close can be
+// logged with why.
+var (
+	errHeartbeatTimeout = errors.New("heartbeat timeout")
+	errStreamCancelled  = errors.New("stream cancelled by server")
+)
+
+// Close reasons for a tunnel stream, as logged in the "reason" field.
+const (
+	// closeClientClosed: the agent half-closed the stream (Recv got EOF).
+	closeClientClosed = "client_closed"
+	// closeClientGone: the stream's context ended without a server-side
+	// cause — the agent, or a proxy or load balancer between us, reset or
+	// dropped the connection. Server shutdown also lands here.
+	closeClientGone = "client_gone"
+	// closeTransportError: Recv failed with anything else.
+	closeTransportError = "transport_error"
+	// closeHeartbeatTimeout: no frame from the agent for 2x the interval.
+	closeHeartbeatTimeout = "heartbeat_timeout"
+	// closeServerCancelled: something on the server called the handle's Cancel.
+	closeServerCancelled = "server_cancelled"
 )
 
 // FrameHandler is called for every CallFrame received from a client.
@@ -131,20 +156,25 @@ func (s *Service) Tunnel(stream pb.TunnelService_TunnelServer) error {
 
 	// Debug, not Info: a stream opens whenever a call needs one, so at Info
 	// this is the loudest line in the service and says nothing an operator
-	// acts on. The transition worth seeing is the token gaining or losing
+	// acts on. The transitions worth seeing are an agent instance arriving or
+	// leaving, logged at Info below, and the token gaining or losing
 	// connectivity here, which ClientRegistry logs at Info.
+	peerAddr := ""
+	if p, ok := peer.FromContext(stream.Context()); ok && p.Addr != nil {
+		peerAddr = p.Addr.String()
+	}
 	s.logger.Debug("Client connecting",
-		zap.String("tenantId", identity.TenantID),
-		zap.String("integration", identity.Integration),
-		zap.String("alias", identity.Alias),
-		zap.String("instanceId", identity.InstanceID),
-		zap.String("clientVersion", hello.ClientVersion),
-		zap.String("streamId", streamID),
+		append(identity.LogFields(token),
+			zap.String("streamId", streamID),
+			zap.String("peer", peerAddr),
+		)...,
 	)
 
-	// Create stream handle with a context for cancellation.
-	ctx, cancel := context.WithCancel(stream.Context())
-	defer cancel()
+	// Create stream handle with a context for cancellation. The cause says
+	// which server-side path closed the stream, for the close log line.
+	ctx, cancel := context.WithCancelCause(stream.Context())
+	defer cancel(nil)
+	openedAt := time.Now()
 
 	sendMu := &sync.Mutex{}
 	handle := &StreamHandle{
@@ -154,7 +184,7 @@ func (s *Service) Tunnel(stream pb.TunnelService_TunnelServer) error {
 			defer sendMu.Unlock()
 			return stream.Send(msg)
 		},
-		Cancel: cancel,
+		Cancel: func() { cancel(errStreamCancelled) },
 	}
 
 	// Send ServerHello before registering so the handshake completes
@@ -177,7 +207,7 @@ func (s *Service) Tunnel(stream pb.TunnelService_TunnelServer) error {
 	}
 
 	// Register in client registry (now safe — handshake is done).
-	firstConnection, err := s.registry.Register(token, identity, handle)
+	reg, err := s.registry.RegisterStream(token, identity, handle)
 	if err != nil {
 		if errors.Is(err, ErrTokenStreamCap) {
 			// Every field here earns its place: without tokenHash the
@@ -193,11 +223,27 @@ func (s *Service) Tunnel(stream pb.TunnelService_TunnelServer) error {
 			)
 			return status.Error(codes.ResourceExhausted, err.Error())
 		}
-		s.logger.Error("Failed to register client", zap.Error(err))
+		s.logger.Error("Failed to register client",
+			append(identity.LogFields(token), zap.String("streamId", streamID), zap.Error(err))...,
+		)
 		return err
 	}
 	s.metrics.ConnectionsActive.Update(float64(s.registry.StreamCount()))
 	s.metrics.ConnectionsTotal.Inc(1)
+
+	// An agent opens many streams, so its arrival is logged once, on its
+	// first stream here; the rest are Debug.
+	openFields := append(identity.LogFields(token),
+		zap.String("streamId", streamID),
+		zap.String("peer", peerAddr),
+		zap.Int("instanceStreams", reg.InstanceStreams),
+		zap.Int("tokenStreams", reg.TokenStreams),
+	)
+	if reg.FirstForInstance {
+		s.logger.Info("Agent instance connected", openFields...)
+	} else {
+		s.logger.Debug("Tunnel stream opened", openFields...)
+	}
 
 	// Start stream duration tracking.
 	stopwatch := s.metrics.StreamDuration(identity.TenantID, identity.Integration, identity.Alias)
@@ -206,7 +252,7 @@ func (s *Service) Tunnel(stream pb.TunnelService_TunnelServer) error {
 	// connection edge, the mirror of the 1->0 edge that drives
 	// client-disconnected. Every other stream is churn BROKER_SERVER does not
 	// need and, at 64 streams per reconnect, could not absorb quietly.
-	if firstConnection {
+	if reg.FirstForToken {
 		go s.notifyClientConnected(token, hello.InstanceId, hello.ClientVersion)
 	}
 
@@ -240,12 +286,13 @@ func (s *Service) Tunnel(stream pb.TunnelService_TunnelServer) error {
 				last := time.Unix(0, lastHeartbeat.Load())
 				if time.Since(last) > timeout {
 					s.logger.Warn("Heartbeat timeout — closing stream",
-						zap.String("streamId", streamID),
-						zap.String("tenantId", identity.TenantID),
-						zap.Duration("elapsed", time.Since(last)),
+						append(identity.LogFields(token),
+							zap.String("streamId", streamID),
+							zap.Duration("elapsed", time.Since(last)),
+						)...,
 					)
 					s.metrics.HeartbeatMissed.Inc(1)
-					cancel()
+					cancel(errHeartbeatTimeout)
 					return
 				}
 			}
@@ -281,22 +328,23 @@ func (s *Service) Tunnel(stream pb.TunnelService_TunnelServer) error {
 		}
 	}()
 
+	// Both exits below go through cleanupStream with a reason. When the agent
+	// or a proxy drops the connection, gRPC cancels stream.Context() and fails
+	// the pending Recv at the same moment, so either branch can win; the
+	// ctx.Done branch used to clean up without logging, which is why a proxy
+	// restart in staging produced no close lines at all.
 	for {
 		var r recvResult
 		select {
 		case <-ctx.Done():
-			s.cleanupStream(token, streamID, stopwatch)
+			reason, err := closeReasonFromContext(ctx)
+			s.cleanupStream(token, streamID, stopwatch, reason, err, openedAt)
 			return nil
 		case r = <-recvC:
 		}
 
 		if r.err != nil {
-			s.logger.Info("Client stream closed",
-				zap.String("streamId", streamID),
-				zap.String("tenantId", identity.TenantID),
-				zap.Error(r.err),
-			)
-			s.cleanupStream(token, streamID, stopwatch)
+			s.cleanupStream(token, streamID, stopwatch, closeReasonFromRecv(r.err), r.err, openedAt)
 			return nil
 		}
 
@@ -323,8 +371,36 @@ func (s *Service) Tunnel(stream pb.TunnelService_TunnelServer) error {
 	}
 }
 
-// cleanupStream removes a stream from the registry and notifies BROKER_SERVER.
-func (s *Service) cleanupStream(token broker.Token, streamID string, stopwatch interface{ Stop() }) {
+// closeReasonFromContext classifies a stream whose context ended: a cause the
+// server set says which server path closed it; otherwise the RPC itself
+// ended, which means the peer went away.
+func closeReasonFromContext(ctx context.Context) (string, error) {
+	cause := context.Cause(ctx)
+	switch {
+	case errors.Is(cause, errHeartbeatTimeout):
+		return closeHeartbeatTimeout, cause
+	case errors.Is(cause, errStreamCancelled):
+		return closeServerCancelled, cause
+	default:
+		return closeClientGone, cause
+	}
+}
+
+// closeReasonFromRecv classifies the error that ended the Recv loop.
+func closeReasonFromRecv(err error) string {
+	switch {
+	case errors.Is(err, io.EOF):
+		return closeClientClosed
+	case errors.Is(err, context.Canceled), status.Code(err) == codes.Canceled:
+		return closeClientGone
+	default:
+		return closeTransportError
+	}
+}
+
+// cleanupStream removes a stream from the registry, logs why it closed, and
+// notifies BROKER_SERVER.
+func (s *Service) cleanupStream(token broker.Token, streamID string, stopwatch interface{ Stop() }, reason string, closeErr error, openedAt time.Time) {
 	stopwatch.Stop()
 
 	// Fail any in-flight calls for this stream.
@@ -335,17 +411,43 @@ func (s *Service) cleanupStream(token broker.Token, streamID string, stopwatch i
 		closeHandler(streamID)
 	}
 
-	// Fetch identity before unregistering so we can pass clientID to the disconnect notification.
+	// Fetch identity before unregistering so we can pass clientID to the
+	// disconnect notification. This is the entry's identity, not the closing
+	// stream's: BROKER_SERVER pairs client-disconnected with the
+	// client-connected it got on the token's first stream, so the ID has to
+	// be the one that was announced.
 	var clientID string
 	if identity := s.registry.GetIdentity(token); identity != nil {
 		clientID = identity.InstanceID
 	}
 
-	entryRemoved := s.registry.Unregister(token, streamID)
+	unreg := s.registry.UnregisterStream(token, streamID)
 	s.metrics.ConnectionsActive.Update(float64(s.registry.StreamCount()))
 
+	fields := append(unreg.Identity.LogFields(token),
+		zap.String("streamId", streamID),
+		zap.String("reason", reason),
+		zap.Duration("connectedFor", time.Since(openedAt)),
+		zap.Int("instanceStreams", unreg.InstanceStreams),
+		zap.Int("tokenStreams", unreg.TokenStreams),
+	)
+	if closeErr != nil {
+		fields = append(fields, zap.Error(closeErr))
+		if code := status.Code(closeErr); code != codes.Unknown {
+			fields = append(fields, zap.String("grpcCode", code.String()))
+		}
+	}
+	switch {
+	case unreg.InstanceRemoved:
+		s.logger.Info("Agent instance disconnected", fields...)
+	case reason == closeTransportError:
+		s.logger.Warn("Tunnel stream closed", fields...)
+	default:
+		s.logger.Debug("Tunnel stream closed", fields...)
+	}
+
 	// Only notify BROKER_SERVER if the entire entry was removed (last stream).
-	if entryRemoved {
+	if unreg.TokenRemoved {
 		go s.notifyClientDisconnected(token, clientID)
 	}
 }
