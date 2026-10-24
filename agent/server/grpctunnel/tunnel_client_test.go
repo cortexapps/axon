@@ -26,7 +26,9 @@ import (
 	"github.com/stretchr/testify/require"
 	gomock "go.uber.org/mock/gomock"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest"
+	"go.uber.org/zap/zaptest/observer"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -1005,6 +1007,201 @@ func TestStartThenClose_WaitsForStartup(t *testing.T) {
 			tc, _ := newTestClient(t, config.AgentConfig{}, &fakeRegistration{serverURI: addr, tokens: []string{"t"}})
 			startClientWithEnv(t, tc, addr, "t")
 			require.NoError(t, tc.Close())
+		})
+	}
+}
+
+// -----------------------------------------------------------------------------
+// manageStream: reconnect backoff and forced re-registration
+// -----------------------------------------------------------------------------
+
+// stubReconnectWait makes every reconnect wait d, whatever the backoff says.
+func stubReconnectWait(t *testing.T, d time.Duration) {
+	t.Helper()
+	old := jittered
+	jittered = func(time.Duration) time.Duration { return d }
+	t.Cleanup(func() { jittered = old })
+}
+
+// countingRegistration counts Register calls and, when gate is non-nil, holds
+// each one until it is closed.
+type countingRegistration struct {
+	calls atomic.Int32
+	gate  chan struct{}
+}
+
+func (r *countingRegistration) Register(_ context.Context, _ common.Integration, _ string) (*snykbroker.RegistrationInfoResponse, error) {
+	r.calls.Add(1)
+	if r.gate != nil {
+		<-r.gate
+	}
+	return &snykbroker.RegistrationInfoResponse{ServerUri: "127.0.0.1:1", Token: "rotated"}, nil
+}
+
+// startWorkers runs n manageStream workers, one per pool connection, without
+// the sizing loop, so a test decides exactly when each of them fails. The
+// returned func stops them and waits for them to exit.
+func startWorkers(t *testing.T, tc *tunnelClient, n int) (stop func()) {
+	t.Helper()
+	t.Setenv("BROKER_SERVER_URL", "")
+	t.Setenv("BROKER_TOKEN", "")
+	tc.running.Store(true)
+	tc.resetForStart()
+	tc.mu.Lock()
+	tc.runningWorkers = n
+	tc.mu.Unlock()
+	tc.targetSlots.Store(int32(n))
+	tc.wg.Add(n)
+	for id := 1; id <= n; id++ {
+		go tc.manageStream(id)
+	}
+	var once sync.Once
+	stop = func() {
+		once.Do(func() {
+			tc.running.Store(false)
+			tc.cancelAll()
+			tc.wg.Wait()
+			tc.pool.closeAll()
+		})
+	}
+	t.Cleanup(stop)
+	return stop
+}
+
+// flakyOpenService fails the first failOpens streams before the handshake
+// completes and hands the rest to inner.
+type flakyOpenService struct {
+	pb.UnimplementedTunnelServiceServer
+	inner     *fakeTunnelService
+	failOpens int32
+	n         atomic.Int32
+}
+
+func (f *flakyOpenService) Tunnel(stream pb.TunnelService_TunnelServer) error {
+	if f.n.Add(1) <= f.failOpens {
+		_, _ = stream.Recv()
+		return status.Error(codes.Unavailable, "refused")
+	}
+	return f.inner.Tunnel(stream)
+}
+
+// A stream that was up and then ends says nothing about the server being
+// down, so the retry after it must not inherit the backoff that earlier
+// failures built up.
+func TestManageStream_BackoffResetsAfterEstablishedStream(t *testing.T) {
+	stubReconnectWait(t, time.Millisecond)
+
+	var established atomic.Int32
+	inner := &fakeTunnelService{behavior: serverBehavior{
+		serverID: "backoff-server",
+		onStream: func(stream pb.TunnelService_TunnelServer, _ *pb.ClientHello) error {
+			if established.Add(1) == 1 {
+				return status.Error(codes.Unavailable, "goaway")
+			}
+			<-stream.Context().Done()
+			return nil
+		},
+	}}
+	addr, stop := startFakeServer(t, &flakyOpenService{inner: inner, failOpens: 3})
+	defer stop()
+
+	tc, _ := newTestClient(t, config.AgentConfig{}, &countingRegistration{})
+	core, logs := observer.New(zapcore.WarnLevel)
+	tc.logger = zap.New(core)
+	tc.mu.Lock()
+	tc.currentToken, tc.currentServerAddr = "tok", addr
+	tc.mu.Unlock()
+	startWorkers(t, tc, 1)
+
+	const msg = "Tunnel slot stream ended; will retry"
+	waitFor(t, 5*time.Second, func() bool { return logs.FilterMessage(msg).Len() >= 4 })
+
+	var got []time.Duration
+	for _, e := range logs.FilterMessage(msg).All() {
+		got = append(got, e.ContextMap()["nextBackoff"].(time.Duration))
+	}
+	require.Equal(t, []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, minBackoff}, got[:4],
+		"three failed opens must back off exponentially, and the drop of the stream that then opened must not")
+}
+
+// All workers failing at once cross the threshold together; that is one
+// forced re-registration, not one per worker that got past the check.
+func TestManageStream_ForcedReregisterIsSingleFlight(t *testing.T) {
+	stubReconnectWait(t, time.Hour)
+	reg := &countingRegistration{gate: make(chan struct{})}
+	const workers = 2*failuresBeforeReregister - 2 // one crossing, with room left over
+	tc, _ := newTestClient(t, config.AgentConfig{TunnelConns: workers}, reg)
+	stop := startWorkers(t, tc, workers)
+
+	waitFor(t, 5*time.Second, func() bool {
+		return counterVecValue(t, tc.connectErrorsTotal, "config") == workers
+	})
+	close(reg.gate)
+	stop()
+
+	require.Equal(t, int32(1), reg.calls.Load(), "one threshold crossing must force one re-registration")
+}
+
+// Only failures to open a stream count toward re-registration; established
+// streams dropping together (a server restart, a GOAWAY) is routine.
+func TestManageStream_EstablishedDropsDoNotForceReregister(t *testing.T) {
+	stubReconnectWait(t, time.Hour)
+	const workers = failuresBeforeReregister
+
+	release := make(chan struct{})
+	svc := &fakeTunnelService{behavior: serverBehavior{
+		serverID: "drop-server",
+		onStream: func(pb.TunnelService_TunnelServer, *pb.ClientHello) error {
+			<-release
+			return status.Error(codes.Unavailable, "goaway")
+		},
+	}}
+	addr, stopServer := startFakeServer(t, svc)
+	defer stopServer()
+
+	reg := &countingRegistration{}
+	tc, _ := newTestClient(t, config.AgentConfig{TunnelConns: workers}, reg)
+	tc.mu.Lock()
+	tc.currentToken, tc.currentServerAddr = "tok", addr
+	tc.mu.Unlock()
+	stop := startWorkers(t, tc, workers)
+
+	waitFor(t, 5*time.Second, func() bool {
+		tc.mu.Lock()
+		defer tc.mu.Unlock()
+		return len(tc.streams) == workers
+	})
+	close(release)
+	waitFor(t, 5*time.Second, func() bool {
+		return counterVecValue(t, tc.reconnectsTotal, "") == workers
+	})
+	stop()
+
+	require.Zero(t, tc.consecFailures.Load(), "dropped established streams are not open failures")
+	require.Zero(t, reg.calls.Load(), "dropped established streams must not force re-registration")
+}
+
+// Real open failures still force re-registration once there are enough.
+func TestManageStream_OpenFailuresForceReregisterAtThreshold(t *testing.T) {
+	for _, tt := range []struct {
+		failures int
+		want     int32
+	}{
+		{failuresBeforeReregister - 1, 0},
+		{failuresBeforeReregister, 1},
+	} {
+		t.Run(fmt.Sprintf("%d_failures", tt.failures), func(t *testing.T) {
+			stubReconnectWait(t, time.Hour)
+			reg := &countingRegistration{}
+			tc, _ := newTestClient(t, config.AgentConfig{TunnelConns: tt.failures}, reg)
+			stop := startWorkers(t, tc, tt.failures)
+
+			waitFor(t, 5*time.Second, func() bool {
+				return counterVecValue(t, tc.connectErrorsTotal, "config") == float64(tt.failures)
+			})
+			stop()
+
+			require.Equal(t, tt.want, reg.calls.Load())
 		})
 	}
 }
