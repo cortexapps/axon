@@ -32,7 +32,7 @@ WORKDIR /agent
 # when the scheduled Trivy scan flags OS-package CVEs whose fixes are already
 # in the archive — the cache is just serving a stale layer. Leaves the rest of
 # the build (Go, Node + snyk-broker install) hitting cache as normal.
-ARG APT_CACHE_BUST=2026-10-21
+ARG APT_CACHE_BUST=2026-10-26
 # NOTE: build-essential is deliberately NOT installed here. It pulls in a full
 # C/C++ toolchain whose libc6-dev dependency drags in linux-libc-dev (the Linux
 # kernel headers), and that single package generates a steady stream of HIGH
@@ -67,14 +67,18 @@ ARG SNYK_BROKER_VERSION=v1.0.22-axon
 # under /usr/lib/node_modules/npm, and removing it in a later layer would leave
 # it in the image's lower layers, where customers' scanners still find it.
 # follow-redirects 1.16.0, pinned by the broker's lockfile, has two HIGH
-# advisories fixed in 1.16.1. The override is a no-op once the broker tag
-# pins 1.16.1 itself.
+# advisories fixed in 1.16.1. body-parser 1.20.4 has CVE-2026-111181, fixed in
+# 1.20.9. Each pin is a no-op once the broker tag pins the fixed version.
+# body-parser is a direct dependency of the broker, and npm rejects an override
+# that conflicts with a direct dependency. So the dependency itself moves to
+# 1.20.9, and `$body-parser` makes express's copy follow it.
 RUN wget -q -O - https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash - && apt-get install -y nodejs && \
     npm install --global npm@11.18.0 typescript@4.9.3 && \
     git clone https://github.com/cortexapps/snyk-broker.git /tmp/snyk-broker && \
     cd /tmp/snyk-broker && \
     git checkout ${SNYK_BROKER_VERSION} && \
     npm pkg set overrides.follow-redirects='^1.16.1' && \
+    npm pkg set dependencies.body-parser='^1.20.9' overrides.body-parser='$body-parser' && \
     npm install && \
     cp -r . /usr/local/snyk-broker && \
     cd /usr/local/snyk-broker && \
