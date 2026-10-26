@@ -77,13 +77,45 @@ jobs:
         id: local-tag
         run: echo "tag=$(echo '${{ steps.meta.outputs.tags }}' | head -n1)" >> "$GITHUB_OUTPUT"
 
-      # The PR scan runs inside this job because `build` is a required check,
-      # so a finding blocks the merge to main.
-      - name: Run Trivy vulnerability scanner (SARIF)
+      - name: Save Docker image for scanning
         if: env.IS_PUBLISH != 'true'
+        run: docker save '${{ steps.local-tag.outputs.tag }}' -o /tmp/docker-image.tar
+
+      - name: Upload Docker image artifact
+        if: env.IS_PUBLISH != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-image
+          path: /tmp/docker-image.tar
+          retention-days: 1
+
+    outputs:
+      image-tag: ${{ steps.local-tag.outputs.tag }}
+      # The primary tag metadata-action resolved -- the semver version on a
+      # tag build, the branch name on main. The release scan targets this
+      # rather than a hardcoded :main, so a tag build reports on the image
+      # that tag actually published.
+      published-ref: ghcr.io/${{ github.repository_owner }}/cortex-axon-agent:${{ steps.meta.outputs.version }}
+
+  trivy-pr:
+    name: Run Trivy PR scan (local image)
+    needs: build
+    if: ${{ !(github.event_name == 'workflow_dispatch' || github.ref == format('refs/heads/{0}', 'main') || startsWith(github.ref, 'refs/tags/')) }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Docker image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+          path: /tmp
+
+      - name: Load Docker image
+        run: docker load -i /tmp/docker-image.tar
+
+      - name: Run Trivy vulnerability scanner (SARIF)
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: ${{ steps.local-tag.outputs.tag }}
+          image-ref: ${{ needs.build.outputs.image-tag }}
           format: 'sarif'
           output: 'trivy-results.sarif'
           severity: 'CRITICAL,HIGH'
@@ -92,7 +124,6 @@ jobs:
           skip-dirs: 'usr/local/go'
 
       - name: Upload Trivy scan results to GitHub Security tab
-        if: env.IS_PUBLISH != 'true'
         uses: github/codeql-action/upload-sarif@v4.32.2
         with:
           sarif_file: 'trivy-results.sarif'
@@ -104,7 +135,6 @@ jobs:
       # The bypass-trivy-fail label lets a PR merge past CVEs it did not
       # introduce. The findings are still uploaded above and listed here.
       - name: Fail on CRITICAL/HIGH vulnerabilities
-        if: env.IS_PUBLISH != 'true'
         env:
           BYPASS: ${{ contains(github.event.pull_request.labels.*.name, 'bypass-trivy-fail') }}
         run: |
@@ -120,13 +150,6 @@ jobs:
             fi
             exit 1
           fi
-
-    outputs:
-      # The primary tag metadata-action resolved -- the semver version on a
-      # tag build, the branch name on main. The release scan targets this
-      # rather than a hardcoded :main, so a tag build reports on the image
-      # that tag actually published.
-      published-ref: ghcr.io/${{ github.repository_owner }}/cortex-axon-agent:${{ steps.meta.outputs.version }}
 
   trivy:
     name: Run Trivy Container scan
