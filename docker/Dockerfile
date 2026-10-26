@@ -68,14 +68,17 @@ ARG SNYK_BROKER_VERSION=v1.0.22-axon
 # it in the image's lower layers, where customers' scanners still find it.
 # follow-redirects 1.16.0, pinned by the broker's lockfile, has two HIGH
 # advisories fixed in 1.16.1. body-parser 1.20.4 has CVE-2026-111181, fixed in
-# 1.20.9. Each override is a no-op once the broker tag pins the fixed version.
+# 1.20.9. Each pin is a no-op once the broker tag pins the fixed version.
+# body-parser is a direct dependency of the broker, and npm rejects an override
+# that conflicts with a direct dependency. So the dependency itself moves to
+# 1.20.9, and `$body-parser` makes express's copy follow it.
 RUN wget -q -O - https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash - && apt-get install -y nodejs && \
     npm install --global npm@11.18.0 typescript@4.9.3 && \
     git clone https://github.com/cortexapps/snyk-broker.git /tmp/snyk-broker && \
     cd /tmp/snyk-broker && \
     git checkout ${SNYK_BROKER_VERSION} && \
     npm pkg set overrides.follow-redirects='^1.16.1' && \
-    npm pkg set overrides.body-parser='^1.20.9' && \
+    npm pkg set dependencies.body-parser='^1.20.9' overrides.body-parser='$body-parser' && \
     npm install && \
     cp -r . /usr/local/snyk-broker && \
     cd /usr/local/snyk-broker && \
