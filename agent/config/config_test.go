@@ -91,8 +91,8 @@ func TestEnvConfig_MaxRequestTimeout(t *testing.T) {
 }
 
 func TestEnvConfig_HttpReadTimeout(t *testing.T) {
-	assert.Equal(t, "1s", NewAgentEnvConfig().HttpReadTimeout.String())
-
-	t.Setenv("AXON_HTTP_READ_TIMEOUT", "30s")
 	assert.Equal(t, "30s", NewAgentEnvConfig().HttpReadTimeout.String())
+
+	t.Setenv("AXON_HTTP_READ_TIMEOUT", "2m")
+	assert.Equal(t, "2m0s", NewAgentEnvConfig().HttpReadTimeout.String())
 }

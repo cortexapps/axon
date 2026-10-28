@@ -206,12 +206,12 @@ exists, takes precedence.
 The agent's own HTTP servers bound how long they take to read an incoming
 request, headers and body. The bound counts from when the connection is
 accepted. The broker writes a request only when its event loop gets to it, so
-raise the bound if the broker logs `socket hang up` retries in bursts under
-load.
+raise the bound if the broker still logs `socket hang up` retries in bursts
+under load.
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
-| `AXON_HTTP_READ_TIMEOUT` | `1s` | Longest time to read a whole request, from when the connection is accepted |
+| `AXON_HTTP_READ_TIMEOUT` | `30s` | Longest time to read a whole request, from when the connection is accepted |
 
 ## How it works
 
