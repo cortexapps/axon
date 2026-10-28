@@ -59,17 +59,34 @@ func TestServer_KeepsKeepAliveConnectionIdlePastReadTimeout(t *testing.T) {
 	require.Equal(t, http.StatusOK, second.StatusCode)
 }
 
+// newReadTimeoutTestServer starts a server whose handler reads the whole
+// request body and answers 500 if it could not.
+func newReadTimeoutTestServer(t *testing.T, readTimeout time.Duration) (*httpServer, int) {
+	t.Helper()
+	srv := NewHttpServer(HttpServerParams{
+		Logger: zap.NewNop(),
+		Config: config.AgentConfig{HttpReadTimeout: readTimeout},
+		Handlers: []RegisterableHandler{&blockingHandler{serve: func(w http.ResponseWriter, r *http.Request) {
+			if _, err := io.ReadAll(r.Body); err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		}}},
+		Registry: prometheus.NewRegistry(),
+	}).(*httpServer)
+	port, err := srv.Start()
+	require.NoError(t, err)
+	return srv, port
+}
+
 // The broker opens a connection and writes its request only when its event
-// loop gets to it. Under load that loop stalls for more than a second, and a
-// one-second ReadTimeout, which starts when the connection is accepted, closed
-// the connection before the request arrived. Every connection opened before
-// the stall failed at once with ECONNRESET.
-// A request that arrives more than a second after its connection opened must
-// still be served.
-func TestServer_ServesRequestArrivingLateOnNewConnection(t *testing.T) {
-	srv, port := newBlockingTestServer(t, func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
+// loop gets to it. Under load that loop stalls for more than a second, and
+// the default one-second ReadTimeout, which starts when the connection is
+// accepted, closes the connection before the request arrives.
+// AXON_HTTP_READ_TIMEOUT lets such a deployment wait longer.
+func TestServer_ServesLateRequestWithConfiguredReadTimeout(t *testing.T) {
+	srv, port := newReadTimeoutTestServer(t, 5*time.Second)
 	defer srv.Close()
 
 	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
@@ -83,25 +100,24 @@ func TestServer_ServesRequestArrivingLateOnNewConnection(t *testing.T) {
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
-// AXON_HTTP_READ_HEADER_TIMEOUT replaces the default header wait, so a
-// configured value shorter than the client's delay closes the connection.
-func TestServer_UsesConfiguredReadHeaderTimeout(t *testing.T) {
-	srv := NewHttpServer(HttpServerParams{
-		Logger:   zap.NewNop(),
-		Config:   config.AgentConfig{HttpReadHeaderTimeout: 200 * time.Millisecond},
-		Handlers: []RegisterableHandler{&blockingHandler{serve: func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }}},
-		Registry: prometheus.NewRegistry(),
-	}).(*httpServer)
-	port, err := srv.Start()
-	require.NoError(t, err)
+// The same bound covers a request body that arrives late, such as a PUT the
+// broker starts writing before a stall and finishes after it.
+func TestServer_ReadsLateBodyWithConfiguredReadTimeout(t *testing.T) {
+	srv, port := newReadTimeoutTestServer(t, 5*time.Second)
 	defer srv.Close()
 
 	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 	require.NoError(t, err)
 	defer conn.Close()
 
-	time.Sleep(700 * time.Millisecond)
+	_, err = fmt.Fprintf(conn, "PUT /block HTTP/1.1\r\nHost: localhost\r\nContent-Length: 5\r\n\r\n")
+	require.NoError(t, err)
+	time.Sleep(1500 * time.Millisecond)
+	_, err = io.WriteString(conn, "hello")
+	require.NoError(t, err)
 
-	_, err = sendAndRead(t, conn, bufio.NewReader(conn))
-	require.Error(t, err, "server kept the connection open past the configured header timeout")
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
 }

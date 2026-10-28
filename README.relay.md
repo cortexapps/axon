@@ -203,15 +203,15 @@ exists, takes precedence.
 | Broker `/systemcheck` proxy | 10s |
 | WebSocket proxy dial, CONNECT and TLS handshake | 30s |
 
-The agent's own HTTP servers bound how long they wait for an incoming request.
-Both bounds count from when the connection is accepted. The broker writes a
-request only when its event loop gets to it, so raise the header bound if the
-broker logs `socket hang up` retries in bursts under load.
+The agent's own HTTP servers bound how long they take to read an incoming
+request, headers and body. The bound counts from when the connection is
+accepted. The broker writes a request only when its event loop gets to it, so
+raise the bound if the broker logs `socket hang up` retries in bursts under
+load.
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
-| `AXON_HTTP_READ_HEADER_TIMEOUT` | `30s` | Longest wait for a new request's headers |
-| `AXON_HTTP_READ_TIMEOUT` | `5m` | Longest time to read a whole request, including its body |
+| `AXON_HTTP_READ_TIMEOUT` | `1s` | Longest time to read a whole request, from when the connection is accepted |
 
 ## How it works
 

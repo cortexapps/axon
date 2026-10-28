@@ -90,14 +90,9 @@ func TestEnvConfig_MaxRequestTimeout(t *testing.T) {
 	assert.Equal(t, "1m30s", NewAgentEnvConfig().MaxRequestTimeout.String())
 }
 
-func TestEnvConfig_HttpReadTimeouts(t *testing.T) {
-	cfg := NewAgentEnvConfig()
-	assert.Equal(t, "30s", cfg.HttpReadHeaderTimeout.String())
-	assert.Equal(t, "5m0s", cfg.HttpReadTimeout.String())
+func TestEnvConfig_HttpReadTimeout(t *testing.T) {
+	assert.Equal(t, "1s", NewAgentEnvConfig().HttpReadTimeout.String())
 
-	t.Setenv("AXON_HTTP_READ_HEADER_TIMEOUT", "2m")
-	t.Setenv("AXON_HTTP_READ_TIMEOUT", "10m")
-	cfg = NewAgentEnvConfig()
-	assert.Equal(t, "2m0s", cfg.HttpReadHeaderTimeout.String())
-	assert.Equal(t, "10m0s", cfg.HttpReadTimeout.String())
+	t.Setenv("AXON_HTTP_READ_TIMEOUT", "30s")
+	assert.Equal(t, "30s", NewAgentEnvConfig().HttpReadTimeout.String())
 }
