@@ -9,7 +9,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cortexapps/axon/config"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 )
 
 // sendAndRead writes one keep-alive GET on conn and reads the whole response.
@@ -78,4 +81,27 @@ func TestServer_ServesRequestArrivingLateOnNewConnection(t *testing.T) {
 	resp, err := sendAndRead(t, conn, bufio.NewReader(conn))
 	require.NoError(t, err, "server closed the connection before the request arrived")
 	require.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+// AXON_HTTP_READ_HEADER_TIMEOUT replaces the default header wait, so a
+// configured value shorter than the client's delay closes the connection.
+func TestServer_UsesConfiguredReadHeaderTimeout(t *testing.T) {
+	srv := NewHttpServer(HttpServerParams{
+		Logger:   zap.NewNop(),
+		Config:   config.AgentConfig{HttpReadHeaderTimeout: 200 * time.Millisecond},
+		Handlers: []RegisterableHandler{&blockingHandler{serve: func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }}},
+		Registry: prometheus.NewRegistry(),
+	}).(*httpServer)
+	port, err := srv.Start()
+	require.NoError(t, err)
+	defer srv.Close()
+
+	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	require.NoError(t, err)
+	defer conn.Close()
+
+	time.Sleep(700 * time.Millisecond)
+
+	_, err = sendAndRead(t, conn, bufio.NewReader(conn))
+	require.Error(t, err, "server kept the connection open past the configured header timeout")
 }

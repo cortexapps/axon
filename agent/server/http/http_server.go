@@ -270,13 +270,15 @@ func metricPath(r *http.Request) string {
 }
 
 // defaultReadHeaderTimeout bounds how long a new connection may wait for its
-// request headers. The broker opens a connection and writes the request only
-// when its event loop gets to it, and under load that loop stalls for seconds.
+// request headers when AXON_HTTP_READ_HEADER_TIMEOUT is not set. The broker
+// opens a connection and writes the request only when its event loop gets to
+// it, and under load that loop stalls for seconds.
 var defaultReadHeaderTimeout = 30 * time.Second
 
-// defaultReadTimeout bounds reading a whole request, including its body. It is
-// counted from the moment the connection is accepted, so it must outlast both
-// the header wait and a large upload.
+// defaultReadTimeout bounds reading a whole request, including its body, when
+// AXON_HTTP_READ_TIMEOUT is not set. It is counted from the moment the
+// connection is accepted, so it must outlast both the header wait and a large
+// upload.
 var defaultReadTimeout = 5 * time.Minute
 
 // defaultIdleTimeout is how long a keep-alive connection may sit between
@@ -286,6 +288,13 @@ var defaultReadTimeout = 5 * time.Minute
 // request into a socket this server had just closed, failing with ECONNRESET
 // and retrying.
 var defaultIdleTimeout = 5 * time.Minute
+
+func orDefault(d, fallback time.Duration) time.Duration {
+	if d > 0 {
+		return d
+	}
+	return fallback
+}
 
 func (h *httpServer) Start() (int, error) {
 
@@ -307,8 +316,8 @@ func (h *httpServer) Start() (int, error) {
 	// local reference, so Close (which nils h.server) never races with it
 	server := &http.Server{
 		Handler:           h.mux,
-		ReadHeaderTimeout: defaultReadHeaderTimeout,
-		ReadTimeout:       defaultReadTimeout,
+		ReadHeaderTimeout: orDefault(h.config.HttpReadHeaderTimeout, defaultReadHeaderTimeout),
+		ReadTimeout:       orDefault(h.config.HttpReadTimeout, defaultReadTimeout),
 		IdleTimeout:       defaultIdleTimeout,
 	}
 	h.server = server
