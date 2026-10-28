@@ -269,14 +269,22 @@ func metricPath(r *http.Request) string {
 	return unmatchedMetricPath
 }
 
-var defaultReadTimeout = time.Second
+// defaultReadHeaderTimeout bounds how long a new connection may wait for its
+// request headers. The broker opens a connection and writes the request only
+// when its event loop gets to it, and under load that loop stalls for seconds.
+var defaultReadHeaderTimeout = 30 * time.Second
+
+// defaultReadTimeout bounds reading a whole request, including its body. It is
+// counted from the moment the connection is accepted, so it must outlast both
+// the header wait and a large upload.
+var defaultReadTimeout = 5 * time.Minute
 
 // defaultIdleTimeout is how long a keep-alive connection may sit between
 // requests. It is set explicitly because net/http otherwise reuses
-// ReadTimeout for this, and one second is shorter than the gaps between the
-// broker's requests: the broker keeps its connections open and would write
-// the next request into a socket this server had just closed, failing with
-// ECONNRESET and retrying.
+// ReadTimeout for this. It must outlast the gaps between the broker's
+// requests: the broker keeps its connections open and would write the next
+// request into a socket this server had just closed, failing with ECONNRESET
+// and retrying.
 var defaultIdleTimeout = 5 * time.Minute
 
 func (h *httpServer) Start() (int, error) {
@@ -298,9 +306,10 @@ func (h *httpServer) Start() (int, error) {
 	// construct the server before spawning the serve goroutine and hand it a
 	// local reference, so Close (which nils h.server) never races with it
 	server := &http.Server{
-		Handler:     h.mux,
-		ReadTimeout: defaultReadTimeout,
-		IdleTimeout: defaultIdleTimeout,
+		Handler:           h.mux,
+		ReadHeaderTimeout: defaultReadHeaderTimeout,
+		ReadTimeout:       defaultReadTimeout,
+		IdleTimeout:       defaultIdleTimeout,
 	}
 	h.server = server
 	go func() {

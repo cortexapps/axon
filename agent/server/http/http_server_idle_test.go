@@ -49,9 +49,33 @@ func TestServer_KeepsKeepAliveConnectionIdlePastReadTimeout(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, first.StatusCode)
 
-	time.Sleep(defaultReadTimeout + 500*time.Millisecond)
+	time.Sleep(1500 * time.Millisecond)
 
 	second, err := sendAndRead(t, conn, r)
 	require.NoError(t, err, "server dropped the idle keep-alive connection")
 	require.Equal(t, http.StatusOK, second.StatusCode)
+}
+
+// The broker opens a connection and writes its request only when its event
+// loop gets to it. Under load that loop stalls for more than a second, and a
+// one-second ReadTimeout, which starts when the connection is accepted, closed
+// the connection before the request arrived. Every connection opened before
+// the stall failed at once with ECONNRESET.
+// A request that arrives more than a second after its connection opened must
+// still be served.
+func TestServer_ServesRequestArrivingLateOnNewConnection(t *testing.T) {
+	srv, port := newBlockingTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	defer srv.Close()
+
+	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	require.NoError(t, err)
+	defer conn.Close()
+
+	time.Sleep(1500 * time.Millisecond)
+
+	resp, err := sendAndRead(t, conn, bufio.NewReader(conn))
+	require.NoError(t, err, "server closed the connection before the request arrived")
+	require.Equal(t, http.StatusOK, resp.StatusCode)
 }
