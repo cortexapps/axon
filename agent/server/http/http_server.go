@@ -271,11 +271,10 @@ func metricPath(r *http.Request) string {
 
 // defaultReadTimeout bounds reading a whole request, headers and body, when
 // AXON_HTTP_READ_TIMEOUT is not set. It is counted from the moment the
-// connection is accepted. The broker opens a connection and writes the
-// request only when its event loop gets to it, and that loop stalls for two to
-// three seconds while it encodes a large response, so a bound of one second
-// closed connections the broker was about to use.
-var defaultReadTimeout = 30 * time.Second
+// connection is accepted, so a client that opens a connection and writes its
+// request later, as the broker does when its event loop stalls, needs a
+// longer value.
+var defaultReadTimeout = time.Second
 
 // defaultIdleTimeout is how long a keep-alive connection may sit between
 // requests. It is set explicitly because net/http otherwise reuses

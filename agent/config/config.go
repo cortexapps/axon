@@ -380,7 +380,7 @@ func NewAgentEnvConfig() AgentConfig {
 		cfg.RelayIdleTimeout = rit
 	}
 
-	cfg.HttpReadTimeout = 30 * time.Second
+	cfg.HttpReadTimeout = time.Second
 	if v := os.Getenv("AXON_HTTP_READ_TIMEOUT"); v != "" {
 		d, err := time.ParseDuration(v)
 		if err != nil {
