@@ -114,9 +114,9 @@ jobs:
             sudo apt-get install -y protobuf-compiler
             make -C agent setup proto
 
-      - name: Build Agent Local Image
+      - name: Build Agent Local Image (gRPC only)
         run: |
-          make docker-build
+          make docker-build-grpc
 
       # The proxied case is the one that matters most for this transport: it
       # is the only test that proves the agent's outbound gRPC dial works

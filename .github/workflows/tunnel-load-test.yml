@@ -67,9 +67,10 @@ jobs:
       # pulling the images the image workflows already publish to ghcr.io, or
       # driving the build through docker/bake-action with cache type=gha.
 
-      # Measured peak footprint is ~5GB: a 1.26GB agent image (it bundles Node
-      # for snyk-broker), a 126MB server image, ~1.2GB of base images and
-      # ~2.5GB of build cache, against the runner's 14GB. Printed so a disk
+      # Measured peak footprint was ~5GB: a 1.26GB agent image (when it still
+      # bundled Node for snyk-broker; the -grpc target used now does not), a
+      # 126MB server image, ~1.2GB of base images and ~2.5GB of build cache,
+      # against the runner's 14GB. Printed so a disk
       # failure is diagnosable from the log rather than a mystery.
       - name: Report free disk
         run: df -h / | tail -1

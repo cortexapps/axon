@@ -43,7 +43,8 @@ services:
     build:
       context: ../../..
       dockerfile: docker/Dockerfile
-    image: cortex-axon-agent:local
+      target: grpc
+    image: cortex-axon-agent:local-grpc
     volumes:
       - .:/src
       - ./.mitmproxy:/certs
