@@ -76,3 +76,26 @@ jobs:
         suffix=-grpc,onlatest=true
       suffix: -grpc
     secrets: inherit
+
+  # `build` is a required status check on main, named after the single job
+  # this workflow used to have. The image jobs above now report as
+  # "Agent image (full) / build" etc., so without this the required check
+  # never reports and every PR sits blocked. It passes only when every image
+  # job that ran passed; a job skipped by its `if` (e.g. full on a -grpc tag)
+  # does not count against it.
+  build:
+    needs: [full, grpc]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: All agent images built
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "image job results: $RESULTS"
+          for r in $RESULTS; do
+            case "$r" in
+              success|skipped) ;;
+              *) echo "::error::an agent image job finished with: $r"; exit 1 ;;
+            esac
+          done
