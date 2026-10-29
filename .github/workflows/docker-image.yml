@@ -20,6 +20,13 @@ on:
         required: false
         type: string
         default: ''
+      build-args:
+        description: >-
+          Extra docker/Dockerfile build args, one KEY=value per line, e.g.
+          NODE_VERSION=22 for the -node22 image.
+        required: false
+        type: string
+        default: ''
       suffix:
         description: >-
           Keeps this variant's PR artifact and SARIF category apart from the
@@ -86,6 +93,7 @@ jobs:
           build-args: |
             BUILD_VERSION=${{ github.ref_name }}-${{ github.sha }}
             VARIANT=${{ inputs.variant }}
+            ${{ inputs.build-args }}
           # arm64 via QEMU is slow, so only build it on main branch or tags (not workflow_dispatch)
           platforms: ${{ env.IS_ARM64_BUILD == 'true' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
           cache-from: type=local,src=/tmp/.buildx-cache

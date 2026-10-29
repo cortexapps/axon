@@ -77,6 +77,37 @@ jobs:
       suffix: -grpc
     secrets: inherit
 
+  # cortex-axon-agent:<tag>-node22 -- the full image (both transports,
+  # snyk-broker included) on Node 22 instead of 20, published in parallel so it
+  # can be trialled before anything moves. Node 20 is end of life and will not
+  # get the CVE-2026-111497 fix; 22.23.4 has it, and the build fails if
+  # NodeSource serves anything older. Same tag set as the full image, each with
+  # -node22 appended: 0.3.11-node22, 0.3-node22, latest-node22, main-node22.
+  node22:
+    name: Agent image (Node 22)
+    if: ${{ !(startsWith(github.ref, 'refs/tags/') && endsWith(github.ref, '-grpc')) }}
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
+    uses: ./.github/workflows/docker-image.yml
+    with:
+      variant: full
+      build-args: |
+        NODE_VERSION=22
+        NODE_MIN_VERSION=22.23.4
+      tags: |
+        type=ref,event=branch
+        type=semver,pattern={{version}}
+        type=semver,pattern={{major}}.{{minor}}
+        type=sha
+      # latest stays auto, as for the full image; onlatest makes it
+      # latest-node22 instead of overwriting the full image's latest.
+      flavor: |
+        suffix=-node22,onlatest=true
+      suffix: -node22
+    secrets: inherit
+
   # `build` is a required status check on main, named after the single job
   # this workflow used to have. The image jobs above now report as
   # "Agent image (full) / build" etc., so without this the required check
@@ -84,7 +115,7 @@ jobs:
   # job that ran passed; a job skipped by its `if` (e.g. full on a -grpc tag)
   # does not count against it.
   build:
-    needs: [full, grpc]
+    needs: [full, grpc, node22]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:

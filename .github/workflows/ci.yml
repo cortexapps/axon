@@ -85,6 +85,50 @@ jobs:
       - name: "Run Relay Test: No Proxy"
         run: make -C agent relay-test-no-proxy
 
+  # The snyk-broker relay suite again, against the full image built on Node 22
+  # (published as -node22). The only thing it changes is the Node runtime
+  # under snyk-broker, so this is the suite that would catch a runtime
+  # regression. Scaffold tests are skipped: they do not touch Node.
+  docker-tests-node22:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Set up Go
+        uses: actions/setup-go@v3
+        with:
+          go-version: '1.26.10'
+
+      - name: Install dependencies
+        run: |
+            sudo apt-get update
+            sudo apt-get install -y protobuf-compiler
+            make -C agent setup proto
+
+      - name: Build Agent Local Image (Node 22)
+        run: |
+          make docker-build-node22
+
+      - name: Verify Node version
+        run: |
+          docker run --rm --entrypoint node cortex-axon-agent:local-node22 -e '
+            const [maj] = process.versions.node.split(".").map(Number);
+            console.log("node", process.versions.node);
+            if (maj !== 22) { console.error("expected Node 22"); process.exit(1); }'
+
+      - name: "Run Relay Test: With Proxy (TLS)"
+        env:
+          AXON_AGENT_IMAGE: cortex-axon-agent:local-node22
+        run: make -C agent relay-test-with-proxy
+
+      - name: "Run Relay Test: No Proxy"
+        env:
+          AXON_AGENT_IMAGE: cortex-axon-agent:local-node22
+        run: make -C agent relay-test-no-proxy
+
   # The same end-to-end scenarios as docker-tests, run over the gRPC tunnel
   # instead of snyk-broker. Both transports share relay_scenarios.sh, so this
   # is the same suite rather than a parallel copy that can drift — it already

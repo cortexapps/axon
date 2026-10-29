@@ -40,6 +40,18 @@ jobs:
       category: trivy-cortex-axon-agent-grpc
     secrets: inherit
 
+  agent-node22:
+    name: Agent image (Node 22)
+    permissions:
+      contents: read
+      packages: read
+      security-events: write
+    uses: ./.github/workflows/trivy-scan.yml
+    with:
+      image-ref: ghcr.io/${{ github.repository_owner }}/cortex-axon-agent:main-node22
+      category: trivy-cortex-axon-agent-node22
+    secrets: inherit
+
   tunnel-server:
     name: Tunnel server image
     permissions:

@@ -52,7 +52,8 @@ services:
     build:
       context: ../../..
       dockerfile: docker/Dockerfile
-    image: cortex-axon-agent:local
+    # CI points this at the Node 22 image (make docker-build-node22).
+    image: ${AXON_AGENT_IMAGE:-cortex-axon-agent:local}
     volumes:
       - .:/src
       - ./.mitmproxy:/certs
