@@ -94,10 +94,6 @@ type AgentConfig struct {
 	HttpRelayReflectorMode    RelayReflectorMode
 	ReflectorWebSocketUpgrade bool
 	RelayIdleTimeout          time.Duration
-	// HttpReadTimeout bounds how long the agent's HTTP servers take to read a
-	// whole request, headers and body, counted from when the connection is
-	// accepted.
-	HttpReadTimeout time.Duration
 
 	// RelayMode selects the tunnel implementation: "snyk-broker" or "grpc-tunnel".
 	RelayMode string
@@ -378,15 +374,6 @@ func NewAgentEnvConfig() AgentConfig {
 			panic(err)
 		}
 		cfg.RelayIdleTimeout = rit
-	}
-
-	cfg.HttpReadTimeout = time.Second
-	if v := os.Getenv("AXON_HTTP_READ_TIMEOUT"); v != "" {
-		d, err := time.ParseDuration(v)
-		if err != nil {
-			panic(err)
-		}
-		cfg.HttpReadTimeout = d
 	}
 
 	// AXON_RELAY_TRANSPORT is the documented name (design doc §10);

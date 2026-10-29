@@ -204,15 +204,16 @@ exists, takes precedence.
 | WebSocket proxy dial, CONNECT and TLS handshake | 30s |
 
 The agent's own HTTP servers bound how long they take to read an incoming
-request, headers and body. The bound counts from when the connection is
-accepted. The broker writes a request only when its event loop gets to it, and
-that loop stalls for two to three seconds while it sends a large response. If
-the broker logs `socket hang up` retries in bursts under load, set the bound to
-`30s`.
+request, headers and body, counted from when the connection is accepted. The
+relay reflector allows 30s, because the broker writes a request only when its
+event loop gets to it, and that loop stalls for two to three seconds while it
+sends a large response.
 
-| Variable | Default | Meaning |
-|----------|---------|---------|
-| `AXON_HTTP_READ_TIMEOUT` | `1s` | Longest time to read a whole request, from when the connection is accepted |
+| Server | Read bound |
+|--------|------------|
+| Relay reflector | 30s |
+| Webhook server | 30s |
+| Main server | 1s (30s for a `/cortex-api/` request body) |
 
 ## How it works
 

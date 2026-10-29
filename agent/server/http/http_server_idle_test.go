@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cortexapps/axon/config"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
@@ -59,13 +58,12 @@ func TestServer_KeepsKeepAliveConnectionIdlePastReadTimeout(t *testing.T) {
 	require.Equal(t, http.StatusOK, second.StatusCode)
 }
 
-// newReadTimeoutTestServer starts a server whose handler reads the whole
-// request body and answers 500 if it could not.
-func newReadTimeoutTestServer(t *testing.T, readTimeout time.Duration) (*httpServer, int) {
+// newReadTimeoutTestServer starts a server with the given options whose
+// handler reads the whole request body and answers 500 if it could not.
+func newReadTimeoutTestServer(t *testing.T, opts ...ServerOption) (*httpServer, int) {
 	t.Helper()
 	srv := NewHttpServer(HttpServerParams{
 		Logger: zap.NewNop(),
-		Config: config.AgentConfig{HttpReadTimeout: readTimeout},
 		Handlers: []RegisterableHandler{&blockingHandler{serve: func(w http.ResponseWriter, r *http.Request) {
 			if _, err := io.ReadAll(r.Body); err != nil {
 				w.WriteHeader(http.StatusInternalServerError)
@@ -74,7 +72,7 @@ func newReadTimeoutTestServer(t *testing.T, readTimeout time.Duration) (*httpSer
 			w.WriteHeader(http.StatusOK)
 		}}},
 		Registry: prometheus.NewRegistry(),
-	}).(*httpServer)
+	}, opts...).(*httpServer)
 	port, err := srv.Start()
 	require.NoError(t, err)
 	return srv, port
@@ -84,9 +82,9 @@ func newReadTimeoutTestServer(t *testing.T, readTimeout time.Duration) (*httpSer
 // loop gets to it. Under load that loop stalls for more than a second, and
 // the default one-second ReadTimeout, which starts when the connection is
 // accepted, closes the connection before the request arrives.
-// AXON_HTTP_READ_TIMEOUT lets such a deployment wait longer.
+// WithReadTimeout lets a server with such a client wait longer.
 func TestServer_ServesLateRequestWithConfiguredReadTimeout(t *testing.T) {
-	srv, port := newReadTimeoutTestServer(t, 30*time.Second)
+	srv, port := newReadTimeoutTestServer(t, WithReadTimeout(30*time.Second))
 	defer srv.Close()
 
 	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
@@ -103,7 +101,7 @@ func TestServer_ServesLateRequestWithConfiguredReadTimeout(t *testing.T) {
 // The same bound covers a request body that arrives late, such as a PUT the
 // broker starts writing before a stall and finishes after it.
 func TestServer_ReadsLateBodyWithConfiguredReadTimeout(t *testing.T) {
-	srv, port := newReadTimeoutTestServer(t, 30*time.Second)
+	srv, port := newReadTimeoutTestServer(t, WithReadTimeout(30*time.Second))
 	defer srv.Close()
 
 	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
@@ -120,4 +118,20 @@ func TestServer_ReadsLateBodyWithConfiguredReadTimeout(t *testing.T) {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+// A server without WithReadTimeout keeps the one-second bound.
+func TestServer_DropsLateRequestByDefault(t *testing.T) {
+	srv, port := newReadTimeoutTestServer(t)
+	defer srv.Close()
+
+	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	require.NoError(t, err)
+	defer conn.Close()
+
+	time.Sleep(1500 * time.Millisecond)
+
+	_, _ = fmt.Fprintf(conn, "GET /block HTTP/1.1\r\nHost: localhost\r\n\r\n")
+	_, err = http.ReadResponse(bufio.NewReader(conn), nil)
+	require.Error(t, err, "server served a request that arrived after its read timeout")
 }

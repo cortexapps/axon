@@ -89,10 +89,3 @@ func TestEnvConfig_MaxRequestTimeout(t *testing.T) {
 	t.Setenv("AXON_GRPC_TUNNEL_MAX_REQUEST_TIMEOUT", "90s")
 	assert.Equal(t, "1m30s", NewAgentEnvConfig().MaxRequestTimeout.String())
 }
-
-func TestEnvConfig_HttpReadTimeout(t *testing.T) {
-	assert.Equal(t, "1s", NewAgentEnvConfig().HttpReadTimeout.String())
-
-	t.Setenv("AXON_HTTP_READ_TIMEOUT", "30s")
-	assert.Equal(t, "30s", NewAgentEnvConfig().HttpReadTimeout.String())
-}
