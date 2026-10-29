@@ -1,3 +1,12 @@
+# VARIANT selects the image flavor:
+#   full - the default. Both relay transports: snyk-broker (Node) and grpc-tunnel.
+#   grpc - go-only. No Node or snyk-broker, and the agent binary is pinned to
+#          AXON_RELAY_TRANSPORT=grpc-tunnel (see config.ForcedRelayMode).
+#          Published with a -grpc tag suffix, e.g. cortex-axon-agent:3.1.1-grpc.
+# BuildKit only builds the stages the selected variant reaches, so the grpc
+# build never runs the Node install at all.
+ARG VARIANT=full
+
 # Stage 1: Build the Go agent binary
 FROM debian:stable-slim AS builder
 
@@ -20,10 +29,19 @@ RUN cd /build-plugins/google-adc && go build -o /plugins/google-adc .
 COPY agent/. /build/.
 COPY proto/ /proto/
 RUN make -C /build setup proto
+
+FROM builder AS bin-full
 RUN cd /build && go build -o /agent/cortex-axon-agent
 
-# Stage 2: Runtime image
-FROM debian:stable-slim
+FROM builder AS bin-grpc
+RUN cd /build && go build \
+    -ldflags "-X github.com/cortexapps/axon/config.ForcedRelayMode=grpc-tunnel" \
+    -o /agent/cortex-axon-agent
+
+FROM bin-${VARIANT} AS bin
+
+# Stage 2: Runtime base, shared by both variants
+FROM debian:stable-slim AS runtime-base
 WORKDIR /agent
 
 # APT_CACHE_BUST participates in buildx's layer cache key for the RUN below.
@@ -56,6 +74,28 @@ RUN echo "apt cache bust: $APT_CACHE_BUST" \
          echo "linux-libc-dev must not be installed in the runtime image" >&2; exit 1; \
        fi
 
+# Install Go (needed by scaffold apps that build on top of this image)
+ENV GOLANG_VERSION=1.26.10
+RUN wget -q "https://dl.google.com/go/go${GOLANG_VERSION}.linux-$(dpkg --print-architecture).tar.gz" -O /tmp/go.tar.gz \
+    && tar -C /usr/local -xzf /tmp/go.tar.gz \
+    && rm /tmp/go.tar.gz
+
+ENV GOROOT="/usr/local/go"
+ENV GOPATH="/root/go"
+ENV GOPROXY="https://proxy.golang.org,direct"
+ENV PATH="${GOROOT}/bin:${GOPATH}/bin:${PATH}:/agent"
+
+# This image ships no C toolchain (see build-essential note above), so scaffold
+# `go build` must not shell out to a C compiler. Disabling cgo keeps those
+# builds working and produces static binaries.
+ENV CGO_ENABLED=0
+
+# Variant layers. They sit after the shared base but before the COPYs below,
+# so a scaffold or script change does not invalidate the Node install.
+FROM runtime-base AS deps-grpc
+ENV AXON_RELAY_TRANSPORT=grpc-tunnel
+
+FROM runtime-base AS deps-full
 # Install NodeJS and Snyk Broker
 ENV NODE_VERSION=20
 
@@ -89,25 +129,13 @@ RUN wget -q -O - https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash - && 
 
 # Add npm global bin to PATH
 ENV PATH="/usr/local/lib/node_modules/.bin:${PATH}"
+ENV NODE_OPTIONS=--use-openssl-ca
 
-# Install Go (needed by scaffold apps that build on top of this image)
-ENV GOLANG_VERSION=1.26.10
-RUN wget -q "https://dl.google.com/go/go${GOLANG_VERSION}.linux-$(dpkg --print-architecture).tar.gz" -O /tmp/go.tar.gz \
-    && tar -C /usr/local -xzf /tmp/go.tar.gz \
-    && rm /tmp/go.tar.gz
-
-ENV GOROOT="/usr/local/go"
-ENV GOPATH="/root/go"
-ENV GOPROXY="https://proxy.golang.org,direct"
-ENV PATH="${GOROOT}/bin:${GOPATH}/bin:${PATH}:/agent"
-
-# This image ships no C toolchain (see build-essential note above), so scaffold
-# `go build` must not shell out to a C compiler. Disabling cgo keeps those
-# builds working and produces static binaries.
-ENV CGO_ENABLED=0
+# Stage 3: Final image
+FROM deps-${VARIANT}
 
 # Copy the built binary from the builder stage
-COPY --from=builder /agent/cortex-axon-agent /agent/cortex-axon-agent
+COPY --from=bin /agent/cortex-axon-agent /agent/cortex-axon-agent
 
 COPY agent/server/snykbroker/accept_files /agent/accept_files
 ENV ACCEPTFILE_DIR=/agent/accept_files
@@ -128,7 +156,6 @@ ARG BUILD_VERSION=dev
 ENV AXON_BUILD_VERSION=${BUILD_VERSION}
 ENV CORTEX_API_BASE_URL=https://api.getcortexapp.com
 ENV HANDLER_HISTORY_PATH=/var/log/axon/history
-ENV NODE_OPTIONS=--use-openssl-ca
 
 EXPOSE 50051
 

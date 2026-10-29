@@ -95,6 +95,10 @@ jobs:
   # A separate job rather than more steps on docker-tests: the two transports
   # then fail independently, and a gRPC regression is legible from the job
   # name without opening the log.
+  #
+  # This job is the CI pipeline for the go-only (-grpc) image: it builds that
+  # variant and runs only the gRPC E2E suite against it. The snyk-broker and
+  # scaffold tests stay on the full image in docker-tests.
   docker-tests-grpc:
     runs-on: ubuntu-latest
     permissions:
@@ -114,18 +118,40 @@ jobs:
             sudo apt-get install -y protobuf-compiler
             make -C agent setup proto
 
-      - name: Build Agent Local Image
+      - name: Build Agent Local Image (go-only)
         run: |
-          make docker-build
+          make docker-build-grpc
+
+      - name: Verify go-only image
+        env:
+          IMAGE: cortex-axon-agent:local-grpc
+        run: |
+          # No Node runtime or snyk-broker may ship in this variant.
+          docker run --rm --entrypoint sh "$IMAGE" -c '
+            for b in node npm npx snyk-broker; do
+              if command -v "$b"; then echo "unexpected binary: $b" >&2; exit 1; fi
+            done
+            if [ -e /usr/local/snyk-broker ]; then echo "unexpected /usr/local/snyk-broker" >&2; exit 1; fi
+          '
+          # The transport is pinned in the binary, so an override must be refused.
+          if out=$(docker run --rm -e AXON_RELAY_TRANSPORT=snyk-broker "$IMAGE" relay -a pin-check 2>&1); then
+            echo "agent accepted AXON_RELAY_TRANSPORT=snyk-broker" >&2; exit 1
+          fi
+          echo "$out" | grep -q 'only supports AXON_RELAY_TRANSPORT=grpc-tunnel' \
+            || { echo "$out" >&2; echo "expected the forced-relay-mode error" >&2; exit 1; }
 
       # The proxied case is the one that matters most for this transport: it
       # is the only test that proves the agent's outbound gRPC dial works
       # through an HTTP proxy via CONNECT, which is the deployment shape most
       # customers actually have.
       - name: "Run gRPC Relay Test: With Proxy (TLS)"
+        env:
+          AXON_AGENT_IMAGE: cortex-axon-agent:local-grpc
         run: make -C agent grpc-relay-test-with-proxy
 
       - name: "Run gRPC Relay Test: No Proxy"
+        env:
+          AXON_AGENT_IMAGE: cortex-axon-agent:local-grpc
         run: make -C agent grpc-relay-test-no-proxy
 
   helm-test:

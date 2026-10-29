@@ -85,6 +85,34 @@ func TestEnvConfig_RelayModeLegacyAlias(t *testing.T) {
 	assert.True(t, NewAgentEnvConfig().IsGRPCTunnel())
 }
 
+// The go-only image stamps ForcedRelayMode at build time; see its doc comment.
+func forceRelayMode(t *testing.T, mode string) {
+	prev := ForcedRelayMode
+	ForcedRelayMode = mode
+	t.Cleanup(func() { ForcedRelayMode = prev })
+}
+
+func TestEnvConfig_ForcedRelayModeIsTheDefault(t *testing.T) {
+	forceRelayMode(t, "grpc-tunnel")
+	assert.True(t, NewAgentEnvConfig().IsGRPCTunnel(), "no env set must still run the forced mode")
+
+	t.Setenv("AXON_RELAY_TRANSPORT", "grpc-tunnel")
+	assert.True(t, NewAgentEnvConfig().IsGRPCTunnel())
+}
+
+func TestEnvConfig_ForcedRelayModeRejectsOtherModes(t *testing.T) {
+	forceRelayMode(t, "grpc-tunnel")
+
+	t.Setenv("AXON_RELAY_TRANSPORT", "snyk-broker")
+	assert.PanicsWithValue(t,
+		`this build only supports AXON_RELAY_TRANSPORT=grpc-tunnel, got "snyk-broker"`,
+		func() { NewAgentEnvConfig() })
+
+	t.Setenv("AXON_RELAY_TRANSPORT", "")
+	t.Setenv("RELAY_MODE", "snyk-broker")
+	assert.Panics(t, func() { NewAgentEnvConfig() }, "the legacy alias must not bypass the pin")
+}
+
 func TestEnvConfig_MaxRequestTimeout(t *testing.T) {
 	t.Setenv("AXON_GRPC_TUNNEL_MAX_REQUEST_TIMEOUT", "90s")
 	assert.Equal(t, "1m30s", NewAgentEnvConfig().MaxRequestTimeout.String())

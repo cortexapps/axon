@@ -19,6 +19,8 @@ on:
   push:
     tags:
       - 'v*'
+      # Go-only agent releases (docker.yml); there is no tunnel server variant.
+      - '!v*-grpc'
   workflow_dispatch:
 
 jobs:

@@ -1,4 +1,4 @@
-# Daily sweep of what main is currently shipping, for both images.
+# Daily sweep of what main is currently shipping, for every image.
 #
 # This catches CVEs disclosed after a build; the per-release scan happens in
 # docker.yml and tunnel-server-image.yml, which scan the exact tag they just
@@ -26,6 +26,18 @@ jobs:
     with:
       image-ref: ghcr.io/${{ github.repository_owner }}/cortex-axon-agent:main
       category: trivy-cortex-axon-agent
+    secrets: inherit
+
+  agent-grpc:
+    name: Agent image (go-only)
+    permissions:
+      contents: read
+      packages: read
+      security-events: write
+    uses: ./.github/workflows/trivy-scan.yml
+    with:
+      image-ref: ghcr.io/${{ github.repository_owner }}/cortex-axon-agent:main-grpc
+      category: trivy-cortex-axon-agent-grpc
     secrets: inherit
 
   tunnel-server:

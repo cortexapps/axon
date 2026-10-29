@@ -141,6 +141,30 @@ func (ac AgentConfig) HttpBaseUrl() string {
 	return fmt.Sprintf("http://localhost:%d", ac.HttpServerPort)
 }
 
+// ForcedRelayMode, when non-empty, is the only relay mode this binary will
+// run. It is stamped at build time by the go-only (-grpc) image:
+//
+//	go build -ldflags "-X github.com/cortexapps/axon/config.ForcedRelayMode=grpc-tunnel"
+//
+// That image ships no Node or snyk-broker, so snyk-broker mode would fail at
+// the first spawn. Pinning it in the binary rather than only as an image ENV
+// means an AXON_RELAY_TRANSPORT override in a customer's deployment cannot
+// select it.
+var ForcedRelayMode string
+
+// applyForcedRelayMode returns the mode to run. An explicit request for a
+// different mode panics rather than being silently ignored, so a deployment
+// still configured for snyk-broker fails loudly at startup.
+func applyForcedRelayMode(mode, requested string) string {
+	if ForcedRelayMode == "" {
+		return mode
+	}
+	if requested != "" && requested != ForcedRelayMode {
+		panic(fmt.Sprintf("this build only supports AXON_RELAY_TRANSPORT=%s, got %q", ForcedRelayMode, requested))
+	}
+	return ForcedRelayMode
+}
+
 // IsGRPCTunnel returns true if the relay mode is grpc-tunnel.
 func (ac AgentConfig) IsGRPCTunnel() bool {
 	return ac.RelayMode == "grpc-tunnel"
@@ -379,9 +403,11 @@ func NewAgentEnvConfig() AgentConfig {
 	// AXON_RELAY_TRANSPORT is the documented name (design doc §10);
 	// RELAY_MODE is accepted as an alias.
 	cfg.RelayMode = "snyk-broker"
-	if relayMode := envFirst("AXON_RELAY_TRANSPORT", "RELAY_MODE"); relayMode != "" {
+	relayMode := envFirst("AXON_RELAY_TRANSPORT", "RELAY_MODE")
+	if relayMode != "" {
 		cfg.RelayMode = relayMode
 	}
+	cfg.RelayMode = applyForcedRelayMode(cfg.RelayMode, relayMode)
 
 	cfg.TunnelConns = 4
 	if v := os.Getenv("AXON_GRPC_TUNNEL_CONNS"); v != "" {

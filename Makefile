@@ -14,10 +14,16 @@ run-agent:
 .PHONY: run-agent
 
 DOCKER_TAG ?= cortex-axon-agent:local
+# full or grpc (go-only, no Node); see the top of docker/Dockerfile.
+DOCKER_VARIANT ?= full
 
 docker-build: docker/Dockerfile
-	docker build -t $(DOCKER_TAG) --progress=plain -f $< .
+	docker build -t $(DOCKER_TAG) --build-arg VARIANT=$(DOCKER_VARIANT) --progress=plain -f $< .
 .PHONY: docker-build
+
+docker-build-grpc:
+	$(MAKE) docker-build DOCKER_VARIANT=grpc DOCKER_TAG=cortex-axon-agent:local-grpc
+.PHONY: docker-build-grpc
 
 setup:
 	$(MAKE) -C agent setup
