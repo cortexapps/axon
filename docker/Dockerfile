@@ -22,8 +22,8 @@ COPY proto/ /proto/
 RUN make -C /build setup proto
 RUN cd /build && go build -o /agent/cortex-axon-agent
 
-# Stage 2: Runtime image
-FROM debian:stable-slim
+# Stage 2: OS packages and Go, shared by both published variants
+FROM debian:stable-slim AS base
 WORKDIR /agent
 
 # APT_CACHE_BUST participates in buildx's layer cache key for the RUN below.
@@ -50,11 +50,62 @@ ARG APT_CACHE_BUST=2026-10-26
 # build if anything pulls linux-libc-dev back in.
 RUN echo "apt cache bust: $APT_CACHE_BUST" \
     && apt-get update && apt-get upgrade -y && apt-get install -y \
-    git python3 python3-venv wget openssl jq \
+    git python3 python3-venv wget curl ca-certificates openssl jq \
     && apt-get install -y --no-install-recommends protobuf-compiler \
     && if dpkg -s linux-libc-dev >/dev/null 2>&1; then \
          echo "linux-libc-dev must not be installed in the runtime image" >&2; exit 1; \
        fi
+
+# Install Go (needed by scaffold apps that build on top of this image)
+ENV GOLANG_VERSION=1.26.10
+RUN wget -q "https://dl.google.com/go/go${GOLANG_VERSION}.linux-$(dpkg --print-architecture).tar.gz" -O /tmp/go.tar.gz \
+    && tar -C /usr/local -xzf /tmp/go.tar.gz \
+    && rm /tmp/go.tar.gz
+
+ENV GOROOT="/usr/local/go"
+ENV GOPATH="/root/go"
+ENV GOPROXY="https://proxy.golang.org,direct"
+ENV PATH="${GOROOT}/bin:${GOPATH}/bin:${PATH}:/agent"
+
+# This image ships no C toolchain (see build-essential note above), so scaffold
+# `go build` must not shell out to a C compiler. Disabling cgo keeps those
+# builds working and produces static binaries.
+ENV CGO_ENABLED=0
+
+ENV ACCEPTFILE_DIR=/agent/accept_files
+ENV BUILTIN_PLUGIN_DIR=/agent/plugins
+ENV CORTEX_API_BASE_URL=https://api.getcortexapp.com
+ENV HANDLER_HISTORY_PATH=/var/log/axon/history
+
+EXPOSE 50051
+
+ENTRYPOINT [ "/agent/entrypoint.sh" ]
+CMD [ "serve" ]
+
+# Stage 3: Agent files, copied last into each variant so that a code change
+# does not invalidate the Node and snyk-broker layers.
+FROM scratch AS files
+COPY --from=builder /agent/cortex-axon-agent /agent/cortex-axon-agent
+COPY agent/server/snykbroker/accept_files /agent/accept_files
+COPY agent/server/snykbroker/plugins /agent/plugins
+# Joins the shipped scripts; nothing distinguishes them at runtime.
+COPY --from=builder /plugins/google-adc /agent/plugins/google-adc
+COPY /scaffold/. /app/scaffold/.
+COPY docker/start /agent/start
+COPY docker/entrypoint.sh /agent/entrypoint.sh
+COPY docker/app_entrypoint.sh /app/app_entrypoint.sh
+COPY docker/scripts /agent/scripts
+
+# gRPC tunnel only: no Node and no snyk-broker. Published with a -grpc tag suffix.
+FROM base AS grpc
+ENV AXON_RELAY_TRANSPORT=grpc-tunnel
+COPY --from=files / /
+ARG BUILD_VERSION=dev
+ENV AXON_BUILD_VERSION=${BUILD_VERSION}
+
+# Default image: supports both relay transports. Keep this stage last so that a
+# build without --target produces it.
+FROM base AS agent
 
 # Install NodeJS and Snyk Broker
 ENV NODE_VERSION=20
@@ -90,47 +141,8 @@ RUN wget -q -O - https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash - && 
 # Add npm global bin to PATH
 ENV PATH="/usr/local/lib/node_modules/.bin:${PATH}"
 
-# Install Go (needed by scaffold apps that build on top of this image)
-ENV GOLANG_VERSION=1.26.10
-RUN wget -q "https://dl.google.com/go/go${GOLANG_VERSION}.linux-$(dpkg --print-architecture).tar.gz" -O /tmp/go.tar.gz \
-    && tar -C /usr/local -xzf /tmp/go.tar.gz \
-    && rm /tmp/go.tar.gz
-
-ENV GOROOT="/usr/local/go"
-ENV GOPATH="/root/go"
-ENV GOPROXY="https://proxy.golang.org,direct"
-ENV PATH="${GOROOT}/bin:${GOPATH}/bin:${PATH}:/agent"
-
-# This image ships no C toolchain (see build-essential note above), so scaffold
-# `go build` must not shell out to a C compiler. Disabling cgo keeps those
-# builds working and produces static binaries.
-ENV CGO_ENABLED=0
-
-# Copy the built binary from the builder stage
-COPY --from=builder /agent/cortex-axon-agent /agent/cortex-axon-agent
-
-COPY agent/server/snykbroker/accept_files /agent/accept_files
-ENV ACCEPTFILE_DIR=/agent/accept_files
-
-COPY agent/server/snykbroker/plugins /agent/plugins
-# Joins the shipped scripts; nothing distinguishes them at runtime.
-COPY --from=builder /plugins/google-adc /agent/plugins/google-adc
-ENV BUILTIN_PLUGIN_DIR=/agent/plugins
-
-COPY /scaffold/. /app/scaffold/.
-
-COPY docker/start /agent/start
-COPY docker/entrypoint.sh /agent/entrypoint.sh
-COPY docker/app_entrypoint.sh /app/app_entrypoint.sh
-COPY docker/scripts /agent/scripts
-
-ARG BUILD_VERSION=dev
-ENV AXON_BUILD_VERSION=${BUILD_VERSION}
-ENV CORTEX_API_BASE_URL=https://api.getcortexapp.com
-ENV HANDLER_HISTORY_PATH=/var/log/axon/history
 ENV NODE_OPTIONS=--use-openssl-ca
 
-EXPOSE 50051
-
-ENTRYPOINT [ "/agent/entrypoint.sh" ]
-CMD [ "serve" ]
+COPY --from=files / /
+ARG BUILD_VERSION=dev
+ENV AXON_BUILD_VERSION=${BUILD_VERSION}

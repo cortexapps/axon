@@ -19,6 +19,10 @@ docker-build: docker/Dockerfile
 	docker build -t $(DOCKER_TAG) --progress=plain -f $< .
 .PHONY: docker-build
 
+docker-build-grpc: docker/Dockerfile
+	docker build --target grpc -t $(DOCKER_TAG)-grpc --progress=plain -f $< .
+.PHONY: docker-build-grpc
+
 setup:
 	$(MAKE) -C agent setup
 

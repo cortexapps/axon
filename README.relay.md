@@ -162,6 +162,11 @@ switching transports never changes which requests are allowed or how they
 are rewritten. To switch, set the environment variable and restart the
 agent; to roll back, unset it and restart. No state carries between modes.
 
+Each image tag also has a `-grpc` variant (for example
+`cortex-axon-agent:1.4.0-grpc` or `:main-grpc`). It contains no Node.js and no
+snyk-broker, and it always runs the gRPC tunnel, whatever
+`AXON_RELAY_TRANSPORT` is set to. There is no `latest-grpc` tag; pin a version.
+
 gRPC-tunnel-specific settings (all optional):
 
 | Variable | Default | Meaning |
