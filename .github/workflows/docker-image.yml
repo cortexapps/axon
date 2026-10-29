@@ -29,9 +29,15 @@ on:
         type: string
         default: ''
 
+# Each job states what it needs below.
+permissions: {}
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     env:
       IS_DEFAULT_BRANCH: ${{ github.ref == format('refs/heads/{0}', 'main') }}
       IS_TAG: ${{ startsWith(github.ref, 'refs/tags/') }}
@@ -105,10 +111,10 @@ jobs:
 
     outputs:
       image-tag: ${{ steps.local-tag.outputs.tag }}
-      # The primary tag metadata-action resolved -- for the full image, the
-      # semver version on a tag build and the branch name on main. The go-only
-      # image publishes a single tag per release, <version>-grpc (0.3.11-grpc
-      # from v0.3.11 or v0.3.11-grpc), so this is that tag. The release scan
+      # The primary tag metadata-action resolved -- the semver version on a
+      # tag build, the branch name on main. The go-only image publishes a
+      # single tag per release, <version>-grpc (0.3.11-grpc from v0.3.11 or
+      # v0.3.11-grpc), and main-grpc on main, so this is that tag. The release scan
       # targets this rather than a hardcoded :main, so a tag build reports on
       # the image that tag actually published.
       published-ref: ghcr.io/${{ github.repository_owner }}/cortex-axon-agent:${{ steps.meta.outputs.version }}
@@ -118,6 +124,9 @@ jobs:
     needs: build
     if: ${{ !(github.event_name == 'workflow_dispatch' || github.ref == format('refs/heads/{0}', 'main') || startsWith(github.ref, 'refs/tags/')) }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - name: Download Docker image artifact
         uses: actions/download-artifact@v4

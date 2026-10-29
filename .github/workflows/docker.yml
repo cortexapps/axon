@@ -13,6 +13,8 @@ on:
     # event's labels.
     types: [opened, synchronize, reopened, labeled, unlabeled]
 
+permissions: {}
+
 jobs:
   # cortex-axon-agent:<tag> -- both relay transports (snyk-broker and grpc-tunnel).
   # Skipped for a -grpc release tag: semver would read v0.3.10-grpc as a
@@ -20,6 +22,12 @@ jobs:
   full:
     name: Agent image (full)
     if: ${{ !(startsWith(github.ref, 'refs/tags/') && endsWith(github.ref, '-grpc')) }}
+    # A called workflow cannot hold a permission its caller did not grant:
+    # push to ghcr, and upload Trivy SARIF from both scan jobs.
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
     uses: ./.github/workflows/docker-image.yml
     with:
       variant: full
@@ -34,11 +42,15 @@ jobs:
   # binary is pinned to AXON_RELAY_TRANSPORT=grpc-tunnel. Every release tag
   # publishes it next to the full image: v0.3.11 publishes 0.3.11 (full) and
   # 0.3.11-grpc. A v0.3.10-grpc tag publishes only this one, as 0.3.10-grpc,
-  # which lets a go-only build go out without re-releasing the others. PRs
-  # build and scan it without publishing.
+  # which lets a go-only build go out without re-releasing the others. A push
+  # to main publishes main-grpc. PRs build and scan it without publishing.
   grpc:
     name: Agent image (go-only)
-    if: ${{ github.event_name == 'pull_request' || startsWith(github.ref, 'refs/tags/v') }}
+    if: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
     uses: ./.github/workflows/docker-image.yml
     with:
       variant: grpc
@@ -46,6 +58,7 @@ jobs:
       # flavor suffix is not applied twice (0.3.10-grpc-grpc).
       tags: |
         type=match,pattern=^v(.*?)(-grpc)?$,group=1
+        type=ref,event=branch
         type=ref,event=pr
       flavor: |
         latest=false
