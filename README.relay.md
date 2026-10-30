@@ -203,6 +203,18 @@ exists, takes precedence.
 | Broker `/systemcheck` proxy | 10s |
 | WebSocket proxy dial, CONNECT and TLS handshake | 30s |
 
+The agent's own HTTP servers bound how long they take to read an incoming
+request, headers and body, counted from when the connection is accepted. The
+relay reflector allows 30s, because the broker writes a request only when its
+event loop gets to it, and that loop stalls for two to three seconds while it
+sends a large response.
+
+| Server | Read bound |
+|--------|------------|
+| Relay reflector | 30s |
+| Webhook server | 30s |
+| Main server | 1s (30s for a `/cortex-api/` request body) |
+
 ## How it works
 
 Internally, Cortex Axon uses an open-source project published by Snyk called [Snyk Broker](https://docs.snyk.io/enterprise-setup/snyk-broker). 
