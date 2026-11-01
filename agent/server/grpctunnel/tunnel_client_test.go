@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -1204,4 +1205,52 @@ func TestManageStream_OpenFailuresForceReregisterAtThreshold(t *testing.T) {
 			require.Equal(t, tt.want, reg.calls.Load())
 		})
 	}
+}
+
+// buildTransportCredentials runs on every stream open, and a production agent
+// whose bundle carried a distrusted root printed the same warning 3,762 times
+// in two days — four in every five warnings it logged. The bundle is still
+// re-read each time, so a fixed one is picked up; only the repeat is dropped.
+func TestBuildTransportCredentials_WarnsOncePerDistrustedBundle(t *testing.T) {
+	read := func(name string) []byte {
+		data, err := os.ReadFile(filepath.Join("..", "..", "test", "certs", name))
+		require.NoError(t, err)
+		return data
+	}
+	bundle := filepath.Join(t.TempDir(), "ca.crt")
+	write := func(parts ...[]byte) {
+		require.NoError(t, os.WriteFile(bundle, bytes.Join(parts, nil), 0o600))
+	}
+	trusted := read("selfsigned-1.pem")
+	write(read("distrusted/emsign-ecc-root-ca-g3.pem"), trusted)
+
+	tc, _ := newTestClient(t, config.AgentConfig{HttpCaCertFilePath: bundle},
+		&fakeRegistration{serverURI: "x", tokens: []string{"x"}})
+	tc.config.GrpcInsecure = false
+	core, logs := observer.New(zapcore.WarnLevel)
+	tc.logger = zap.New(core)
+	warnings := func() int {
+		return logs.FilterMessageSnippet("distrusted CA certificates").Len()
+	}
+
+	for i := 0; i < 5; i++ {
+		_, err := tc.buildTransportCredentials()
+		require.NoError(t, err)
+	}
+	require.Equal(t, 1, warnings(), "one warning for a bundle that has not changed")
+
+	// A different distrusted CA is news.
+	write(read("distrusted/em-dv-tls-ca-g3b-aaa-cross-sign.pem"), trusted)
+	_, err := tc.buildTransportCredentials()
+	require.NoError(t, err)
+	require.Equal(t, 2, warnings())
+
+	// Fixed, then broken again the same way: worth saying again.
+	write(trusted)
+	_, err = tc.buildTransportCredentials()
+	require.NoError(t, err)
+	write(read("distrusted/em-dv-tls-ca-g3b-aaa-cross-sign.pem"), trusted)
+	_, err = tc.buildTransportCredentials()
+	require.NoError(t, err)
+	require.Equal(t, 3, warnings())
 }

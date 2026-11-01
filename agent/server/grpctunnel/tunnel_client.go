@@ -162,6 +162,10 @@ type tunnelClient struct {
 	// pool holds the fixed set of connections every stream rides on.
 	pool *connPool
 
+	// distrustedWarned is the set of distrusted CAs last reported (string),
+	// so buildTransportCredentials warns once per bundle, not per stream.
+	distrustedWarned atomic.Value
+
 	wg sync.WaitGroup
 
 	// Metrics
@@ -1551,7 +1555,10 @@ func (tc *tunnelClient) buildTransportCredentials() (credentials.TransportCreden
 	if err != nil {
 		return nil, err
 	}
-	if len(removed) > 0 {
+	// This runs on every stream open, so warn when what was removed changes
+	// rather than every time: once per bundle is the whole message.
+	distrusted := strings.Join(removed, "\n")
+	if prev, _ := tc.distrustedWarned.Swap(distrusted).(string); prev != distrusted && len(removed) > 0 {
 		tc.logger.Warn("CA_CERT_PATH contains distrusted CA certificates; the tunnel does not trust them. Remove them from the bundle.",
 			zap.String("path", tc.config.HttpCaCertFilePath), zap.Strings("removed", removed))
 	}
