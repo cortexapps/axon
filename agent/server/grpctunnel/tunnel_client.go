@@ -70,19 +70,23 @@ const (
 	// sizeInterval is how often the stream count is re-evaluated.
 	sizeInterval = time.Second
 
-	// streamIdleWindow is how long a stream may go without carrying a call
-	// before it counts as surplus. A stream that has carried one inside the
-	// window is kept, whether or not it is busy right now.
+	// streamIdleWindow is how long the agent keeps the streams a burst
+	// needed after the burst has passed. Sizing holds the peak concurrency
+	// seen inside it, and a stream that has carried a call inside it is not
+	// pruned.
 	//
 	// It exists because a stream costs more to open than to hold: the open is
 	// a round trip, and it makes the server notify the dispatcher, which
 	// writes redis. Sizing on instantaneous concurrency meant one open and one
 	// close per call — in staging, 349 opens and 316 closes in forty minutes
 	// at a few requests a minute, each paying that cost for a stream thrown
-	// away seconds later. A minute is long enough that ordinary traffic reuses
-	// a stream instead of reopening it, and short enough that a burst does not
-	// pin capacity for the rest of the day.
-	streamIdleWindow = time.Minute
+	// away seconds later.
+	//
+	// It must outlast the gap between bursts of ordinary traffic, or each
+	// burst reopens what the last one was given back. Production's steadiest
+	// caller polls every 4.5–5 minutes, which a one-minute window missed every
+	// time. An idle stream costs one heartbeat every 30s to hold.
+	streamIdleWindow = 10 * time.Minute
 )
 
 var errPoolClosed = errors.New("connection pool closed")
@@ -137,6 +141,10 @@ type tunnelClient struct {
 	busySlots        atomic.Int32
 	serverMaxStreams atomic.Int32
 	observedServers  atomic.Int32
+
+	// peak is the most calls in flight at once over streamIdleWindow, which
+	// is what resize sizes on.
+	peak busyPeak
 
 	// restartMu serializes Restart() so two concurrent calls do not race the
 	// Close→Start handoff. Held only across the Close+Start; never with mu.
@@ -425,6 +433,7 @@ func (tc *tunnelClient) resetForStart() {
 	tc.runningWorkers = 0
 	tc.pool = newConnPool(tc.config.TunnelConns)
 	tc.busySlots.Store(0)
+	tc.peak.reset()
 	tc.observedServers.Store(0)
 	tc.targetSlots.Store(int32(tc.idleReserve()))
 	ctx, cancel := context.WithCancel(context.Background())
@@ -747,24 +756,31 @@ func (tc *tunnelClient) anchorSlots() int {
 	return n
 }
 
-// resize is the sizing rule: hold a stream for every stream that has carried
-// a call inside streamIdleWindow, plus the idle reserve, bounded by the cap.
+// resize is the sizing rule: hold a stream for the most calls that were in
+// flight at once inside streamIdleWindow, plus the idle reserve, bounded by
+// the cap.
 //
-// Growth is immediate — a call sets its stream's timestamp as it starts, and
+// Growth is immediate — a call records the new concurrency as it starts, and
 // resize runs at admission, so the tick that sees the load opens the streams
-// and the reserve is never what a caller waits on. Shrink is what waits, and
-// it waits on the streams themselves rather than on a global counter: sizing
-// both directions on instantaneous concurrency meant every call raised the
-// target and every completion lowered it, so a stream was opened and retired
-// per request.
+// and the reserve is never what a caller waits on. Shrink is what waits:
+// sizing both directions on instantaneous concurrency meant every call raised
+// the target and every completion lowered it, so a stream was opened and
+// retired per request.
 //
-// Recency subsumes concurrency, which is why busySlots does not appear here:
-// a call stamps lastCallAt when it starts, so a stream carrying one is inside
-// the window by definition. One signal, living on the thing it describes.
+// It counts calls, not the streams that carried them. Counting streams used
+// inside the window churned just the same, because the server dispatches onto
+// the newest idle stream it holds and registers a fresh stream as idle: the
+// stream the reserve opened for one call took the next, counted as used, and
+// made the reserve open another. Calls that never overlapped still touched a
+// new stream each, and each was retired once it aged out.
 func (tc *tunnelClient) resize() {
-	// usedWithin is never negative, so this is already at least the reserve —
-	// no separate floor, and none that could override the cap below.
-	desired := tc.usedWithin(streamIdleWindow) + tc.idleReserve()
+	busy := tc.peak.max(time.Now().Add(-streamIdleWindow).UnixNano())
+	// A call longer than the window has aged out of the peak but still holds
+	// its stream.
+	if n := int(tc.busySlots.Load()); n > busy {
+		busy = n
+	}
+	desired := busy + tc.idleReserve()
 
 	// Never ask for fewer streams than there are connections to anchor.
 	// Without this the target can sit below the anchor count, and every
@@ -788,21 +804,67 @@ func (tc *tunnelClient) resize() {
 	tc.ensureWorkers()
 }
 
-// usedWithin counts the streams that carried a call inside the window, or are
-// carrying one now. Takes mu and releases it before returning, so callers may
-// go on to take it again.
-func (tc *tunnelClient) usedWithin(window time.Duration) int {
-	cutoff := time.Now().Add(-window).UnixNano()
+// callStarted marks ts busy for a call and re-sizes: one more stream is
+// occupied, so one more is needed to hold the idle reserve. Doing it at
+// admission rather than on a timer is what lets a burst be met by opening
+// streams instead of by queueing.
+func (tc *tunnelClient) callStarted(ts *tunnelStream) {
+	now := time.Now().UnixNano()
+	ts.inflight.Add(1)
+	ts.lastCallAt.Store(now)
+	tc.peak.record(int(tc.busySlots.Add(1)), now)
+	tc.resize()
+}
 
-	tc.mu.Lock()
-	defer tc.mu.Unlock()
-	n := 0
-	for st := range tc.streams {
-		if st.inflight.Load() != 0 || st.lastCallAt.Load() >= cutoff {
-			n++
-		}
+// callFinished releases ts. The peak still holds the call's stream for
+// streamIdleWindow; retireExcess gives it back once that has passed.
+func (tc *tunnelClient) callFinished(ts *tunnelStream) {
+	tc.busySlots.Add(-1)
+	ts.inflight.Add(-1)
+	ts.lastCallAt.Store(time.Now().UnixNano())
+	tc.resize()
+}
+
+// busyPeak answers "what is the most calls that were in flight at once since
+// t", for t inside the trailing window. It is a monotonic queue: samples are
+// in time order with strictly falling counts, so the front is the peak, and a
+// sample is dropped once a later one at least as high makes it irrelevant.
+// Its length is bounded by the number of distinct concurrency levels.
+type busyPeak struct {
+	mu      sync.Mutex
+	samples []busySample
+}
+
+type busySample struct {
+	at int64 // UnixNano
+	n  int
+}
+
+func (p *busyPeak) record(n int, at int64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for len(p.samples) > 0 && p.samples[len(p.samples)-1].n <= n {
+		p.samples = p.samples[:len(p.samples)-1]
 	}
-	return n
+	p.samples = append(p.samples, busySample{at: at, n: n})
+}
+
+func (p *busyPeak) max(since int64) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for len(p.samples) > 0 && p.samples[0].at < since {
+		p.samples = p.samples[1:]
+	}
+	if len(p.samples) == 0 {
+		return 0
+	}
+	return p.samples[0].n
+}
+
+func (p *busyPeak) reset() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.samples = nil
 }
 
 // ensureWorkers spawns stream workers until the live worker count meets
