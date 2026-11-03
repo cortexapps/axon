@@ -149,7 +149,14 @@ func (tc *tunnelClient) startCall(sc *streamCtx, table *callTable, callID string
 	if start.TimeoutMs > 0 && time.Duration(start.TimeoutMs)*time.Millisecond < maxTimeout {
 		timeout = time.Duration(start.TimeoutMs) * time.Millisecond
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	// Under parentCtx, so Close ends the call: its stream is going, so its
+	// response has nowhere to go, and a call left running would finish after
+	// a Restart had zeroed the counters it releases.
+	parent := tc.parentCtx
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, timeout)
 
 	bodyR, bodyW := io.Pipe()
 	c := &agentCall{id: callID, bodyW: bodyW, cancel: cancel}
@@ -164,7 +171,12 @@ func (tc *tunnelClient) startCall(sc *streamCtx, table *callTable, callID string
 
 	tc.callStarted(sc.ts)
 
+	// In wg, so Close waits for it like every other goroutine. Adding here
+	// is safe against a concurrent Wait: the recv loop calling us is itself
+	// counted.
+	tc.wg.Add(1)
 	go func() {
+		defer tc.wg.Done()
 		defer func() {
 			table.remove(callID)
 			cancel()

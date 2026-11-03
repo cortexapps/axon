@@ -1254,3 +1254,53 @@ func TestBuildTransportCredentials_WarnsOncePerDistrustedBundle(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 3, warnings())
 }
+
+// Restart is Close then Start, and Start zeroes the call counters. A call
+// still running across that — its stream is gone, but the backend request it
+// made is not — used to finish after the reset and take the count below
+// zero, where it stayed: every later peak was recorded one short, and the
+// agent held one stream fewer than it needed until the next restart. Close
+// ends and waits for calls, as it does for every other goroutine.
+func TestClose_EndsAndWaitsForCallsInFlight(t *testing.T) {
+	cfg := config.AgentConfig{MaxInflightRequests: 4, MaxRequestTimeout: 30 * time.Second}
+	tc, _ := newTestClient(t, cfg, &fakeRegistration{serverURI: "x", tokens: []string{"x"}})
+	tc.resetForStart()
+	tc.running.Store(true)
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	tc.backend = backendFunc(func(ctx context.Context, req *BackendRequest) (*BackendResponse, error) {
+		close(entered)
+		select {
+		case <-ctx.Done():
+		case <-release:
+		}
+		return nil, fmt.Errorf("backend gone")
+	})
+
+	sc := newTestStreamCtx(newFrameCollector().sendFn)
+	table := newTestCallTable(t)
+	tc.startCall(sc, table, "c1", reqStart("GET", "/slow", 0))
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("backend was not entered")
+	}
+
+	closed := make(chan struct{})
+	go func() {
+		defer close(closed)
+		tc.Close()
+	}()
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		close(release)
+		t.Fatal("Close did not end the call in flight")
+	}
+	tc.resetForStart() // what Start does next
+	close(release)
+	waitFor(t, 5*time.Second, func() bool { return !table.active() })
+
+	require.Equal(t, int32(0), tc.busySlots.Load(), "a call from before the restart left the count off")
+}
