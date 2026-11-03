@@ -149,7 +149,14 @@ func (tc *tunnelClient) startCall(sc *streamCtx, table *callTable, callID string
 	if start.TimeoutMs > 0 && time.Duration(start.TimeoutMs)*time.Millisecond < maxTimeout {
 		timeout = time.Duration(start.TimeoutMs) * time.Millisecond
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	// Under parentCtx, so Close ends the call: its stream is going, so its
+	// response has nowhere to go, and a call left running would finish after
+	// a Restart had zeroed the counters it releases.
+	parent := tc.parentCtx
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, timeout)
 
 	bodyR, bodyW := io.Pipe()
 	c := &agentCall{id: callID, bodyW: bodyW, cancel: cancel}
@@ -162,25 +169,18 @@ func (tc *tunnelClient) startCall(sc *streamCtx, table *callTable, callID string
 		return
 	}
 
-	// Mark the stream busy for the call's duration and re-size: one more
-	// stream is occupied, so one more is needed to hold the idle reserve.
-	// Doing it here rather than on a timer is what lets a burst be met by
-	// opening streams instead of by queueing.
-	sc.ts.inflight.Add(1)
-	sc.ts.lastCallAt.Store(time.Now().UnixNano())
-	tc.busySlots.Add(1)
-	tc.resize()
+	tc.callStarted(sc.ts)
 
+	// In wg, so Close waits for it like every other goroutine. Adding here
+	// is safe against a concurrent Wait: the recv loop calling us is itself
+	// counted.
+	tc.wg.Add(1)
 	go func() {
+		defer tc.wg.Done()
 		defer func() {
 			table.remove(callID)
 			cancel()
-			tc.busySlots.Add(-1)
-			sc.ts.inflight.Add(-1)
-			sc.ts.lastCallAt.Store(time.Now().UnixNano())
-			// One fewer call in flight, so one fewer stream is needed;
-			// retireExcess gives the surplus back on the next tick.
-			tc.resize()
+			tc.callFinished(sc.ts)
 		}()
 
 		// Acquire the in-flight semaphore, queueing (bounded by the call's

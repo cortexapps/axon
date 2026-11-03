@@ -68,6 +68,8 @@ func markUsed(tc *tunnelClient, n int) int {
 	for _, st := range hottest[:n] {
 		st.lastCallAt.Store(now)
 	}
+	// They were in flight together, which is the peak sizing holds on to.
+	tc.peak.record(n, now)
 	return n
 }
 
@@ -80,6 +82,7 @@ func goQuiet(tc *tunnelClient) {
 	for st := range tc.streams {
 		st.lastCallAt.Store(quiet)
 	}
+	tc.peak.reset()
 }
 
 func TestSizing_HoldsTheReserveWhenIdle(t *testing.T) {
@@ -517,7 +520,13 @@ func seedRetirable(tc *tunnelClient, placement []string) (map[string][]*tunnelSt
 	}
 }
 
-func useStream(st *tunnelStream) { st.lastCallAt.Store(time.Now().UnixNano()) }
+// useStream says st has just carried a call, alone: the stream is warm and the
+// peak saw one call in flight.
+func useStream(tc *tunnelClient, st *tunnelStream) {
+	now := time.Now().UnixNano()
+	st.lastCallAt.Store(now)
+	tc.peak.record(1, now)
+}
 
 // The surplus is real but it belongs to a particular server. A server
 // dispatches only onto the streams registered with itself, so its own recent
@@ -534,7 +543,7 @@ func TestRetire_PrunesFromTheServerHoldingTheSurplus(t *testing.T) {
 	byServer, cancelled := seedRetirable(tc, placement)
 
 	// srv-a has carried one call recently; srv-b has carried none.
-	useStream(byServer["srv-a"][0])
+	useStream(tc, byServer["srv-a"][0])
 
 	tc.resize()
 	tc.retireExcess()
@@ -763,7 +772,8 @@ func TestSizing_NeverUsedStreamsAgeOutOfTheTarget(t *testing.T) {
 	openToTarget(tc, "srv-a")
 
 	require.Equal(t, int32(idleStreamsPerServer), tc.targetSlots.Load())
-	assert.Equal(t, 0, tc.usedWithin(streamIdleWindow),
+	tc.resize()
+	assert.Equal(t, int32(idleStreamsPerServer), tc.targetSlots.Load(),
 		"opening a stream is not using it")
 }
 
@@ -840,4 +850,187 @@ func TestRetire_MarksTheStreamSoTheWorkerKnowsItWasDeliberate(t *testing.T) {
 		}
 	}
 	assert.Equal(t, 2, retiring, "the surplus is marked, and only the surplus")
+}
+
+// -----------------------------------------------------------------------------
+// Traffic that is periodic but slower than a minute
+// -----------------------------------------------------------------------------
+
+// fleetSim stands in for the stream workers and the servers' dispatchers
+// together, so a traffic pattern can be replayed against the real sizing rule
+// and the opens and retirements it causes counted. Time moves by backdating
+// every stream's timestamps, which is all the sizing rule reads.
+type fleetSim struct {
+	tc      *tunnelClient
+	servers []string
+	nextID  int
+	opened  int
+	retired int
+}
+
+func newFleetSim(t *testing.T, servers ...string) *fleetSim {
+	tc := newSizingClient(t)
+	tc.pool = newConnPool(1)
+	tc.streams = map[*tunnelStream]struct{}{}
+	s := &fleetSim{tc: tc, servers: servers}
+	// Enough ticks for the reserve to find every server.
+	for i := 0; i < 2*len(servers); i++ {
+		s.tick()
+	}
+	return s
+}
+
+// tick is one pass of sizeLoop with the workers' response folded in: the
+// streams it retires leave, and the fleet is opened up to the target.
+func (s *fleetSim) tick() {
+	s.tc.refreshObservedServers()
+	s.tc.resize()
+	s.tc.retireExcess()
+	s.openToTarget()
+}
+
+// openToTarget places new streams round-robin across the servers, the way the
+// balancer does.
+func (s *fleetSim) openToTarget() {
+	tc := s.tc
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+	for len(tc.streams) < int(tc.targetSlots.Load()) {
+		s.nextID++
+		var ts *tunnelStream
+		ts = newTunnelStream(s.nextID, &pb.ServerHello{ServerId: s.servers[s.nextID%len(s.servers)]}, nil, func() {
+			tc.mu.Lock()
+			delete(tc.streams, ts)
+			tc.runningWorkers--
+			tc.mu.Unlock()
+			s.retired++
+		}, false)
+		tc.streams[ts] = struct{}{}
+		tc.runningWorkers++
+		s.opened++
+	}
+}
+
+// elapse moves the clock forward by backdating every stream and the peak.
+func (s *fleetSim) elapse(d time.Duration) {
+	s.tc.mu.Lock()
+	defer s.tc.mu.Unlock()
+	for st := range s.tc.streams {
+		if last := st.lastCallAt.Load(); last != 0 {
+			st.lastCallAt.Store(last - int64(d))
+		}
+		st.openedAt.Add(-int64(d))
+	}
+	s.tc.peak.mu.Lock()
+	defer s.tc.peak.mu.Unlock()
+	for i := range s.tc.peak.samples {
+		s.tc.peak.samples[i].at -= int64(d)
+	}
+}
+
+// call runs one call to completion on the named server. The server hands it
+// to the most recently active idle stream it holds, and the agent sizes at
+// admission and completion exactly as handleCallFrame does.
+func (s *fleetSim) call(t *testing.T, server string) {
+	t.Helper()
+	tc := s.tc
+	tc.mu.Lock()
+	var pick *tunnelStream
+	for st := range tc.streams {
+		if st.serverID == server && st.inflight.Load() == 0 &&
+			(pick == nil || st.quietSince() > pick.quietSince()) {
+			pick = st
+		}
+	}
+	tc.mu.Unlock()
+	require.NotNil(t, pick, "server %s has no idle stream to dispatch onto", server)
+
+	tc.callStarted(pick)
+	s.openToTarget()
+	tc.callFinished(pick)
+}
+
+// The production pattern that defeated the one-minute window: the backend
+// polls /__axon/info in bursts of about eight calls, spread over four relay
+// pods, every 4.5–5 minutes. Each burst found the streams it used last time
+// aged out of the window and given back, so it opened a fresh one per server
+// it touched, and retired them a minute later — about 0.8 opens per call,
+// the churn the window was meant to end, just at a slower cadence than the
+// regression test above exercised.
+func TestSizing_PeriodicTrafficDoesNotChurnStreams(t *testing.T) {
+	for _, period := range []time.Duration{30 * time.Second, 2 * time.Minute, 285 * time.Second} {
+		t.Run(period.String(), func(t *testing.T) {
+			s := newFleetSim(t, "srv-0", "srv-1", "srv-2", "srv-3")
+			burst := func() {
+				for i := 0; i < 8; i++ {
+					s.call(t, s.servers[i%len(s.servers)])
+				}
+				s.elapse(time.Second)
+				s.tick()
+			}
+
+			// The first burst may open streams; that is the reserve doing
+			// its job.
+			burst()
+			opened, retired := s.opened, s.retired
+
+			for i := 0; i < 12; i++ {
+				s.elapse(period)
+				s.tick()
+				burst()
+			}
+
+			assert.Zero(t, s.opened-opened, "streams opened by steady periodic traffic")
+			assert.Zero(t, s.retired-retired, "streams retired by steady periodic traffic")
+		})
+	}
+}
+
+// Slower than the window, the streams a burst needed are given back between
+// bursts and reopened by the next one. That is the window doing its job, and
+// it must stay bounded: the one extra stream the burst's peak asked for, not
+// one per call.
+func TestSizing_TrafficSlowerThanTheWindowReopensOnlyItsPeak(t *testing.T) {
+	s := newFleetSim(t, "srv-0", "srv-1", "srv-2", "srv-3")
+	burst := func() {
+		for i := 0; i < 8; i++ {
+			s.call(t, s.servers[i%len(s.servers)])
+		}
+		s.elapse(time.Second)
+		s.tick()
+	}
+	burst()
+	opened, retired := s.opened, s.retired
+
+	const bursts = 6
+	for i := 0; i < bursts; i++ {
+		s.elapse(streamIdleWindow + time.Minute)
+		s.tick()
+		assert.Equal(t, int32(4*idleStreamsPerServer), s.tc.targetSlots.Load(),
+			"between bursts the agent is back to the reserve")
+		burst()
+	}
+
+	assert.LessOrEqual(t, s.opened-opened, bursts, "at most one open per burst")
+	assert.LessOrEqual(t, s.retired-retired, bursts, "at most one retirement per burst")
+}
+
+func TestBusyPeak_HoldsTheHighestInsideTheWindow(t *testing.T) {
+	var p busyPeak
+	p.record(3, 100)
+	p.record(1, 200)
+	p.record(2, 300)
+
+	assert.Equal(t, 3, p.max(0))
+	assert.Equal(t, 3, p.max(100))
+	assert.Equal(t, 2, p.max(101), "once 3 ages out, the highest after it")
+	assert.Equal(t, 2, p.max(300))
+	assert.Equal(t, 0, p.max(301), "nothing left inside the window")
+}
+
+func TestBusyPeak_ALaterEqualPeakExtendsIt(t *testing.T) {
+	var p busyPeak
+	p.record(2, 100)
+	p.record(2, 500)
+	assert.Equal(t, 2, p.max(400))
 }

@@ -70,20 +70,41 @@ const (
 	// sizeInterval is how often the stream count is re-evaluated.
 	sizeInterval = time.Second
 
-	// streamIdleWindow is how long a stream may go without carrying a call
-	// before it counts as surplus. A stream that has carried one inside the
-	// window is kept, whether or not it is busy right now.
+	// streamIdleWindow is how long the agent keeps the streams a burst
+	// needed after the burst has passed. Sizing holds the peak concurrency
+	// seen inside it, and a stream that has carried a call inside it is not
+	// pruned.
 	//
 	// It exists because a stream costs more to open than to hold: the open is
 	// a round trip, and it makes the server notify the dispatcher, which
 	// writes redis. Sizing on instantaneous concurrency meant one open and one
 	// close per call — in staging, 349 opens and 316 closes in forty minutes
 	// at a few requests a minute, each paying that cost for a stream thrown
-	// away seconds later. A minute is long enough that ordinary traffic reuses
-	// a stream instead of reopening it, and short enough that a burst does not
-	// pin capacity for the rest of the day.
-	streamIdleWindow = time.Minute
+	// away seconds later.
+	//
+	// It must outlast the gap between bursts of ordinary traffic, or each
+	// burst reopens what the last one was given back. Production's steadiest
+	// caller polls every 4.5–5 minutes, which a one-minute window missed every
+	// time. An idle stream costs one heartbeat every 30s to hold.
+	streamIdleWindow = 10 * time.Minute
+
+	// Every stream is retired and reopened once it has lived a lifetime each
+	// instance picks between these bounds, jittered ±10% per stream. Something
+	// between the agent and the relay ends any stream at exactly 24 hours
+	// with RST_STREAM INTERNAL_ERROR, failing whatever call is on it; going
+	// first, while the stream is idle, turns that into a quiet reopen. Random
+	// per instance and per stream so that neither a fleet nor one agent's
+	// streams — all opened in the same second after a relay restart — come
+	// due together.
+	streamLifetimeMin = 3 * time.Hour
+	streamLifetimeMax = 5 * time.Hour
 )
+
+// pickStreamLifetime chooses this instance's stream lifetime. A var so tests
+// can shorten it.
+var pickStreamLifetime = func() time.Duration {
+	return streamLifetimeMin + rand.N(streamLifetimeMax-streamLifetimeMin)
+}
 
 var errPoolClosed = errors.New("connection pool closed")
 
@@ -138,6 +159,14 @@ type tunnelClient struct {
 	serverMaxStreams atomic.Int32
 	observedServers  atomic.Int32
 
+	// peak is the most calls in flight at once over streamIdleWindow, which
+	// is what resize sizes on.
+	peak busyPeak
+
+	// streamLifetime is how long this instance lets a stream live before
+	// recycling it; zero disables recycling. Picked on every Start.
+	streamLifetime time.Duration
+
 	// restartMu serializes Restart() so two concurrent calls do not race the
 	// Close→Start handoff. Held only across the Close+Start; never with mu.
 	restartMu sync.Mutex
@@ -153,6 +182,10 @@ type tunnelClient struct {
 
 	// pool holds the fixed set of connections every stream rides on.
 	pool *connPool
+
+	// distrustedWarned is the set of distrusted CAs last reported (string),
+	// so buildTransportCredentials warns once per bundle, not per stream.
+	distrustedWarned atomic.Value
 
 	wg sync.WaitGroup
 
@@ -202,6 +235,12 @@ type tunnelStream struct {
 	// worker's backoff, so a slot retired for being surplus came back slower
 	// every time it happened.
 	retiring atomic.Bool
+
+	// recycleAt is the UnixNano instant this stream has lived its lifetime
+	// and is reopened at the next quiet moment; zero never. recycling marks
+	// a retirement made for that reason, so the worker reopens at once.
+	recycleAt int64
+	recycling atomic.Bool
 }
 
 // quietSince is the UnixNano instant this stream last did anything worth
@@ -425,6 +464,8 @@ func (tc *tunnelClient) resetForStart() {
 	tc.runningWorkers = 0
 	tc.pool = newConnPool(tc.config.TunnelConns)
 	tc.busySlots.Store(0)
+	tc.peak.reset()
+	tc.streamLifetime = pickStreamLifetime()
 	tc.observedServers.Store(0)
 	tc.targetSlots.Store(int32(tc.idleReserve()))
 	ctx, cancel := context.WithCancel(context.Background())
@@ -747,24 +788,31 @@ func (tc *tunnelClient) anchorSlots() int {
 	return n
 }
 
-// resize is the sizing rule: hold a stream for every stream that has carried
-// a call inside streamIdleWindow, plus the idle reserve, bounded by the cap.
+// resize is the sizing rule: hold a stream for the most calls that were in
+// flight at once inside streamIdleWindow, plus the idle reserve, bounded by
+// the cap.
 //
-// Growth is immediate — a call sets its stream's timestamp as it starts, and
+// Growth is immediate — a call records the new concurrency as it starts, and
 // resize runs at admission, so the tick that sees the load opens the streams
-// and the reserve is never what a caller waits on. Shrink is what waits, and
-// it waits on the streams themselves rather than on a global counter: sizing
-// both directions on instantaneous concurrency meant every call raised the
-// target and every completion lowered it, so a stream was opened and retired
-// per request.
+// and the reserve is never what a caller waits on. Shrink is what waits:
+// sizing both directions on instantaneous concurrency meant every call raised
+// the target and every completion lowered it, so a stream was opened and
+// retired per request.
 //
-// Recency subsumes concurrency, which is why busySlots does not appear here:
-// a call stamps lastCallAt when it starts, so a stream carrying one is inside
-// the window by definition. One signal, living on the thing it describes.
+// It counts calls, not the streams that carried them. Counting streams used
+// inside the window churned just the same, because the server dispatches onto
+// the newest idle stream it holds and registers a fresh stream as idle: the
+// stream the reserve opened for one call took the next, counted as used, and
+// made the reserve open another. Calls that never overlapped still touched a
+// new stream each, and each was retired once it aged out.
 func (tc *tunnelClient) resize() {
-	// usedWithin is never negative, so this is already at least the reserve —
-	// no separate floor, and none that could override the cap below.
-	desired := tc.usedWithin(streamIdleWindow) + tc.idleReserve()
+	busy := tc.peak.max(time.Now().Add(-streamIdleWindow).UnixNano())
+	// A call longer than the window has aged out of the peak but still holds
+	// its stream.
+	if n := int(tc.busySlots.Load()); n > busy {
+		busy = n
+	}
+	desired := busy + tc.idleReserve()
 
 	// Never ask for fewer streams than there are connections to anchor.
 	// Without this the target can sit below the anchor count, and every
@@ -788,21 +836,67 @@ func (tc *tunnelClient) resize() {
 	tc.ensureWorkers()
 }
 
-// usedWithin counts the streams that carried a call inside the window, or are
-// carrying one now. Takes mu and releases it before returning, so callers may
-// go on to take it again.
-func (tc *tunnelClient) usedWithin(window time.Duration) int {
-	cutoff := time.Now().Add(-window).UnixNano()
+// callStarted marks ts busy for a call and re-sizes: one more stream is
+// occupied, so one more is needed to hold the idle reserve. Doing it at
+// admission rather than on a timer is what lets a burst be met by opening
+// streams instead of by queueing.
+func (tc *tunnelClient) callStarted(ts *tunnelStream) {
+	now := time.Now().UnixNano()
+	ts.inflight.Add(1)
+	ts.lastCallAt.Store(now)
+	tc.peak.record(int(tc.busySlots.Add(1)), now)
+	tc.resize()
+}
 
-	tc.mu.Lock()
-	defer tc.mu.Unlock()
-	n := 0
-	for st := range tc.streams {
-		if st.inflight.Load() != 0 || st.lastCallAt.Load() >= cutoff {
-			n++
-		}
+// callFinished releases ts. The peak still holds the call's stream for
+// streamIdleWindow; retireExcess gives it back once that has passed.
+func (tc *tunnelClient) callFinished(ts *tunnelStream) {
+	tc.busySlots.Add(-1)
+	ts.inflight.Add(-1)
+	ts.lastCallAt.Store(time.Now().UnixNano())
+	tc.resize()
+}
+
+// busyPeak answers "what is the most calls that were in flight at once since
+// t", for t inside the trailing window. It is a monotonic queue: samples are
+// in time order with strictly falling counts, so the front is the peak, and a
+// sample is dropped once a later one at least as high makes it irrelevant.
+// Its length is bounded by the number of distinct concurrency levels.
+type busyPeak struct {
+	mu      sync.Mutex
+	samples []busySample
+}
+
+type busySample struct {
+	at int64 // UnixNano
+	n  int
+}
+
+func (p *busyPeak) record(n int, at int64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for len(p.samples) > 0 && p.samples[len(p.samples)-1].n <= n {
+		p.samples = p.samples[:len(p.samples)-1]
 	}
-	return n
+	p.samples = append(p.samples, busySample{at: at, n: n})
+}
+
+func (p *busyPeak) max(since int64) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for len(p.samples) > 0 && p.samples[0].at < since {
+		p.samples = p.samples[1:]
+	}
+	if len(p.samples) == 0 {
+		return 0
+	}
+	return p.samples[0].n
+}
+
+func (p *busyPeak) reset() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.samples = nil
 }
 
 // ensureWorkers spawns stream workers until the live worker count meets
@@ -865,7 +959,62 @@ func (tc *tunnelClient) sizeLoop() {
 			tc.refreshObservedServers()
 			tc.resize()
 			tc.retireExcess()
+			tc.recycleAged()
 		}
+	}
+}
+
+// recycleDeadline is when a stream opened at openedAt has lived its lifetime:
+// this instance's lifetime, jittered ±10% for the stream.
+func (tc *tunnelClient) recycleDeadline(openedAt int64) int64 {
+	d := int64(tc.streamLifetime)
+	if d <= 0 {
+		return 0
+	}
+	j := d / 10
+	return openedAt + d + rand.Int64N(2*j+1) - j
+}
+
+// recycleAged retires one stream that has outlived its lifetime, the most
+// overdue, and only while nothing else is mid-recycle. Its worker reopens it
+// at once, so the agent briefly holds one stream fewer and never more.
+//
+// Only a stream quiet for a full tick is eligible, the same guard
+// retireExcess uses against the server dispatching onto a stream we are
+// cancelling. A busy one waits for its call to finish: going early is the
+// point, and a stream that stays busy until the 24h limit is no worse off
+// than before.
+func (tc *tunnelClient) recycleAged() {
+	now := time.Now().UnixNano()
+	cutoff := now - int64(sizeInterval)
+
+	tc.mu.Lock()
+	var due *tunnelStream
+	for st := range tc.streams {
+		if st.recycling.Load() {
+			tc.mu.Unlock()
+			return
+		}
+		if st.recycleAt == 0 || st.recycleAt > now || st.retiring.Load() ||
+			st.inflight.Load() != 0 || st.quietSince() >= cutoff {
+			continue
+		}
+		if due == nil || st.recycleAt < due.recycleAt {
+			due = st
+		}
+	}
+	if due != nil {
+		due.recycling.Store(true)
+		due.retiring.Store(true)
+	}
+	tc.mu.Unlock()
+
+	if due != nil {
+		tc.logger.Debug("Recycling tunnel stream",
+			zap.Int("slot", due.id),
+			zap.String("serverId", due.serverID),
+			zap.Duration("age", time.Duration(now-due.openedAt.Load())))
+		due.cancel()
 	}
 }
 
@@ -1012,6 +1161,8 @@ func (tc *tunnelClient) manageStream(id int) {
 	defer tc.wg.Done()
 
 	backoff := minBackoff
+	// first is true for an attempt that goes straight ahead with no backoff
+	// and no reconnect counted: the first one, and the reopen after a recycle.
 	first := true
 	// Set once a stream has failed, so the reconnection that follows says so
 	// and then goes quiet again.
@@ -1036,7 +1187,7 @@ func (tc *tunnelClient) manageStream(id int) {
 		}
 		first = false
 
-		retired, established, err := tc.runOneStream(id, recovering)
+		retired, recycled, established, err := tc.runOneStream(id, recovering)
 		recovering = false
 
 		// A stream that came up proves the server is reachable, however it
@@ -1061,6 +1212,8 @@ func (tc *tunnelClient) manageStream(id int) {
 			// slot anchors a connection and cannot leave. Reopen from a clean
 			// slate rather than from a failure's backoff.
 			backoff = minBackoff
+			// A recycle wants the stream back, not a pause: reopen at once.
+			first = recycled
 			continue
 		}
 
@@ -1144,11 +1297,12 @@ func (tc *tunnelClient) handleTokenCap(id int) {
 // clean shutdown), and whether the stream ended because retireExcess
 // cancelled it — which reaches the worker as an ordinary Canceled error and
 // is otherwise indistinguishable from the connection breaking.
+// recycled reports that the retirement was recycleAged's.
 // established reports whether the stream got through the handshake.
-func (tc *tunnelClient) runOneStream(id int, recovering bool) (retired, established bool, err error) {
+func (tc *tunnelClient) runOneStream(id int, recovering bool) (retired, recycled, established bool, err error) {
 	sc, err := tc.openSlot(id, recovering)
 	if err != nil {
-		return false, false, err
+		return false, false, false, err
 	}
 	tc.addStream(sc.ts)
 	defer func() {
@@ -1161,7 +1315,7 @@ func (tc *tunnelClient) runOneStream(id int, recovering bool) (retired, establis
 	tc.consecFailures.Store(0)
 
 	err = tc.streamLoop(sc)
-	return sc.ts.retiring.Load(), true, err
+	return sc.ts.retiring.Load(), sc.ts.recycling.Load(), true, err
 }
 
 // openSlot borrows a pooled connection, opens a stream on it and performs
@@ -1251,6 +1405,7 @@ func (tc *tunnelClient) openSlot(id int, recovering bool) (*streamCtx, error) {
 	// talks to the same backend. That keeps MaxStreamsPerServer meaning "how
 	// many connections may land on one server instance" in every mode.
 	ts := newTunnelStream(id, serverHello, conn, cancel, id <= tc.anchorSlots())
+	ts.recycleAt = tc.recycleDeadline(ts.openedAt.Load())
 
 	tc.connectionsActive.WithLabelValues(ts.serverID).Inc()
 
@@ -1489,7 +1644,10 @@ func (tc *tunnelClient) buildTransportCredentials() (credentials.TransportCreden
 	if err != nil {
 		return nil, err
 	}
-	if len(removed) > 0 {
+	// This runs on every stream open, so warn when what was removed changes
+	// rather than every time: once per bundle is the whole message.
+	distrusted := strings.Join(removed, "\n")
+	if prev, _ := tc.distrustedWarned.Swap(distrusted).(string); prev != distrusted && len(removed) > 0 {
 		tc.logger.Warn("CA_CERT_PATH contains distrusted CA certificates; the tunnel does not trust them. Remove them from the bundle.",
 			zap.String("path", tc.config.HttpCaCertFilePath), zap.Strings("removed", removed))
 	}
