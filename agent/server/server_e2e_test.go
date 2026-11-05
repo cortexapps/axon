@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -14,6 +16,7 @@ import (
 	"github.com/cortexapps/axon/config"
 	"github.com/cortexapps/axon/server/cron"
 	"github.com/cortexapps/axon/server/handler"
+	cortexHttp "github.com/cortexapps/axon/server/http"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/fx/fxtest"
 	"go.uber.org/zap"
@@ -326,4 +329,91 @@ func getRandomPort() int {
 	port := ln.Addr().(*net.TCPAddr).Port
 	ln.Close()
 	return port
+}
+
+// The incident shape end to end: the SDK keeps its stream open but never
+// reports, every invocation times out agent-side, and the healthcheck must
+// turn 503 over real HTTP, then recover as soon as the SDK reports again.
+func TestGRPCServer_HealthcheckReflectsStalledSDK(t *testing.T) {
+	port := getRandomPort()
+	cfg := config.AgentConfig{
+		GrpcPort:           port,
+		CortexApiBaseUrl:   "http://localhost",
+		CortexApiToken:     "test-token",
+		DequeueWaitTime:    50 * time.Millisecond,
+		HandlerHistoryPath: filepath.Join(t.TempDir(), "history"),
+		HttpServerPort:     0,
+	}
+
+	logger, _ := zap.NewDevelopment()
+	manager := handler.NewHandlerManager(logger, cron.New(), nil,
+		handler.WithLivenessPolicy(handler.LivenessPolicy{TimeoutThreshold: 2}))
+	lifecycle := fxtest.NewLifecycle(t)
+
+	// The HTTP server is built first so its start hook runs before the
+	// agent's, which serves until shutdown.
+	httpServer := NewMainHttpServer(MainHttpServerParams{
+		Lifecycle:      lifecycle,
+		Config:         cfg,
+		Logger:         logger,
+		HandlerManager: manager,
+	})
+	agent := NewAxonAgent(Params{Lifecycle: lifecycle, Logger: logger, Config: cfg, Manager: manager})
+	defer agent.Close()
+	go func() {
+		if err := lifecycle.Start(context.Background()); err != nil {
+			panic(err)
+		}
+	}()
+	require.Eventually(t, func() bool { return httpServer.Port() != 0 }, 5*time.Second, 10*time.Millisecond)
+	defer httpServer.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+
+	var stalled atomic.Bool
+	stalled.Store(true)
+	client := NewTestAxonClient(t, int32(port), func(msg *pb.DispatchMessage) (clientResult, error) {
+		if msg.Type == pb.DispatchMessageType_DISPATCH_MESSAGE_INVOKE && stalled.Load() {
+			return clientResult{skipReport: true}, nil
+		}
+		return clientResult{result: "ok"}, nil
+	})
+
+	_, err := client.RegisterHandlerWithTimeout(ctx, "handler123", 100*time.Millisecond,
+		&pb.HandlerOption{Option: &pb.HandlerOption_Invoke{Invoke: &pb.HandlerInvokeOption{
+			Type: pb.HandlerInvokeType_RUN_INTERVAL, Value: "20ms"}}})
+	require.NoError(t, err)
+	runDone := make(chan struct{})
+	go func() {
+		defer close(runDone)
+		client.Run(ctx)
+	}()
+	// The fake SDK reports every 20ms once un-stalled; stop it and wait for
+	// Run to return before closing its connection, or a report in flight
+	// fails on a closing client.
+	defer func() {
+		cancel()
+		<-runDone
+		client.Close()
+	}()
+
+	healthURL := fmt.Sprintf("http://localhost:%d%s/healthcheck", httpServer.Port(), cortexHttp.AxonPathRoot)
+	probe := func() (int, map[string]any) {
+		resp, err := http.Get(healthURL)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		var body map[string]any
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+		return resp.StatusCode, body
+	}
+
+	require.Eventually(t, func() bool { code, _ := probe(); return code == http.StatusServiceUnavailable },
+		10*time.Second, 50*time.Millisecond, "healthcheck never reported the stalled SDK")
+	_, body := probe()
+	require.Equal(t, false, body["OK"])
+	require.NotEmpty(t, body["reason"])
+
+	stalled.Store(false)
+	require.Eventually(t, func() bool { code, _ := probe(); return code == http.StatusOK },
+		10*time.Second, 50*time.Millisecond, "healthcheck never recovered after the SDK reported")
 }

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"time"
 
 	pb "github.com/cortexapps/axon/.generated/proto/github.com/cortexapps/axon"
 	"github.com/cortexapps/axon/config"
@@ -82,11 +83,16 @@ func (h *axonHandler) returnError(err error, w http.ResponseWriter) bool {
 }
 
 func (h *axonHandler) returnJson(obj interface{}, w http.ResponseWriter) {
+	h.returnJsonStatus(obj, http.StatusOK, w)
+}
+
+func (h *axonHandler) returnJsonStatus(obj interface{}, status int, w http.ResponseWriter) {
 	json, err := json.Marshal(obj)
 	if h.returnError(err, w) {
 		return
 	}
 	w.Header().Add("Content-Type", "application/json")
+	w.WriteHeader(status)
 	w.Write(json)
 }
 
@@ -110,9 +116,20 @@ func (h *axonHandler) relayMode() string {
 	return string(config.RelayModeSnykBroker)
 }
 
+// healthcheck is the liveness probe. It answers 503 once the handler
+// manager's liveness tracker says the SDK has stopped draining invocations;
+// the agent and the SDK share a container, so the probe restarting it is
+// what unwedges the SDK. Relay-only agents and agents whose SDK has not yet
+// connected stay healthy.
 func (h *axonHandler) healthcheck(w http.ResponseWriter, r *http.Request) {
+	var liveness *handler.Liveness
+	if h.handlerManager != nil {
+		liveness = h.handlerManager.Liveness()
+	}
+	ok, reason := liveness.Healthy(time.Now())
+
 	result := map[string]interface{}{
-		"OK": true,
+		"OK": ok,
 		// Also served from /info, but health is the endpoint every component
 		// exposes and the one reached for first when something looks wrong.
 		// The tunnel server reports build_version from its own /healthcheck,
@@ -120,7 +137,15 @@ func (h *axonHandler) healthcheck(w http.ResponseWriter, r *http.Request) {
 		// on both halves rather than a different path per component.
 		"build_version": getBuildVersion(),
 	}
-	h.returnJson(result, w)
+	if liveness != nil {
+		result["liveness"] = liveness.Snapshot()
+	}
+	status := http.StatusOK
+	if !ok {
+		result["reason"] = reason
+		status = http.StatusServiceUnavailable
+	}
+	h.returnJsonStatus(result, status, w)
 }
 
 func (h *axonHandler) info(w http.ResponseWriter, r *http.Request) {

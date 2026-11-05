@@ -237,6 +237,10 @@ func (fhm *fakeManager) GetByTag(t string) HandlerEntry {
 	panic("not implemented") // TODO: Implement
 }
 
+func (fhm *fakeManager) Liveness() *Liveness {
+	return nil
+}
+
 func (fhm *fakeManager) ClearHandlers(id string) {
 	panic("not implemented") // TODO: Implement
 }
