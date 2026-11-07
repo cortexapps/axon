@@ -5,10 +5,12 @@ services:
       dockerfile: server/docker/Dockerfile
     image: cortex-axon-tunnel-server:local
     ports:
-      - "${GRPC_PORT}:50052"
+      - "${GRPC_PORT}:443"
       - "${HTTP_PORT}:8080"
     environment:
-      GRPC_PORT: 50052
+      # 443, like production: the agent gets a port-less serverUri from
+      # registration (see cortex-fake) and must default the port itself.
+      GRPC_PORT: 443
       HTTP_PORT: 8080
       SERVER_ID: test-server-1
       DISPATCH_TIMEOUT: 60s
@@ -60,7 +62,8 @@ services:
       PLUGIN_DIRS: /agent/plugins
       RELAY_MODE: grpc-tunnel
       AXON_GRPC_TUNNEL_CONNS: 2
-      BROKER_SERVER_URL: grpc-tunnel-server:50052
+      # No BROKER_SERVER_URL here: the agent must use the serverUri from
+      # registration, as it does in production.
       GRPC_INSECURE: "true"
       CORTEX_TENANT_ID: test-tenant
       TOKEN: ${TOKEN:-0e481b34-76ac-481a-a92f-c94a6cf6f6c1}
@@ -108,7 +111,9 @@ services:
       - .:/src
     environment:
       PORT: 8081
-      BROKER_SERVER_URL: http://grpc-tunnel-server:8080
+      # Same shape brain-backend returns (https://relay.cortex.io): a scheme
+      # and no port.
+      BROKER_SERVER_URL: https://grpc-tunnel-server
       TOKEN: ${TOKEN:-0e481b34-76ac-481a-a92f-c94a6cf6f6c1}
     command: sh -c "apk add curl && cd /src && go run cortex-registration-fake.go"
     healthcheck:

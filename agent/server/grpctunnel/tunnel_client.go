@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"net"
 	"net/http"
 	"os"
 	"sort"
@@ -577,7 +578,7 @@ func (tc *tunnelClient) storeRegistration(token, serverAddr string) (rotated boo
 	tc.mu.Lock()
 	rotated = tc.currentToken != "" && tc.currentToken != token
 	tc.currentToken = token
-	tc.currentServerAddr = stripScheme(serverAddr)
+	tc.currentServerAddr = serverDialAddr(serverAddr)
 	tc.mu.Unlock()
 
 	tc.registerMu.Lock()
@@ -1662,10 +1663,30 @@ func (tc *tunnelClient) buildTransportCredentials() (credentials.TransportCreden
 	return credentials.NewTLS(tlsConfig), nil
 }
 
-func stripScheme(addr string) string {
+// defaultServerPort is the port gRPC's dns resolver adds to a target that
+// has none, whatever the transport credentials.
+const defaultServerPort = "443"
+
+// serverDialAddr turns the server URI from registration (or
+// BROKER_SERVER_URL) into the host:port to dial. Registration returns a URI
+// such as https://relay.cortex.io, with no port. A direct dial works without
+// one, because gRPC's dns resolver adds :443. A proxied dial uses the
+// passthrough resolver, which hands the address verbatim to the CONNECT
+// dialer, and "CONNECT relay.cortex.io" is not a valid CONNECT target:
+// proxies reject it or drop the connection. So add the port here, once,
+// for both paths.
+func serverDialAddr(addr string) string {
 	addr = strings.TrimPrefix(addr, "https://")
 	addr = strings.TrimPrefix(addr, "http://")
-	return addr
+	addr = strings.TrimSuffix(addr, "/")
+	if addr == "" {
+		return ""
+	}
+	if _, _, err := net.SplitHostPort(addr); err == nil {
+		return addr
+	}
+	// Trim the brackets of an IPv6 literal; JoinHostPort adds them again.
+	return net.JoinHostPort(strings.Trim(addr, "[]"), defaultServerPort)
 }
 
 func nextBackoff(d time.Duration) time.Duration {
