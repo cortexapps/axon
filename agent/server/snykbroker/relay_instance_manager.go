@@ -10,6 +10,7 @@ import (
 	"os"
 	"path"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -44,10 +45,13 @@ type RelayInstanceManager interface {
 }
 
 type relayInstanceManager struct {
-	integrationInfo   common.IntegrationInfo
-	registration      Registration
-	config            config.AgentConfig
-	logger            *zap.Logger
+	integrationInfo common.IntegrationInfo
+	registration    Registration
+	config          config.AgentConfig
+	logger          *zap.Logger
+	// supervisor is written by Start's goroutine and taken by Close, from
+	// different goroutines; supervisorMu guards it. Use currentSupervisor.
+	supervisorMu      sync.Mutex
 	supervisor        *Supervisor
 	running           atomic.Bool
 	startCount        atomic.Int32
@@ -563,6 +567,7 @@ func (r *relayInstanceManager) Start() error {
 
 	gen := r.generation.Load()
 	done := make(chan struct{})
+	result := &startResult{}
 
 	// Auto-register: poll for token changes and request restart if changed.
 	if r.config.AutoRegisterFrequency != 0 {
@@ -646,7 +651,7 @@ func (r *relayInstanceManager) Start() error {
 		}
 
 		if errx != nil {
-			err = errx
+			result.set(errx)
 			requestRestartOnExit = true
 			return
 		}
@@ -697,7 +702,7 @@ func (r *relayInstanceManager) Start() error {
 			brokerEnv["LOG_LEVEL"] = "debug"
 		}
 
-		r.supervisor = NewSupervisor(
+		supervisor := NewSupervisor(
 			executable,
 			args,
 			brokerEnv,
@@ -706,17 +711,21 @@ func (r *relayInstanceManager) Start() error {
 		// Only panic on max retries during the very first start.
 		// On subsequent restarts, return the error so the recovery
 		// loop can retry.
-		r.supervisor.panicOnMaxRetries = r.startCount.Load() == 0
+		supervisor.panicOnMaxRetries = r.startCount.Load() == 0
 		r.startCount.Add(1)
 		requestRestartOnExit = true
-		supervisor := r.supervisor
-		err = supervisor.Start(5, 10*time.Second)
-		r.emitOperationCounter("broker_start", err == nil)
-		if err != nil {
-			r.logger.Warn("Supervisor has exited upon startup", zap.Error(err))
+		r.supervisorMu.Lock()
+		r.supervisor = supervisor
+		r.supervisorMu.Unlock()
+		startErr := supervisor.Start(5, 10*time.Second)
+		result.set(startErr)
+		r.emitOperationCounter("broker_start", startErr == nil)
+		if startErr != nil {
+			r.logger.Warn("Supervisor has exited upon startup", zap.Error(startErr))
 			return
 		}
-		err = supervisor.Wait()
+		err := supervisor.Wait()
+		result.set(err)
 		r.emitOperationCounter("broker_exit", err == nil)
 		if err == nil {
 			r.logger.Info("Supervisor has exited")
@@ -729,7 +738,33 @@ func (r *relayInstanceManager) Start() error {
 	case <-done:
 	case <-time.After(r.config.FailWaitTime):
 	}
-	return err
+	return result.get()
+}
+
+// startResult is the outcome Start's goroutine reports: it may still be
+// writing it when Start stops waiting and reads it.
+type startResult struct {
+	mu  sync.Mutex
+	err error
+}
+
+func (s *startResult) set(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.err = err
+}
+
+func (s *startResult) get() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.err
+}
+
+// currentSupervisor returns the running broker's supervisor, or nil.
+func (r *relayInstanceManager) currentSupervisor() *Supervisor {
+	r.supervisorMu.Lock()
+	defer r.supervisorMu.Unlock()
+	return r.supervisor
 }
 
 func (r *relayInstanceManager) setHttpProxyEnvVars(brokerEnv map[string]string) {
@@ -873,8 +908,10 @@ func (r *relayInstanceManager) applyClientValidationConfig(validationConfig *com
 func (r *relayInstanceManager) Close() error {
 
 	if r.running.CompareAndSwap(true, false) {
+		r.supervisorMu.Lock()
 		s := r.supervisor
 		r.supervisor = nil
+		r.supervisorMu.Unlock()
 		if s != nil {
 			return s.Close()
 		}

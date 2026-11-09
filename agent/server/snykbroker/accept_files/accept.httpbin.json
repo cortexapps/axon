@@ -1,0 +1,10 @@
+{
+  "private": [
+    {
+      "method": "any",
+      "path": "/*",
+      "origin": "https://httpbin.org"
+      
+    }
+  ]
+}

@@ -571,7 +571,8 @@ func TestBrokerSelfHealingRestart(t *testing.T) {
 
 	// Wait for the broker to be running
 	require.Eventually(t, func() bool {
-		return instance.supervisor != nil && instance.supervisor.Pid() > 0
+		s := instance.currentSupervisor()
+		return s != nil && s.Pid() > 0
 	}, 5*time.Second, 10*time.Millisecond, "Broker should be running")
 
 	initialStartCount := instance.startCount.Load()
@@ -580,7 +581,7 @@ func TestBrokerSelfHealingRestart(t *testing.T) {
 	// Kill the broker process to simulate unexpected death.
 	// The supervisor will exhaust retries and the restart consumer
 	// will process the broker_exit restart request.
-	pid := instance.supervisor.Pid()
+	pid := instance.currentSupervisor().Pid()
 	if pid > 0 {
 		process, err := os.FindProcess(pid)
 		require.NoError(t, err)

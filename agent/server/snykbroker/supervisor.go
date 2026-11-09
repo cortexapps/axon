@@ -246,18 +246,29 @@ func (b *Supervisor) runCommand() error {
 	}()
 
 	var killed atomic.Bool
+	// procMu orders a stop against the start: cmd.Start writes cmd.Process
+	// on this goroutine while a stop may arrive on any other, so the stop
+	// reads the process only through proc, under the lock, and a stop that
+	// lands before the process exists is honoured as soon as it does.
+	var procMu sync.Mutex
+	var proc *os.Process
+	kill := func(p *os.Process) {
+		if err := p.Kill(); err != nil {
+			fmt.Printf("Error killing process: %v\n", err)
+		}
+	}
 
 	// our stopfunc allows anyone to close the process
 	// and wait for it to finish
 	b.setStopFunc(func() {
+		procMu.Lock()
 		killed.Store(true)
+		p := proc
+		procMu.Unlock()
 
 		// if process is running trigger a kill
-		if cmd.Process != nil {
-			err := cmd.Process.Kill()
-			if err != nil {
-				fmt.Printf("Error killing process: %v\n", err)
-			}
+		if p != nil {
+			kill(p)
 		}
 
 		// wait for it to actually finish
@@ -265,7 +276,15 @@ func (b *Supervisor) runCommand() error {
 	})
 
 	procStart := time.Now()
+	procMu.Lock()
 	err := cmd.Start()
+	if err == nil {
+		proc = cmd.Process
+		if killed.Load() {
+			kill(proc)
+		}
+	}
+	procMu.Unlock()
 
 	if err != nil {
 		b.lastRunNanos.Store(0)
