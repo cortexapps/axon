@@ -327,8 +327,14 @@ func agentFields(id tunnel.ClientIdentity) []zap.Field {
 }
 
 // writeDispatchError maps Dispatch errors to HTTP responses and logs the
-// failure once, with its kind and everything that names the call: fields
-// carries the request's own (token hash, method, path, elapsed).
+// failure once, with its kind, its cause and everything that names the call:
+// fields carries the request's own (token hash, method, path, elapsed).
+//
+// The response goes out first, carrying the cause as far as it is known then
+// (x-axon-dispatch-failure). When the call had reached the agent and the
+// server gave up on it, the log line waits for the agent's own account --
+// bounded by the dispatcher's grace period, off the request path -- so it can
+// say whether the upstream was slow or the agent never answered.
 func (h *HttpAdapter) writeDispatchError(w http.ResponseWriter, err error, token broker.Token, fields ...zap.Field) {
 	h.metrics.DispatchErrors.Inc(1)
 
@@ -338,32 +344,38 @@ func (h *HttpAdapter) writeDispatchError(w http.ResponseWriter, err error, token
 	var dispErr *dispatch.DispatchError
 	if errors.As(err, &dispErr) {
 		fields = append(fields, zap.String("kind", string(dispErr.Kind)))
+		if dispErr.Phase != "" {
+			fields = append(fields, zap.String("phase", string(dispErr.Phase)))
+		}
 		if dispErr.CallID != "" {
 			fields = append(fields,
 				zap.String("callId", dispErr.CallID),
 				zap.String("streamId", dispErr.StreamID),
+				zap.Duration("callElapsed", dispErr.Elapsed),
 			)
 		}
 		fields = append(fields, agentFields(dispErr.Agent)...)
 		if dispErr.AcquireWait > 0 {
 			fields = append(fields, zap.Duration("acquireWait", dispErr.AcquireWait))
 		}
-	}
-	// level is Warn unless the failure is routine; logf records the outcome.
-	logf := func(level zapcore.Level, status int) {
-		h.logger.Log(level, "Dispatch failed",
-			append(fields, zap.Int("status", status), zap.Error(err))...)
+		if !errors.Is(err, dispatch.ErrNoTunnel) {
+			fields = append(fields, streamStateFields(dispErr.Streams)...)
+		}
 	}
 
 	var cancelErr *dispatch.CancelError
+	errors.As(err, &cancelErr)
+	cause := failureCause(err, dispErr, cancelErr, dispatch.AgentNotAsked)
+
+	var status int
 	switch {
-	case errors.As(err, &cancelErr):
-		status := int(cancelErr.Code)
+	case cancelErr != nil:
+		status = int(cancelErr.Code)
 		if status < 100 || status > 599 {
 			status = http.StatusBadGateway
 		}
 		fields = append(fields, zap.Int32("agentCode", cancelErr.Code))
-		logf(zapcore.WarnLevel, status)
+		setFailureHeaders(w, cause, dispErr)
 		writeFailedDispatch(w, status, cancelErr.Reason)
 
 	case errors.Is(err, dispatch.ErrNoTunnel):
@@ -376,23 +388,159 @@ func (h *HttpAdapter) writeDispatchError(w http.ResponseWriter, err error, token
 		//
 		// Routine rather than exceptional: it is how a caller gets moved off
 		// an instance that has lost its streams, so it is logged at Info
-		// rather than Warn.
-		logf(zapcore.InfoLevel, http.StatusNotFound)
+		// rather than Warn. No failure headers: the dispatcher matches this
+		// response byte for byte.
+		status = http.StatusNotFound
 		writeBrokerJSON(w, http.StatusNotFound, brokerOKFalse)
 
 	case errors.Is(err, context.DeadlineExceeded):
-		logf(zapcore.WarnLevel, http.StatusGatewayTimeout)
+		status = http.StatusGatewayTimeout
+		setFailureHeaders(w, cause, dispErr)
 		http.Error(w, "gateway timeout", http.StatusGatewayTimeout)
 
 	case errors.Is(err, context.Canceled):
 		// Caller went away; nothing useful to write.
-		logf(zapcore.InfoLevel, 499)
+		status = 499
+		setFailureHeaders(w, cause, dispErr)
 		http.Error(w, "client closed request", 499)
 
 	default:
-		logf(zapcore.WarnLevel, http.StatusBadGateway)
+		status = http.StatusBadGateway
+		setFailureHeaders(w, cause, dispErr)
 		http.Error(w, "tunnel dispatch failed", http.StatusBadGateway)
 	}
+
+	logFailure := func(report *dispatch.CancelError, outcome dispatch.AgentOutcome) {
+		cause := failureCause(err, dispErr, report, outcome)
+		logFields := append(fields, zap.String("cause", string(cause)), zap.Int("status", status))
+		if dispErr != nil && dispErr.CallID != "" {
+			logFields = append(logFields, agentReportFields(report, outcome)...)
+		}
+		logFields = append(logFields, zap.Error(err))
+		h.logger.Log(failureLevel(err, cause), "Dispatch failed", logFields...)
+		h.recordFailure(token, dispErr, cause)
+	}
+
+	if dispErr != nil && dispErr.CallID != "" && cancelErr == nil {
+		// The server gave up on a call the agent had; ask the agent why,
+		// without holding the caller's connection for the answer.
+		go func() { logFailure(dispErr.AwaitAgentReport()) }()
+		return
+	}
+	// Nothing to wait for: either no call reached the agent, or the agent's
+	// account is the error itself.
+	if cancelErr != nil {
+		logFailure(cancelErr, dispatch.AgentReported)
+		return
+	}
+	logFailure(nil, dispatch.AgentNotAsked)
+}
+
+// failureCause classifies err; see dispatch.FailureCause.
+func failureCause(err error, d *dispatch.DispatchError, report *dispatch.CancelError, outcome dispatch.AgentOutcome) dispatch.FailureCause {
+	if d == nil {
+		if errors.Is(err, dispatch.ErrNoTunnel) {
+			return dispatch.CauseNoTunnel
+		}
+		return dispatch.CauseUnknown
+	}
+	return d.Cause(report, outcome)
+}
+
+// failureLevel is Warn unless the failure is routine. A caller walking away
+// is routine only when nothing on our side made it wait.
+func failureLevel(err error, cause dispatch.FailureCause) zapcore.Level {
+	switch {
+	case errors.Is(err, dispatch.ErrNoTunnel):
+		return zapcore.InfoLevel
+	case errors.Is(err, context.Canceled) && !cause.MadeCallerWait():
+		return zapcore.InfoLevel
+	}
+	return zapcore.WarnLevel
+}
+
+// setFailureHeaders tells the caller why its dispatch failed, as far as the
+// server knows when it responds.
+func setFailureHeaders(w http.ResponseWriter, cause dispatch.FailureCause, d *dispatch.DispatchError) {
+	w.Header().Set("X-Axon-Dispatch-Failure", string(cause))
+	if d != nil && d.Phase != "" {
+		w.Header().Set("X-Axon-Dispatch-Phase", string(d.Phase))
+	}
+}
+
+// recordFailure counts the failure by cause, tagged with the agent's
+// identity where one is known.
+func (h *HttpAdapter) recordFailure(token broker.Token, d *dispatch.DispatchError, cause dispatch.FailureCause) {
+	id := tunnel.ClientIdentity{}
+	if d != nil && d.Agent != (tunnel.ClientIdentity{}) {
+		id = d.Agent
+	} else if h.registry != nil {
+		if found := h.registry.GetIdentity(token); found != nil {
+			id = *found
+		}
+	}
+	h.metrics.DispatchFailure(id.TenantID, id.Integration, id.Alias, string(cause))
+}
+
+// streamStateFields renders the token's streams at the failure: how many,
+// how many busy, how many dispatches waiting, per agent instance, and the
+// oldest calls holding them.
+func streamStateFields(s dispatch.StreamState) []zap.Field {
+	fields := []zap.Field{
+		zap.Int("tokenStreams", s.Streams),
+		zap.Int("tokenBusy", s.Busy),
+		zap.Int("tokenWaiters", s.Waiters),
+	}
+	if len(s.Instances) > 0 {
+		instances := make([]string, 0, len(s.Instances))
+		for _, inst := range s.Instances {
+			instances = append(instances, fmt.Sprintf("%s busy=%d/%d", inst.InstanceID, inst.Busy, inst.Streams))
+		}
+		fields = append(fields, zap.Strings("tokenInstances", instances))
+	}
+	if len(s.Holders) > 0 {
+		holders := make([]string, 0, len(s.Holders))
+		for _, c := range s.Holders {
+			line := fmt.Sprintf("%s %s %s on %s callId=%s", c.Method, c.Path,
+				c.Age.Round(time.Millisecond), c.InstanceID, c.CallID)
+			if c.Cancelled {
+				line += " (cancelled, awaiting agent)"
+			}
+			holders = append(holders, line)
+		}
+		fields = append(fields,
+			zap.Duration("oldestHolderAge", s.Holders[0].Age),
+			zap.Strings("holders", holders),
+		)
+	}
+	return fields
+}
+
+// agentReportFields renders the agent's account of a failed call.
+func agentReportFields(r *dispatch.CancelError, outcome dispatch.AgentOutcome) []zap.Field {
+	fields := []zap.Field{zap.String("agentOutcome", string(outcome))}
+	if r == nil {
+		return fields
+	}
+	if r.Stage != pb.CallCancel_STAGE_UNSPECIFIED {
+		fields = append(fields,
+			zap.String("agentStage", r.Stage.String()),
+			zap.Duration("agentStageElapsed", r.StageElapsed),
+		)
+	}
+	if r.Cause != pb.CallCancel_CAUSE_UNSPECIFIED {
+		fields = append(fields, zap.String("agentCause", r.Cause.String()))
+	}
+	if r.TotalElapsed > 0 {
+		fields = append(fields, zap.Duration("agentElapsed", r.TotalElapsed))
+	}
+	if r.UpstreamHost != "" {
+		fields = append(fields, zap.String("upstreamHost", r.UpstreamHost))
+	}
+	if r.Reason != "" {
+		fields = append(fields, zap.String("agentReason", r.Reason))
+	}
+	return fields
 }
 
 // writeFailedDispatch writes a JSON error response for a dispatch the agent

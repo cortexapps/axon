@@ -17,7 +17,7 @@ const (
 	LabelAlias       = "alias"
 	LabelMethod      = "method"
 	LabelStatusCode  = "status_code"
-	LabelErrorType   = "error_type"
+	LabelCause       = "cause"
 )
 
 // Metrics holds all server-side metric instruments.
@@ -26,16 +26,16 @@ type Metrics struct {
 	Closer   func()
 	Registry *prom.Registry
 
-	ConnectionsActive  tally.Gauge
-	ConnectionsTotal   tally.Counter
-	HeartbeatSent      tally.Counter
-	HeartbeatReceived  tally.Counter
-	HeartbeatMissed    tally.Counter
-	DispatchInflight    tally.Gauge
-	DispatchErrors      tally.Counter
-	DispatchBytesSent   tally.Counter
-	DispatchBytesRecv   tally.Counter
-	AuthFailures        tally.Counter
+	ConnectionsActive tally.Gauge
+	ConnectionsTotal  tally.Counter
+	HeartbeatSent     tally.Counter
+	HeartbeatReceived tally.Counter
+	HeartbeatMissed   tally.Counter
+	DispatchInflight  tally.Gauge
+	DispatchErrors    tally.Counter
+	DispatchBytesSent tally.Counter
+	DispatchBytesRecv tally.Counter
+	AuthFailures      tally.Counter
 }
 
 // New creates a new Metrics instance backed by a Prometheus reporter.
@@ -59,16 +59,16 @@ func New(serverID string) *Metrics {
 		Closer:   func() { closer.Close() },
 		Registry: registry,
 
-		ConnectionsActive:  scope.Gauge("connections.active"),
-		ConnectionsTotal:   scope.Counter("connections.total"),
-		HeartbeatSent:      scope.Counter("heartbeat.sent"),
-		HeartbeatReceived:  scope.Counter("heartbeat.received"),
-		HeartbeatMissed:    scope.Counter("heartbeat.missed"),
-		DispatchInflight:    scope.Gauge("dispatch.inflight"),
-		DispatchErrors:     scope.Counter("dispatch.errors"),
-		DispatchBytesSent:  scope.Counter("dispatch.bytes_sent"),
-		DispatchBytesRecv:  scope.Counter("dispatch.bytes_received"),
-		AuthFailures:       scope.Counter("auth.failures"),
+		ConnectionsActive: scope.Gauge("connections.active"),
+		ConnectionsTotal:  scope.Counter("connections.total"),
+		HeartbeatSent:     scope.Counter("heartbeat.sent"),
+		HeartbeatReceived: scope.Counter("heartbeat.received"),
+		HeartbeatMissed:   scope.Counter("heartbeat.missed"),
+		DispatchInflight:  scope.Gauge("dispatch.inflight"),
+		DispatchErrors:    scope.Counter("dispatch.errors"),
+		DispatchBytesSent: scope.Counter("dispatch.bytes_sent"),
+		DispatchBytesRecv: scope.Counter("dispatch.bytes_received"),
+		AuthFailures:      scope.Counter("auth.failures"),
 	}
 
 	return m
@@ -94,14 +94,21 @@ func (m *Metrics) DispatchDuration(tenantID, integration, alias string, d float6
 	}).Histogram("dispatch.duration_ms", tally.DefaultBuckets).RecordValue(d)
 }
 
-// DispatchError records a dispatch error.
-func (m *Metrics) DispatchError(tenantID, integration, alias, errorType string) {
+// DispatchFailure counts a failed dispatch by cause: what went wrong in
+// terms of what to fix (streams_exhausted, upstream_slow,
+// agent_unresponsive, ...), tagged with the agent's identity.
+//
+// Its own name, not dispatch.errors: the untagged DispatchErrors counter
+// owns that one, and Prometheus refuses a second registration of a name with
+// different labels -- by panicking, which is why the tagged variant that
+// used to sit here could never be called.
+func (m *Metrics) DispatchFailure(tenantID, integration, alias, cause string) {
 	m.Scope.Tagged(map[string]string{
 		LabelTenantID:    tenantID,
 		LabelIntegration: integration,
 		LabelAlias:       alias,
-		LabelErrorType:   errorType,
-	}).Counter("dispatch.errors").Inc(1)
+		LabelCause:       cause,
+	}).Counter("dispatch.failures").Inc(1)
 }
 
 // DispatchAcquireWait records how long a call waited for an idle stream on

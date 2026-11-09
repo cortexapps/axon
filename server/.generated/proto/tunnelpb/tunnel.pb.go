@@ -73,6 +73,132 @@ func (CallStart_Kind) EnumDescriptor() ([]byte, []int) {
 	return file_tunnel_proto_rawDescGZIP(), []int{6, 0}
 }
 
+type CallCancel_Stage int32
+
+const (
+	CallCancel_STAGE_UNSPECIFIED CallCancel_Stage = 0
+	// Waiting for the agent's own in-flight capacity; nothing sent upstream.
+	CallCancel_QUEUED_FOR_CAPACITY CallCancel_Stage = 1
+	// Matching the request to an upstream route.
+	CallCancel_ROUTING CallCancel_Stage = 2
+	// Request sent upstream; no response headers yet.
+	CallCancel_AWAITING_UPSTREAM_HEADERS CallCancel_Stage = 3
+	// Response headers received; relaying the body.
+	CallCancel_STREAMING_BODY CallCancel_Stage = 4
+)
+
+// Enum value maps for CallCancel_Stage.
+var (
+	CallCancel_Stage_name = map[int32]string{
+		0: "STAGE_UNSPECIFIED",
+		1: "QUEUED_FOR_CAPACITY",
+		2: "ROUTING",
+		3: "AWAITING_UPSTREAM_HEADERS",
+		4: "STREAMING_BODY",
+	}
+	CallCancel_Stage_value = map[string]int32{
+		"STAGE_UNSPECIFIED":         0,
+		"QUEUED_FOR_CAPACITY":       1,
+		"ROUTING":                   2,
+		"AWAITING_UPSTREAM_HEADERS": 3,
+		"STREAMING_BODY":            4,
+	}
+)
+
+func (x CallCancel_Stage) Enum() *CallCancel_Stage {
+	p := new(CallCancel_Stage)
+	*p = x
+	return p
+}
+
+func (x CallCancel_Stage) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (CallCancel_Stage) Descriptor() protoreflect.EnumDescriptor {
+	return file_tunnel_proto_enumTypes[1].Descriptor()
+}
+
+func (CallCancel_Stage) Type() protoreflect.EnumType {
+	return &file_tunnel_proto_enumTypes[1]
+}
+
+func (x CallCancel_Stage) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use CallCancel_Stage.Descriptor instead.
+func (CallCancel_Stage) EnumDescriptor() ([]byte, []int) {
+	return file_tunnel_proto_rawDescGZIP(), []int{9, 0}
+}
+
+type CallCancel_Cause int32
+
+const (
+	CallCancel_CAUSE_UNSPECIFIED CallCancel_Cause = 0
+	// The server sent Cancel (its caller timed out or went away).
+	CallCancel_CANCELED_BY_SERVER CallCancel_Cause = 1
+	// The agent's own deadline for the call expired.
+	CallCancel_AGENT_TIMEOUT CallCancel_Cause = 2
+	// The upstream failed: connection error, reset, unreadable body.
+	CallCancel_UPSTREAM_ERROR CallCancel_Cause = 3
+	// No route matched, or the route refused the request.
+	CallCancel_ROUTE_REJECTED CallCancel_Cause = 4
+	// The agent was at its in-flight cap until the deadline.
+	CallCancel_CAPACITY CallCancel_Cause = 5
+	// The agent is shutting down or restarting.
+	CallCancel_AGENT_SHUTDOWN CallCancel_Cause = 6
+)
+
+// Enum value maps for CallCancel_Cause.
+var (
+	CallCancel_Cause_name = map[int32]string{
+		0: "CAUSE_UNSPECIFIED",
+		1: "CANCELED_BY_SERVER",
+		2: "AGENT_TIMEOUT",
+		3: "UPSTREAM_ERROR",
+		4: "ROUTE_REJECTED",
+		5: "CAPACITY",
+		6: "AGENT_SHUTDOWN",
+	}
+	CallCancel_Cause_value = map[string]int32{
+		"CAUSE_UNSPECIFIED":  0,
+		"CANCELED_BY_SERVER": 1,
+		"AGENT_TIMEOUT":      2,
+		"UPSTREAM_ERROR":     3,
+		"ROUTE_REJECTED":     4,
+		"CAPACITY":           5,
+		"AGENT_SHUTDOWN":     6,
+	}
+)
+
+func (x CallCancel_Cause) Enum() *CallCancel_Cause {
+	p := new(CallCancel_Cause)
+	*p = x
+	return p
+}
+
+func (x CallCancel_Cause) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (CallCancel_Cause) Descriptor() protoreflect.EnumDescriptor {
+	return file_tunnel_proto_enumTypes[2].Descriptor()
+}
+
+func (CallCancel_Cause) Type() protoreflect.EnumType {
+	return &file_tunnel_proto_enumTypes[2]
+}
+
+func (x CallCancel_Cause) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use CallCancel_Cause.Descriptor instead.
+func (CallCancel_Cause) EnumDescriptor() ([]byte, []int) {
+	return file_tunnel_proto_rawDescGZIP(), []int{9, 1}
+}
+
 // Client → Server envelope.
 type ClientFrame struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -872,10 +998,29 @@ func (x *CallEnd) GetTrailers() map[string]string {
 // response (e.g. 404 no matching accept-file rule, 502 upstream
 // unreachable, 503 agent at in-flight cap). 0 means unspecified (the
 // adapter picks).
+//
+// The agent also says where the call was and why it stopped (fields 3-7), so
+// a failed call explains itself on the server instead of only in the agent's
+// own logs. That includes the agent's answer to a server-sent Cancel: the
+// server waits briefly for it, which is how a server-side timeout learns
+// whether the request ever left the agent and how long the upstream had it.
+// All optional; a receiver that sees STAGE_UNSPECIFIED knows nothing more
+// than an older peer would have told it.
 type CallCancel struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Reason        string                 `protobuf:"bytes,1,opt,name=reason,proto3" json:"reason,omitempty"`
-	Code          int32                  `protobuf:"varint,2,opt,name=code,proto3" json:"code,omitempty"`
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Reason string                 `protobuf:"bytes,1,opt,name=reason,proto3" json:"reason,omitempty"`
+	Code   int32                  `protobuf:"varint,2,opt,name=code,proto3" json:"code,omitempty"`
+	// Where the call was when it stopped. Agent-sent only.
+	Stage CallCancel_Stage `protobuf:"varint,3,opt,name=stage,proto3,enum=cortex.axon.tunnel.v2.CallCancel_Stage" json:"stage,omitempty"`
+	// Why it stopped. Agent-sent only.
+	Cause CallCancel_Cause `protobuf:"varint,4,opt,name=cause,proto3,enum=cortex.axon.tunnel.v2.CallCancel_Cause" json:"cause,omitempty"`
+	// How long the call had been in its final stage, and in the agent overall
+	// (from receipt of CallStart, queueing included).
+	StageElapsedMs int64 `protobuf:"varint,5,opt,name=stage_elapsed_ms,json=stageElapsedMs,proto3" json:"stage_elapsed_ms,omitempty"`
+	TotalElapsedMs int64 `protobuf:"varint,6,opt,name=total_elapsed_ms,json=totalElapsedMs,proto3" json:"total_elapsed_ms,omitempty"`
+	// Host the request was routed to, when it got that far. Host only: never a
+	// path or query, which can carry credentials.
+	UpstreamHost  string `protobuf:"bytes,7,opt,name=upstream_host,json=upstreamHost,proto3" json:"upstream_host,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -922,6 +1067,41 @@ func (x *CallCancel) GetCode() int32 {
 		return x.Code
 	}
 	return 0
+}
+
+func (x *CallCancel) GetStage() CallCancel_Stage {
+	if x != nil {
+		return x.Stage
+	}
+	return CallCancel_STAGE_UNSPECIFIED
+}
+
+func (x *CallCancel) GetCause() CallCancel_Cause {
+	if x != nil {
+		return x.Cause
+	}
+	return CallCancel_CAUSE_UNSPECIFIED
+}
+
+func (x *CallCancel) GetStageElapsedMs() int64 {
+	if x != nil {
+		return x.StageElapsedMs
+	}
+	return 0
+}
+
+func (x *CallCancel) GetTotalElapsedMs() int64 {
+	if x != nil {
+		return x.TotalElapsedMs
+	}
+	return 0
+}
+
+func (x *CallCancel) GetUpstreamHost() string {
+	if x != nil {
+		return x.UpstreamHost
+	}
+	return ""
 }
 
 var File_tunnel_proto protoreflect.FileDescriptor
@@ -993,11 +1173,30 @@ const file_tunnel_proto_rawDesc = "" +
 	"\btrailers\x18\x01 \x03(\v2,.cortex.axon.tunnel.v2.CallEnd.TrailersEntryR\btrailers\x1a;\n" +
 	"\rTrailersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"8\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xbe\x04\n" +
 	"\n" +
 	"CallCancel\x12\x16\n" +
 	"\x06reason\x18\x01 \x01(\tR\x06reason\x12\x12\n" +
-	"\x04code\x18\x02 \x01(\x05R\x04code2e\n" +
+	"\x04code\x18\x02 \x01(\x05R\x04code\x12=\n" +
+	"\x05stage\x18\x03 \x01(\x0e2'.cortex.axon.tunnel.v2.CallCancel.StageR\x05stage\x12=\n" +
+	"\x05cause\x18\x04 \x01(\x0e2'.cortex.axon.tunnel.v2.CallCancel.CauseR\x05cause\x12(\n" +
+	"\x10stage_elapsed_ms\x18\x05 \x01(\x03R\x0estageElapsedMs\x12(\n" +
+	"\x10total_elapsed_ms\x18\x06 \x01(\x03R\x0etotalElapsedMs\x12#\n" +
+	"\rupstream_host\x18\a \x01(\tR\fupstreamHost\"w\n" +
+	"\x05Stage\x12\x15\n" +
+	"\x11STAGE_UNSPECIFIED\x10\x00\x12\x17\n" +
+	"\x13QUEUED_FOR_CAPACITY\x10\x01\x12\v\n" +
+	"\aROUTING\x10\x02\x12\x1d\n" +
+	"\x19AWAITING_UPSTREAM_HEADERS\x10\x03\x12\x12\n" +
+	"\x0eSTREAMING_BODY\x10\x04\"\x93\x01\n" +
+	"\x05Cause\x12\x15\n" +
+	"\x11CAUSE_UNSPECIFIED\x10\x00\x12\x16\n" +
+	"\x12CANCELED_BY_SERVER\x10\x01\x12\x11\n" +
+	"\rAGENT_TIMEOUT\x10\x02\x12\x12\n" +
+	"\x0eUPSTREAM_ERROR\x10\x03\x12\x12\n" +
+	"\x0eROUTE_REJECTED\x10\x04\x12\f\n" +
+	"\bCAPACITY\x10\x05\x12\x12\n" +
+	"\x0eAGENT_SHUTDOWN\x10\x062e\n" +
 	"\rTunnelService\x12T\n" +
 	"\x06Tunnel\x12\".cortex.axon.tunnel.v2.ClientFrame\x1a\".cortex.axon.tunnel.v2.ServerFrame(\x010\x01B,Z*github.com/cortexapps/axon-server/tunnelpbb\x06proto3"
 
@@ -1013,48 +1212,52 @@ func file_tunnel_proto_rawDescGZIP() []byte {
 	return file_tunnel_proto_rawDescData
 }
 
-var file_tunnel_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_tunnel_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
 var file_tunnel_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
 var file_tunnel_proto_goTypes = []any{
-	(CallStart_Kind)(0), // 0: cortex.axon.tunnel.v2.CallStart.Kind
-	(*ClientFrame)(nil), // 1: cortex.axon.tunnel.v2.ClientFrame
-	(*ServerFrame)(nil), // 2: cortex.axon.tunnel.v2.ServerFrame
-	(*ClientHello)(nil), // 3: cortex.axon.tunnel.v2.ClientHello
-	(*ServerHello)(nil), // 4: cortex.axon.tunnel.v2.ServerHello
-	(*Heartbeat)(nil),   // 5: cortex.axon.tunnel.v2.Heartbeat
-	(*CallFrame)(nil),   // 6: cortex.axon.tunnel.v2.CallFrame
-	(*CallStart)(nil),   // 7: cortex.axon.tunnel.v2.CallStart
-	(*CallData)(nil),    // 8: cortex.axon.tunnel.v2.CallData
-	(*CallEnd)(nil),     // 9: cortex.axon.tunnel.v2.CallEnd
-	(*CallCancel)(nil),  // 10: cortex.axon.tunnel.v2.CallCancel
-	nil,                 // 11: cortex.axon.tunnel.v2.ClientHello.MetadataEntry
-	nil,                 // 12: cortex.axon.tunnel.v2.CallStart.PseudoHeadersEntry
-	nil,                 // 13: cortex.axon.tunnel.v2.CallStart.HeadersEntry
-	nil,                 // 14: cortex.axon.tunnel.v2.CallEnd.TrailersEntry
+	(CallStart_Kind)(0),   // 0: cortex.axon.tunnel.v2.CallStart.Kind
+	(CallCancel_Stage)(0), // 1: cortex.axon.tunnel.v2.CallCancel.Stage
+	(CallCancel_Cause)(0), // 2: cortex.axon.tunnel.v2.CallCancel.Cause
+	(*ClientFrame)(nil),   // 3: cortex.axon.tunnel.v2.ClientFrame
+	(*ServerFrame)(nil),   // 4: cortex.axon.tunnel.v2.ServerFrame
+	(*ClientHello)(nil),   // 5: cortex.axon.tunnel.v2.ClientHello
+	(*ServerHello)(nil),   // 6: cortex.axon.tunnel.v2.ServerHello
+	(*Heartbeat)(nil),     // 7: cortex.axon.tunnel.v2.Heartbeat
+	(*CallFrame)(nil),     // 8: cortex.axon.tunnel.v2.CallFrame
+	(*CallStart)(nil),     // 9: cortex.axon.tunnel.v2.CallStart
+	(*CallData)(nil),      // 10: cortex.axon.tunnel.v2.CallData
+	(*CallEnd)(nil),       // 11: cortex.axon.tunnel.v2.CallEnd
+	(*CallCancel)(nil),    // 12: cortex.axon.tunnel.v2.CallCancel
+	nil,                   // 13: cortex.axon.tunnel.v2.ClientHello.MetadataEntry
+	nil,                   // 14: cortex.axon.tunnel.v2.CallStart.PseudoHeadersEntry
+	nil,                   // 15: cortex.axon.tunnel.v2.CallStart.HeadersEntry
+	nil,                   // 16: cortex.axon.tunnel.v2.CallEnd.TrailersEntry
 }
 var file_tunnel_proto_depIdxs = []int32{
-	3,  // 0: cortex.axon.tunnel.v2.ClientFrame.hello:type_name -> cortex.axon.tunnel.v2.ClientHello
-	5,  // 1: cortex.axon.tunnel.v2.ClientFrame.heartbeat:type_name -> cortex.axon.tunnel.v2.Heartbeat
-	6,  // 2: cortex.axon.tunnel.v2.ClientFrame.call:type_name -> cortex.axon.tunnel.v2.CallFrame
-	4,  // 3: cortex.axon.tunnel.v2.ServerFrame.hello:type_name -> cortex.axon.tunnel.v2.ServerHello
-	5,  // 4: cortex.axon.tunnel.v2.ServerFrame.heartbeat:type_name -> cortex.axon.tunnel.v2.Heartbeat
-	6,  // 5: cortex.axon.tunnel.v2.ServerFrame.call:type_name -> cortex.axon.tunnel.v2.CallFrame
-	11, // 6: cortex.axon.tunnel.v2.ClientHello.metadata:type_name -> cortex.axon.tunnel.v2.ClientHello.MetadataEntry
-	7,  // 7: cortex.axon.tunnel.v2.CallFrame.start:type_name -> cortex.axon.tunnel.v2.CallStart
-	8,  // 8: cortex.axon.tunnel.v2.CallFrame.data:type_name -> cortex.axon.tunnel.v2.CallData
-	9,  // 9: cortex.axon.tunnel.v2.CallFrame.end:type_name -> cortex.axon.tunnel.v2.CallEnd
-	10, // 10: cortex.axon.tunnel.v2.CallFrame.cancel:type_name -> cortex.axon.tunnel.v2.CallCancel
-	12, // 11: cortex.axon.tunnel.v2.CallStart.pseudo_headers:type_name -> cortex.axon.tunnel.v2.CallStart.PseudoHeadersEntry
-	13, // 12: cortex.axon.tunnel.v2.CallStart.headers:type_name -> cortex.axon.tunnel.v2.CallStart.HeadersEntry
+	5,  // 0: cortex.axon.tunnel.v2.ClientFrame.hello:type_name -> cortex.axon.tunnel.v2.ClientHello
+	7,  // 1: cortex.axon.tunnel.v2.ClientFrame.heartbeat:type_name -> cortex.axon.tunnel.v2.Heartbeat
+	8,  // 2: cortex.axon.tunnel.v2.ClientFrame.call:type_name -> cortex.axon.tunnel.v2.CallFrame
+	6,  // 3: cortex.axon.tunnel.v2.ServerFrame.hello:type_name -> cortex.axon.tunnel.v2.ServerHello
+	7,  // 4: cortex.axon.tunnel.v2.ServerFrame.heartbeat:type_name -> cortex.axon.tunnel.v2.Heartbeat
+	8,  // 5: cortex.axon.tunnel.v2.ServerFrame.call:type_name -> cortex.axon.tunnel.v2.CallFrame
+	13, // 6: cortex.axon.tunnel.v2.ClientHello.metadata:type_name -> cortex.axon.tunnel.v2.ClientHello.MetadataEntry
+	9,  // 7: cortex.axon.tunnel.v2.CallFrame.start:type_name -> cortex.axon.tunnel.v2.CallStart
+	10, // 8: cortex.axon.tunnel.v2.CallFrame.data:type_name -> cortex.axon.tunnel.v2.CallData
+	11, // 9: cortex.axon.tunnel.v2.CallFrame.end:type_name -> cortex.axon.tunnel.v2.CallEnd
+	12, // 10: cortex.axon.tunnel.v2.CallFrame.cancel:type_name -> cortex.axon.tunnel.v2.CallCancel
+	14, // 11: cortex.axon.tunnel.v2.CallStart.pseudo_headers:type_name -> cortex.axon.tunnel.v2.CallStart.PseudoHeadersEntry
+	15, // 12: cortex.axon.tunnel.v2.CallStart.headers:type_name -> cortex.axon.tunnel.v2.CallStart.HeadersEntry
 	0,  // 13: cortex.axon.tunnel.v2.CallStart.kind:type_name -> cortex.axon.tunnel.v2.CallStart.Kind
-	14, // 14: cortex.axon.tunnel.v2.CallEnd.trailers:type_name -> cortex.axon.tunnel.v2.CallEnd.TrailersEntry
-	1,  // 15: cortex.axon.tunnel.v2.TunnelService.Tunnel:input_type -> cortex.axon.tunnel.v2.ClientFrame
-	2,  // 16: cortex.axon.tunnel.v2.TunnelService.Tunnel:output_type -> cortex.axon.tunnel.v2.ServerFrame
-	16, // [16:17] is the sub-list for method output_type
-	15, // [15:16] is the sub-list for method input_type
-	15, // [15:15] is the sub-list for extension type_name
-	15, // [15:15] is the sub-list for extension extendee
-	0,  // [0:15] is the sub-list for field type_name
+	16, // 14: cortex.axon.tunnel.v2.CallEnd.trailers:type_name -> cortex.axon.tunnel.v2.CallEnd.TrailersEntry
+	1,  // 15: cortex.axon.tunnel.v2.CallCancel.stage:type_name -> cortex.axon.tunnel.v2.CallCancel.Stage
+	2,  // 16: cortex.axon.tunnel.v2.CallCancel.cause:type_name -> cortex.axon.tunnel.v2.CallCancel.Cause
+	3,  // 17: cortex.axon.tunnel.v2.TunnelService.Tunnel:input_type -> cortex.axon.tunnel.v2.ClientFrame
+	4,  // 18: cortex.axon.tunnel.v2.TunnelService.Tunnel:output_type -> cortex.axon.tunnel.v2.ServerFrame
+	18, // [18:19] is the sub-list for method output_type
+	17, // [17:18] is the sub-list for method input_type
+	17, // [17:17] is the sub-list for extension type_name
+	17, // [17:17] is the sub-list for extension extendee
+	0,  // [0:17] is the sub-list for field type_name
 }
 
 func init() { file_tunnel_proto_init() }
@@ -1083,7 +1286,7 @@ func file_tunnel_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_tunnel_proto_rawDesc), len(file_tunnel_proto_rawDesc)),
-			NumEnums:      1,
+			NumEnums:      3,
 			NumMessages:   14,
 			NumExtensions: 0,
 			NumServices:   1,

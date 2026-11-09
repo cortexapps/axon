@@ -183,6 +183,26 @@ the backpressure, and it needs no configuration: `dispatch.acquire_wait_ms`
 and `dispatch.all_busy` on the server report it directly, and are what
 distinguish a saturated tunnel from a slow upstream.
 
+A dispatch that fails says why. The server's `Dispatch failed` log line, the
+`dispatch.failures` counter, and the `X-Axon-Dispatch-Failure` response header
+carry a cause:
+
+| Cause | Meaning |
+|-------|---------|
+| `streams_exhausted` | Every stream for the token on that server stayed busy until the deadline. The log names the calls holding them (`holders`) and the per-instance split (`tokenInstances`). |
+| `upstream_slow` | The agent sent the request upstream and no headers came back in time. `upstreamHost` and `agentStageElapsed` say where and for how long. |
+| `upstream_error` | The upstream failed outright. |
+| `agent_at_capacity` | The call queued for the agent's own in-flight capacity and never got it. |
+| `agent_unresponsive` | The server cancelled the call and the agent did not answer within `AGENT_REPORT_GRACE`. |
+| `route_rejected`, `agent_shutdown`, `tunnel_error`, `no_tunnel` | As named. |
+
+`X-Axon-Dispatch-Phase` says whether the call ever got a stream (`acquire`) or
+was with the agent (`awaiting_response`). When the server gives up on a call
+the agent has, it holds the stream for up to `AGENT_REPORT_GRACE` (default
+`1s`) for the agent's account of where the call was. The response goes out
+first, so its header can only say `awaiting_agent`; the log line carries the
+final cause.
+
 The design, wire protocol, and rollout plan are documented in
 [docs/design/grpc-tunnel-v2.md](docs/design/grpc-tunnel-v2.md).
 

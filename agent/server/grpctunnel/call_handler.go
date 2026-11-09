@@ -7,10 +7,12 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	pb "github.com/cortexapps/axon/.generated/proto/github.com/cortexapps/axon/tunnelpb"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 // agentCall tracks one in-flight call received over a tunnel stream.
@@ -21,6 +23,12 @@ type agentCall struct {
 	bodyW *io.PipeWriter
 	// cancel aborts the call's context (backend request included).
 	cancel context.CancelFunc
+	// serverCancelled is set when the server sent CallCancel, so the call's
+	// own CallCancel can say the server ended it rather than the upstream
+	// failing or the agent's deadline passing -- all three end in the same
+	// context error.
+	serverCancelled atomic.Bool
+	progress        callProgress
 }
 
 // callTable tracks the in-flight calls on one stream. The server sends at
@@ -126,6 +134,7 @@ func (tc *tunnelClient) handleCallFrame(sc *streamCtx, table *callTable, frame *
 		// written its log lines. An entry in the table has to mean a
 		// goroutine is still running, which is what the heartbeat check
 		// relies on and what the test barrier waits for.
+		c.serverCancelled.Store(true)
 		c.bodyW.CloseWithError(fmt.Errorf("cancelled by server: %s", body.Cancel.Reason))
 		c.cancel()
 	}
@@ -159,7 +168,7 @@ func (tc *tunnelClient) startCall(sc *streamCtx, table *callTable, callID string
 	ctx, cancel := context.WithTimeout(parent, timeout)
 
 	bodyR, bodyW := io.Pipe()
-	c := &agentCall{id: callID, bodyW: bodyW, cancel: cancel}
+	c := &agentCall{id: callID, bodyW: bodyW, cancel: cancel, progress: newCallProgress(time.Now())}
 	if !table.add(c) {
 		cancel()
 		bodyW.CloseWithError(fmt.Errorf("duplicate call id"))
@@ -203,21 +212,27 @@ func (tc *tunnelClient) startCall(sc *streamCtx, table *callTable, callID string
 				tc.requestsRejected.Inc()
 				tc.requestsTotal.WithLabelValues(start.PseudoHeaders[":method"], "503").Inc()
 				bodyR.CloseWithError(ctx.Err())
-				tc.sendCancel(sc.sendFn, callID, http.StatusServiceUnavailable,
-					"timed out waiting for in-flight capacity")
+				cause := tc.stopCause(ctx, c)
+				if cause == pb.CallCancel_AGENT_TIMEOUT {
+					cause = pb.CallCancel_CAPACITY
+				}
+				tc.sendCallCancel(sc.sendFn, callID, c.progress.report(http.StatusServiceUnavailable,
+					"timed out waiting for in-flight capacity", cause))
 				return
 			}
 		}
 
-		tc.runCall(ctx, sc, callID, start, bodyR)
+		tc.runCall(ctx, sc, c, start, bodyR)
 	}()
 }
 
 // runCall routes and executes one call, streaming the response back.
-func (tc *tunnelClient) runCall(ctx context.Context, sc *streamCtx, callID string, start *pb.CallStart, bodyR *io.PipeReader) {
+func (tc *tunnelClient) runCall(ctx context.Context, sc *streamCtx, c *agentCall, start *pb.CallStart, bodyR *io.PipeReader) {
+	callID := c.id
 	method := start.PseudoHeaders[":method"]
 	startTime := time.Now()
 
+	c.progress.enter(pb.CallCancel_ROUTING)
 	breq, err := tc.router.Route(start)
 	if err != nil {
 		bodyR.CloseWithError(err)
@@ -229,25 +244,38 @@ func (tc *tunnelClient) runCall(ctx context.Context, sc *streamCtx, callID strin
 			zap.String("path", start.PseudoHeaders[":path"]),
 			zap.Error(err),
 		)
-		tc.sendCancel(sc.sendFn, callID, code, reason)
+		tc.sendCallCancel(sc.sendFn, callID, c.progress.report(code, reason, pb.CallCancel_ROUTE_REJECTED))
 		return
 	}
 	breq.Body = bodyR
+	if breq.URL != nil {
+		c.progress.upstreamHost = breq.URL.Host
+	}
 
+	c.progress.enter(pb.CallCancel_AWAITING_UPSTREAM_HEADERS)
 	resp, err := tc.backend.Do(ctx, breq)
 	if err != nil {
 		bodyR.CloseWithError(err)
 		tc.requestsTotal.WithLabelValues(method, "502").Inc()
-		tc.logger.Error("Call execution failed",
+		cause := tc.stopCause(ctx, c)
+		// Only an upstream that failed is an error of ours to chase; a call
+		// the server gave up on, or that ran out its own deadline, is the
+		// upstream being slow, and the server logs the failure as well.
+		level := zapcore.WarnLevel
+		if cause == pb.CallCancel_UPSTREAM_ERROR {
+			level = zapcore.ErrorLevel
+		}
+		tc.logger.Log(level, "Call execution failed", append([]zap.Field{
 			zap.String("callId", callID),
 			zap.String("method", method),
 			zap.String("targetURL", breq.URL.String()),
 			zap.Error(err),
-		)
-		tc.sendCancel(sc.sendFn, callID, http.StatusBadGateway, err.Error())
+		}, c.progress.fields(cause)...)...)
+		tc.sendCallCancel(sc.sendFn, callID, c.progress.report(http.StatusBadGateway, err.Error(), cause))
 		return
 	}
 	defer resp.Body.Close()
+	c.progress.enter(pb.CallCancel_STREAMING_BODY)
 
 	tc.requestsTotal.WithLabelValues(method, fmt.Sprintf("%d", resp.StatusCode)).Inc()
 
@@ -311,9 +339,11 @@ func (tc *tunnelClient) runCall(ctx context.Context, sc *streamCtx, callID strin
 			break
 		}
 		if readErr != nil {
-			tc.logger.Warn("Response body read failed mid-stream",
-				zap.String("callId", callID), zap.Error(readErr))
-			tc.sendCancel(sc.sendFn, callID, 0, fmt.Sprintf("upstream read failed: %v", readErr))
+			cause := tc.stopCause(ctx, c)
+			tc.logger.Warn("Response body read failed mid-stream", append([]zap.Field{
+				zap.String("callId", callID), zap.Error(readErr),
+			}, c.progress.fields(cause)...)...)
+			tc.sendCallCancel(sc.sendFn, callID, c.progress.report(0, fmt.Sprintf("upstream read failed: %v", readErr), cause))
 			return
 		}
 	}
@@ -336,11 +366,17 @@ func (tc *tunnelClient) runCall(ctx context.Context, sc *streamCtx, callID strin
 	tc.requestDuration.WithLabelValues(method).Observe(float64(time.Since(startTime).Milliseconds()))
 }
 
-// sendCancel sends a CallCancel with an HTTP status hint.
+// sendCancel sends a CallCancel with an HTTP status hint, for a call that
+// never got as far as having a stage.
 func (tc *tunnelClient) sendCancel(sendFn sendFunc, callID string, code int32, reason string) {
+	tc.sendCallCancel(sendFn, callID, &pb.CallCancel{Code: code, Reason: reason})
+}
+
+// sendCallCancel sends cancel for callID.
+func (tc *tunnelClient) sendCallCancel(sendFn sendFunc, callID string, cancel *pb.CallCancel) {
 	_ = sendFn(&pb.ClientFrame{Msg: &pb.ClientFrame_Call{Call: &pb.CallFrame{
 		CallId: callID,
-		Body:   &pb.CallFrame_Cancel{Cancel: &pb.CallCancel{Code: code, Reason: reason}},
+		Body:   &pb.CallFrame_Cancel{Cancel: cancel},
 	}}})
 }
 

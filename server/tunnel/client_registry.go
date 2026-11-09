@@ -3,6 +3,8 @@ package tunnel
 import (
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -427,6 +429,62 @@ func (r *ClientRegistry) AcquireIdleStream(token broker.Token) (handle *StreamHa
 	}
 
 	return nil, true
+}
+
+// StreamSnapshot is a token's streams on this server at one moment: how many
+// there are, how many were carrying a call, and how they split across the
+// agent instances that opened them. It exists to explain a failed dispatch,
+// so it is taken only after one has failed.
+type StreamSnapshot struct {
+	Streams   int
+	Busy      int
+	Instances []InstanceStreams
+}
+
+// Idle is the streams that were free to take a call.
+func (s StreamSnapshot) Idle() int { return s.Streams - s.Busy }
+
+// InstanceStreams is one agent instance's share of a token's streams.
+type InstanceStreams struct {
+	InstanceID string
+	Streams    int
+	Busy       int
+}
+
+// Snapshot reports the token's streams on this server. Busy comes from each
+// stream's own flag, not the idle stack, which is only a hint. Instances are
+// sorted by ID so the same state always logs the same way. A token with no
+// streams here returns the zero snapshot.
+func (r *ClientRegistry) Snapshot(token broker.Token) StreamSnapshot {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	entry, ok := r.entries[token.Hashed()]
+	if !ok {
+		return StreamSnapshot{}
+	}
+	snap := StreamSnapshot{Streams: len(entry.Streams)}
+	byInstance := make(map[string]*InstanceStreams, len(entry.instances))
+	for _, s := range entry.Streams {
+		inst := byInstance[s.Identity.InstanceID]
+		if inst == nil {
+			inst = &InstanceStreams{InstanceID: s.Identity.InstanceID}
+			byInstance[s.Identity.InstanceID] = inst
+		}
+		inst.Streams++
+		if s.Busy() {
+			inst.Busy++
+			snap.Busy++
+		}
+	}
+	snap.Instances = make([]InstanceStreams, 0, len(byInstance))
+	for _, inst := range byInstance {
+		snap.Instances = append(snap.Instances, *inst)
+	}
+	slices.SortFunc(snap.Instances, func(a, b InstanceStreams) int {
+		return strings.Compare(a.InstanceID, b.InstanceID)
+	})
+	return snap
 }
 
 // SetBrokerServerRegistered marks a token as successfully registered with BROKER_SERVER.
