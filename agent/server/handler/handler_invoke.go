@@ -19,7 +19,18 @@ type Invocable interface {
 	Complete(result string, err error) error
 	Done() <-chan struct{}
 	GetResult() (string, error)
+
+	// ClaimDispatch and ClaimExpired decide, exactly once, whether a queued
+	// invocation was sent to a client or expired before one picked it up.
+	ClaimDispatch() bool
+	ClaimExpired() bool
 }
+
+const (
+	invokeQueued int32 = iota
+	invokeDispatched
+	invokeExpired
+)
 
 type HandlerInvoke struct {
 	Id        string
@@ -28,6 +39,7 @@ type HandlerInvoke struct {
 	Args      map[string]string
 	Timeout   time.Duration
 	Timestamp time.Time
+	Attempt   int32
 
 	result string
 	err    error
@@ -35,6 +47,7 @@ type HandlerInvoke struct {
 
 	started  *atomic.Bool
 	finished *atomic.Bool
+	state    *atomic.Int32
 }
 
 func NewHandlerInvoke(
@@ -49,10 +62,12 @@ func NewHandlerInvoke(
 		Args:      args,
 		Timeout:   entry.Timeout(),
 		Timestamp: time.Now(),
+		Attempt:   1,
 
 		done:     make(chan struct{}),
 		started:  &atomic.Bool{},
 		finished: &atomic.Bool{},
+		state:    &atomic.Int32{},
 	}
 }
 
@@ -107,6 +122,14 @@ func (h HandlerInvoke) Done() <-chan struct{} {
 	return h.done
 }
 
+func (h HandlerInvoke) ClaimDispatch() bool {
+	return h.state.CompareAndSwap(invokeQueued, invokeDispatched)
+}
+
+func (h HandlerInvoke) ClaimExpired() bool {
+	return h.state.CompareAndSwap(invokeQueued, invokeExpired)
+}
+
 func (h HandlerInvoke) ToDispatchInvoke() *pb.DispatchHandlerInvoke {
 	return &pb.DispatchHandlerInvoke{
 		InvocationId: h.Id,
@@ -116,5 +139,6 @@ func (h HandlerInvoke) ToDispatchInvoke() *pb.DispatchHandlerInvoke {
 		Reason:       h.Reason,
 		Args:         h.Args,
 		TimeoutMs:    int32(h.Entry.Timeout().Milliseconds()),
+		Attempt:      h.Attempt,
 	}
 }

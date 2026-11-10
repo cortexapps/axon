@@ -36,6 +36,9 @@ type Agent struct {
 	logger       *zap.Logger
 	sleepOnError time.Duration
 	done         chan struct{}
+
+	preDispatch  PreDispatchHook
+	postDispatch PostDispatchHook
 }
 
 // NewAxonAgent creates a new AxonAgent with the specified options.  You
@@ -58,6 +61,8 @@ func NewAxonAgent(options ...Option) *Agent {
 		logger:       logger,
 		sleepOnError: ao.sleepOnError,
 		done:         make(chan struct{}),
+		preDispatch:  ao.preDispatch,
+		postDispatch: ao.postDispatch,
 	}
 
 	a.logger = logger
@@ -247,6 +252,23 @@ func (a *Agent) Run(ctx context.Context) error {
 
 	runningHandlers := sync.WaitGroup{}
 
+	// Failure events stop after the last handler finishes, so a hook that
+	// retries from a handler still has a live agent connection.
+	eventsCtx, stopEvents := context.WithCancel(context.Background())
+	eventsDone := make(chan struct{})
+	if a.postDispatch != nil {
+		go func() {
+			defer close(eventsDone)
+			a.runFailureEvents(eventsCtx)
+		}()
+	} else {
+		close(eventsDone)
+	}
+	defer func() {
+		stopEvents()
+		<-eventsDone
+	}()
+
 	go func() {
 		select {
 		case <-ctx.Done():
@@ -287,6 +309,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		err = stream.Send(&pb.DispatchRequest{
 			DispatchId:    a.DispatchId,
 			ClientVersion: version.Client,
+			FailureEvents: a.postDispatch != nil,
 		})
 		if err != nil {
 			a.logger.Error("failed to send registration id", zap.Error(err))
@@ -399,45 +422,76 @@ func (a *Agent) invokeHandler(ctx context.Context, invoke *pb.DispatchHandlerInv
 		return
 	}
 
-	done := make(chan struct{})
+	info := newInvocationInfo(invoke)
+	a.runPreDispatch(info)
 
 	report := &pb.ReportInvocationRequest{
 		HandlerInvoke:        invoke,
 		StartClientTimestamp: timestamppb.Now(),
 	}
+	start := time.Now()
 
-	go func() {
-		apiStub := a.client.api()
-
-		wrapped := zapcore.RegisterHooks(a.logger.Core(), func(entry zapcore.Entry) error {
-			report.Logs = append(report.Logs, &pb.Log{
-				Level:     entry.Level.CapitalString(),
-				Message:   entry.Message,
-				Timestamp: timestamppb.New(entry.Time),
-			})
-			return nil
+	// The handler keeps running after a timeout, so it must not touch the
+	// report: logs go through a lock and the outcome over a channel.
+	var logsMu sync.Mutex
+	var logs []*pb.Log
+	wrapped := zapcore.RegisterHooks(a.logger.Core(), func(entry zapcore.Entry) error {
+		logsMu.Lock()
+		defer logsMu.Unlock()
+		logs = append(logs, &pb.Log{
+			Level:     entry.Level.CapitalString(),
+			Message:   entry.Message,
+			Timestamp: timestamppb.New(entry.Time),
 		})
+		return nil
+	})
 
-		loggerFromCore := zap.New(wrapped)
+	loggerFromCore := zap.New(wrapped)
+	hctx := NewHandlerContext(invoke, ctx, a.client.api(), loggerFromCore)
 
-		handlerContext := NewHandlerContext(invoke, ctx, apiStub, loggerFromCore)
-		result, duration, err := a.executeHandlerWithRecover(handlerInfo, handlerContext)
-		report.DurationMs = int32(duration.Milliseconds())
-
-		if err != nil {
-			a.setReportError(report, "unexpected", err)
-		} else {
-			a.setReportResult(report, result)
-		}
-
-		close(done)
+	type handlerOutcome struct {
+		result   any
+		duration time.Duration
+		err      error
+	}
+	done := make(chan handlerOutcome, 1)
+	go func() {
+		result, duration, err := a.executeHandlerWithRecover(handlerInfo, hctx)
+		done <- handlerOutcome{result, duration, err}
 	}()
 
+	var failure *Failure
 	select {
-	case <-done:
+	case out := <-done:
+		report.DurationMs = int32(out.duration.Milliseconds())
+		if out.err != nil {
+			a.setReportError(report, "unexpected", out.err)
+			failure = &Failure{
+				Reason:  pb.FailureReason_HANDLER_ERROR,
+				Source:  pb.FailureSource_APPLICATION,
+				Message: out.err.Error(),
+			}
+		} else {
+			a.setReportResult(report, out.result)
+		}
 	case <-ctx.Done():
+		report.DurationMs = int32(time.Since(start).Milliseconds())
 		a.setReportError(report, "timeout", nil)
+		failure = &Failure{
+			Reason:  pb.FailureReason_TIMEOUT,
+			Source:  pb.FailureSource_APPLICATION,
+			Message: fmt.Sprintf("handler did not finish within %dms", invoke.TimeoutMs),
+		}
+		if hc, ok := hctx.(*handlerContext); ok && hc.calls.blockedOnApi() {
+			failure.Source = pb.FailureSource_RUNTIME
+			failure.Message += " while waiting on a Cortex API call"
+		}
 	}
+
+	logsMu.Lock()
+	report.Logs = logs
+	logs = nil
+	logsMu.Unlock()
 
 	if report.GetError() == nil {
 		a.logger.Debug(
@@ -457,6 +511,10 @@ func (a *Agent) invokeHandler(ctx context.Context, invoke *pb.DispatchHandlerInv
 	if err != nil {
 		a.logger.Error("failed to report invocation", zap.Error(err))
 	}
+
+	// After the report, so a slow hook can't make the agent decide this
+	// invocation was never answered and report the failure a second time.
+	a.runPostDispatch(info, failure)
 }
 
 func (a *Agent) executeHandlerWithRecover(handler *handlerInfo, ctx HandlerContext) (result any, d time.Duration, err error) {

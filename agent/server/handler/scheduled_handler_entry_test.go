@@ -287,3 +287,23 @@ func (fc *fakeCron) Add(spec string, cmd func()) (string, error) {
 func (fc *fakeCron) Remove(id string) {
 	delete(fc.handlers, id)
 }
+
+func (fhm *fakeManager) SubscribeFailures(dispatchId string) {
+	panic("not implemented") // TODO: Implement
+}
+
+func (fhm *fakeManager) EmitFailure(invoke *pb.DispatchHandlerInvoke, failure *pb.InvocationFailure) {
+	panic("not implemented") // TODO: Implement
+}
+
+func (fhm *fakeManager) NextFailure(ctx context.Context, dispatchId string) (*pb.DispatchEvent, error) {
+	panic("not implemented") // TODO: Implement
+}
+
+func (fhm *fakeManager) RequeueFailure(dispatchId string, ev *pb.DispatchEvent) {
+	panic("not implemented") // TODO: Implement
+}
+
+func (fhm *fakeManager) Retrigger(invoke *pb.DispatchHandlerInvoke) (string, error) {
+	panic("not implemented") // TODO: Implement
+}

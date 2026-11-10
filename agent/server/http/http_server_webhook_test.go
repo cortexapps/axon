@@ -89,6 +89,7 @@ func TestHandleWebhookRejectsWhenQueueIsFull(t *testing.T) {
 	_, err := manager.RegisterHandler("1", "test", time.Minute, option)
 	require.NoError(t, err)
 	require.NoError(t, manager.Start("1"))
+	manager.SubscribeFailures("1")
 
 	webhookHandler := NewWebhookHandler(config.AgentConfig{}, logger, manager, nil)
 	router := mux.NewRouter()
@@ -121,4 +122,14 @@ func TestHandleWebhookRejectsWhenQueueIsFull(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		require.Fail(t, "webhook request hung on a full queue instead of returning 503")
 	}
+
+	// The refused webhook still reaches the client's failure hook, flagged so
+	// it can tell the sender was asked to retry.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ev, err := manager.NextFailure(ctx, "1")
+	require.NoError(t, err)
+	require.Equal(t, pb.FailureReason_NO_RESOURCES, ev.Failure.Reason)
+	require.True(t, ev.Failure.CallerRejected)
+	require.Equal(t, "payload", ev.Invoke.Args["body"])
 }

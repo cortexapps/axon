@@ -45,6 +45,10 @@ type AxonAgent struct {
 	historyManager      handler.HistoryManager
 }
 
+// reportGrace is how long past an invocation's timeout the agent waits for
+// the client's report before deciding the client never answered.
+var reportGrace = 5 * time.Second
+
 type inflightRequest struct {
 	invocable handler.Invocable
 	sentAt    time.Time
@@ -133,6 +137,12 @@ func (s *AxonAgent) Dispatch(stream pb.AxonAgent_DispatchServer) error {
 			return err
 		}
 
+		// Subscribe before any handler starts, so a failure can't happen
+		// before the client's DispatchEvents stream connects and be lost.
+		if req.FailureEvents {
+			s.Manager.SubscribeFailures(req.DispatchId)
+		}
+
 		s.sendInvocations(req.DispatchId, stream)
 	}
 
@@ -187,6 +197,12 @@ func (s *AxonAgent) sendInvocations(dispatchId string, stream pb.AxonAgent_Dispa
 				continue
 			}
 
+			if !invoke.ClaimDispatch() {
+				// It expired while queued and its failure was already
+				// reported; sending it now would run stale work.
+				continue
+			}
+
 			now := time.Now()
 			msg := invoke.ToDispatchInvoke()
 
@@ -205,16 +221,25 @@ func (s *AxonAgent) sendInvocations(dispatchId string, stream pb.AxonAgent_Dispa
 				sentAt:    now,
 			})
 			go func(requestId string) {
-				<-time.After(time.Duration(msg.TimeoutMs) * time.Millisecond)
-				s.ReportInvocation(context.Background(), &pb.ReportInvocationRequest{
+				// The grace lets a client that enforces the timeout itself
+				// report it first, so the failure is described once, by the
+				// side that saw it.
+				<-time.After(time.Duration(msg.TimeoutMs)*time.Millisecond + reportGrace)
+				message := fmt.Sprintf("handler did not report a result within %dms", msg.TimeoutMs)
+				completed := s.completeInvocation(context.Background(), &pb.ReportInvocationRequest{
 					HandlerInvoke: msg,
 					Message: &pb.ReportInvocationRequest_Error{Error: &pb.Error{
-						Code: "timeout",
-						Message: fmt.Sprintf(
-							"handler did not report a result within %dms",
-							msg.TimeoutMs),
+						Code:    "timeout",
+						Message: message,
 					}},
 				})
+				if completed {
+					s.Manager.EmitFailure(msg, &pb.InvocationFailure{
+						Reason:  pb.FailureReason_TIMEOUT,
+						Source:  pb.FailureSource_RUNTIME,
+						Message: message,
+					})
+				}
 			}(msg.InvocationId)
 		}
 	}()
@@ -252,14 +277,21 @@ func describeError(e *pb.Error) string {
 // ReportInvocation is called by the client to report the result of an invocation, which will
 // log the result of an invocation into the history path.
 func (s *AxonAgent) ReportInvocation(ctx context.Context, req *pb.ReportInvocationRequest) (*pb.ReportInvocationResponse, error) {
-	s.inflightLock.RLock()
+	s.completeInvocation(ctx, req)
+	return &pb.ReportInvocationResponse{}, nil
+}
+
+// completeInvocation records the result of an outstanding invocation. It
+// returns false when the invocation was already completed by an earlier report.
+func (s *AxonAgent) completeInvocation(ctx context.Context, req *pb.ReportInvocationRequest) bool {
+	s.inflightLock.Lock()
 	ifr, ok := s.outstandingRequests[req.HandlerInvoke.InvocationId]
-	s.inflightLock.RUnlock()
+	delete(s.outstandingRequests, req.HandlerInvoke.InvocationId)
+	s.inflightLock.Unlock()
 
 	if !ok {
-		return &pb.ReportInvocationResponse{}, nil
+		return false
 	}
-	defer s.setOutstandingRequest(req.HandlerInvoke.InvocationId, nil)
 
 	var requestErr error
 
@@ -278,7 +310,50 @@ func (s *AxonAgent) ReportInvocation(ctx context.Context, req *pb.ReportInvocati
 	if err != nil {
 		s.logger.Error("failed to write history file", zap.Error(err))
 	}
-	return &pb.ReportInvocationResponse{}, nil
+	return true
+}
+
+// DispatchEvents streams the agent's failure events for a dispatch id. An
+// event whose send fails goes back on the queue for the next stream.
+func (s *AxonAgent) DispatchEvents(req *pb.DispatchRequest, stream pb.AxonAgent_DispatchEventsServer) error {
+	if s.Manager == nil {
+		return fmt.Errorf("handler manager is not initialized")
+	}
+
+	s.logger.Info("client subscribed to failure events", zap.String("dispatch-id", req.DispatchId))
+	s.Manager.SubscribeFailures(req.DispatchId)
+	for {
+		ev, err := s.Manager.NextFailure(stream.Context(), req.DispatchId)
+		if err != nil {
+			return nil
+		}
+		if err := stream.Send(ev); err != nil {
+			s.Manager.RequeueFailure(req.DispatchId, ev)
+			s.logger.Warn("failed to send failure event, requeued",
+				zap.String("dispatch-id", req.DispatchId), zap.Error(err))
+			return err
+		}
+	}
+}
+
+// RetryInvocation queues a failed invocation again as its next attempt.
+func (s *AxonAgent) RetryInvocation(ctx context.Context, req *pb.RetryInvocationRequest) (*pb.RetryInvocationResponse, error) {
+	if s.Manager == nil {
+		return nil, fmt.Errorf("handler manager is not initialized")
+	}
+	if req.Invoke == nil {
+		return &pb.RetryInvocationResponse{Error: &pb.Error{Code: "invalid", Message: "invoke is required"}}, nil
+	}
+
+	id, err := s.Manager.Retrigger(req.Invoke)
+	if err != nil {
+		s.logger.Warn("retry rejected",
+			zap.String("handler", req.Invoke.HandlerName),
+			zap.String("invocation-id", req.Invoke.InvocationId),
+			zap.Error(err))
+		return &pb.RetryInvocationResponse{Error: &pb.Error{Code: "rejected", Message: err.Error()}}, nil
+	}
+	return &pb.RetryInvocationResponse{InvocationId: id}, nil
 }
 
 // ListHandlers returns a list of all registered handlers

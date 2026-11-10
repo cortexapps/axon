@@ -21,6 +21,8 @@ type clientResult struct {
 	done   bool
 	err    error
 	result string
+	// noReport skips ReportInvocation, like a client that hung.
+	noReport bool
 }
 
 type testAxonClient struct {
@@ -30,6 +32,8 @@ type testAxonClient struct {
 	callback   clientCallback
 	finished   bool
 	t          *testing.T
+
+	failureEvents bool
 }
 
 func NewTestAxonClient(t *testing.T, port int32, callback clientCallback) *testAxonClient {
@@ -76,7 +80,8 @@ func (c *testAxonClient) Run(ctx context.Context) error {
 	}
 
 	dispatchReq := &pb.DispatchRequest{
-		DispatchId: c.dispatchId,
+		DispatchId:    c.dispatchId,
+		FailureEvents: c.failureEvents,
 	}
 
 	logger.Info("sending dispatch request")
@@ -103,7 +108,7 @@ func (c *testAxonClient) Run(ctx context.Context) error {
 
 		end := time.Now()
 		invoke := m.GetInvoke()
-		if invoke != nil {
+		if invoke != nil && !result.noReport {
 
 			report := &pb.ReportInvocationRequest{
 				HandlerInvoke:        invoke,
@@ -126,6 +131,10 @@ func (c *testAxonClient) Run(ctx context.Context) error {
 			}
 
 			_, err = c.client.ReportInvocation(ctx, report)
+			if ctx.Err() != nil {
+				// The test finished while this report was in flight.
+				return nil
+			}
 			require.NoError(c.t, err)
 		}
 	}
@@ -151,4 +160,12 @@ func (c *testAxonClient) GetHandlerHistory(ctx context.Context, name string) ([]
 		return nil, err
 	}
 	return resp.History, nil
+}
+
+func (c *testAxonClient) DispatchEvents(ctx context.Context) (grpc.ServerStreamingClient[pb.DispatchEvent], error) {
+	return c.client.DispatchEvents(ctx, &pb.DispatchRequest{DispatchId: c.dispatchId, FailureEvents: true})
+}
+
+func (c *testAxonClient) RetryInvocation(ctx context.Context, invoke *pb.DispatchHandlerInvoke) (*pb.RetryInvocationResponse, error) {
+	return c.client.RetryInvocation(ctx, &pb.RetryInvocationRequest{Invoke: invoke})
 }

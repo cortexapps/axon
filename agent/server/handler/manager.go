@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	pb "github.com/cortexapps/axon/.generated/proto/github.com/cortexapps/axon"
@@ -22,6 +23,14 @@ const dispatchQueueDepth = 100
 // response rather than accepting work that will only time out.
 var ErrDispatchQueueFull = errors.New("dispatch queue is full")
 
+// maxRetryAttempts caps RetryInvocation. The failure hook sees the attempt
+// number and normally decides when to stop; this only bounds a hook that
+// always retries.
+const maxRetryAttempts = 5
+
+// ErrRetryLimit means an invocation has used all of its attempts.
+var ErrRetryLimit = errors.New("retry limit reached")
+
 type Manager interface {
 	RegisterHandler(dispatchId string, name string, timeout time.Duration, options ...*pb.HandlerOption) (string, error)
 	UnregisterHandler(id string)
@@ -34,6 +43,18 @@ type Manager interface {
 	Dequeue(ctx context.Context, id string, waitTime time.Duration) (Invocable, error)
 	Close() error
 	IsFinished() bool
+
+	// SubscribeFailures starts keeping failure events for a dispatch id.
+	// Events for a dispatch id nobody subscribed are logged and discarded.
+	SubscribeFailures(dispatchId string)
+	EmitFailure(invoke *pb.DispatchHandlerInvoke, failure *pb.InvocationFailure)
+	// NextFailure blocks until a failure event is available or ctx is done.
+	NextFailure(ctx context.Context, dispatchId string) (*pb.DispatchEvent, error)
+	// RequeueFailure puts back an event that could not be delivered.
+	RequeueFailure(dispatchId string, ev *pb.DispatchEvent)
+	// Retrigger queues a failed invocation again as its next attempt and
+	// returns the new invocation id.
+	Retrigger(invoke *pb.DispatchHandlerInvoke) (string, error)
 }
 
 type handlerManager struct {
@@ -47,6 +68,10 @@ type handlerManager struct {
 	invokeCounter       *prometheus.CounterVec
 	queueDepthGauge     *prometheus.GaugeVec
 	handlerLatencyGauge *prometheus.HistogramVec
+	failuresPending     prometheus.Gauge
+
+	failureLock   sync.Mutex
+	failureQueues map[string]*failureQueue
 }
 
 func NewHandlerManager(logger *zap.Logger, cron cron.Cron, metrics *prometheus.Registry) Manager {
@@ -57,6 +82,7 @@ func NewHandlerManager(logger *zap.Logger, cron cron.Cron, metrics *prometheus.R
 		dispatchQueues:      make(map[string]chan Invocable),
 		cron:                cron,
 		outstandingRequests: make(map[string]Invocable),
+		failureQueues:       make(map[string]*failureQueue),
 		invokeCounter: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
 				Name: "axon_handler_invokes",
@@ -79,12 +105,19 @@ func NewHandlerManager(logger *zap.Logger, cron cron.Cron, metrics *prometheus.R
 			},
 			[]string{"handler", "result"},
 		),
+		failuresPending: prometheus.NewGauge(
+			prometheus.GaugeOpts{
+				Name: "axon_handler_failure_events_pending",
+				Help: "Number of failure events waiting for a client to read them",
+			},
+		),
 		done: make(chan struct{}),
 	}
 	if metrics != nil {
 		metrics.MustRegister(mgr.invokeCounter)
 		metrics.MustRegister(mgr.queueDepthGauge)
 		metrics.MustRegister(mgr.handlerLatencyGauge)
+		metrics.MustRegister(mgr.failuresPending)
 	}
 	return mgr
 }
@@ -260,6 +293,12 @@ func (s *handlerManager) Trigger(handler Invocable) error {
 		s.invokeCounter.WithLabelValues(handlerName, "rejected").Inc()
 		logger.Warn("Dispatch queue is full, rejecting invocation",
 			zap.Int("depth", len(queue)))
+		s.EmitFailure(message.ToDispatchInvoke(), &pb.InvocationFailure{
+			Reason:         pb.FailureReason_NO_RESOURCES,
+			Source:         pb.FailureSource_RUNTIME,
+			Message:        fmt.Sprintf("dispatch queue is full (%d waiting)", len(queue)),
+			CallerRejected: true,
+		})
 		return ErrDispatchQueueFull
 	}
 	s.queueDepthGauge.WithLabelValues(handlerName).Set(float64(len(queue)))
@@ -268,6 +307,15 @@ func (s *handlerManager) Trigger(handler Invocable) error {
 		defer cancel()
 		<-message.Done()
 		result, err := message.GetResult()
+		if errors.Is(err, context.DeadlineExceeded) && message.ClaimExpired() {
+			// No client picked it up in time, so it will never run.
+			s.EmitFailure(message.ToDispatchInvoke(), &pb.InvocationFailure{
+				Reason: pb.FailureReason_NO_RESOURCES,
+				Source: pb.FailureSource_RUNTIME,
+				Message: fmt.Sprintf("expired after %v waiting for a free handler",
+					message.GetEntry().Timeout()),
+			})
+		}
 		s.queueDepthGauge.WithLabelValues(handlerName).Set(float64(len(queue)))
 		s.handlerLatencyGauge.WithLabelValues(handlerName, result).Observe(float64(time.Since(startTime).Milliseconds()))
 		if err != nil {
@@ -280,6 +328,82 @@ func (s *handlerManager) Trigger(handler Invocable) error {
 	}()
 
 	return nil
+}
+
+func (s *handlerManager) SubscribeFailures(dispatchId string) {
+	s.failureQueue(dispatchId, true)
+}
+
+func (s *handlerManager) failureQueue(dispatchId string, create bool) *failureQueue {
+	s.failureLock.Lock()
+	defer s.failureLock.Unlock()
+	q, ok := s.failureQueues[dispatchId]
+	if !ok && create {
+		q = newFailureQueue()
+		s.failureQueues[dispatchId] = q
+	}
+	return q
+}
+
+func (s *handlerManager) EmitFailure(invoke *pb.DispatchHandlerInvoke, failure *pb.InvocationFailure) {
+	logger := s.logger.With(
+		zap.String("handler", invoke.HandlerName),
+		zap.String("invocation-id", invoke.InvocationId),
+		zap.String("reason", failure.Reason.String()),
+		zap.String("source", failure.Source.String()),
+		zap.String("message", failure.Message),
+	)
+	q := s.failureQueue(invoke.DispatchId, false)
+	if q == nil {
+		logger.Warn("Invocation failed, client does not handle failure events")
+		return
+	}
+	logger.Warn("Invocation failed, queueing failure event")
+	q.push(&pb.DispatchEvent{Invoke: invoke, Failure: failure})
+	s.failuresPending.Inc()
+}
+
+func (s *handlerManager) NextFailure(ctx context.Context, dispatchId string) (*pb.DispatchEvent, error) {
+	ev, err := s.failureQueue(dispatchId, true).pop(ctx)
+	if err != nil {
+		return nil, err
+	}
+	s.failuresPending.Dec()
+	return ev, nil
+}
+
+func (s *handlerManager) RequeueFailure(dispatchId string, ev *pb.DispatchEvent) {
+	s.failureQueue(dispatchId, true).pushFront(ev)
+	s.failuresPending.Inc()
+}
+
+func (s *handlerManager) Retrigger(invoke *pb.DispatchHandlerInvoke) (string, error) {
+	attempt := max(invoke.Attempt, 1)
+	if attempt >= maxRetryAttempts {
+		return "", fmt.Errorf("%w: attempt %d of %d", ErrRetryLimit, attempt, maxRetryAttempts)
+	}
+
+	entry := s.handlers[invoke.HandlerId]
+	if entry == nil {
+		// The client re-registered since the invocation was sent, which gives
+		// the handler a new id under the same dispatch id and name.
+		for _, e := range s.handlers {
+			if e.DispatchId() == invoke.DispatchId && e.Name() == invoke.HandlerName {
+				entry = e
+				break
+			}
+		}
+	}
+	if entry == nil {
+		return "", fmt.Errorf("handler not found: %s", invoke.HandlerName)
+	}
+
+	retry := NewHandlerInvoke(entry, invoke.Reason, invoke.Args)
+	retry.Attempt = attempt + 1
+	if err := s.Trigger(retry); err != nil {
+		return "", err
+	}
+	return retry.Id, nil
 }
 
 func (s *handlerManager) getDispatchQueue(DispatchId string) chan Invocable {

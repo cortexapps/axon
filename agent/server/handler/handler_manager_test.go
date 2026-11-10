@@ -110,9 +110,10 @@ func TestTriggerAndDequeue(t *testing.T) {
 	time.Sleep(time.Millisecond * 10)
 	metrics, err := registry.Gather()
 	require.NoError(t, err)
-	require.Equal(t, 3, len(metrics))
+	require.Equal(t, 4, len(metrics))
 
 	expected := []string{
+		"axon_handler_failure_events_pending",
 		"axon_handler_invokes",
 		"axon_handler_latency",
 		"axon_handler_queue_depth",
