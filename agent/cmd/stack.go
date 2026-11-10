@@ -8,6 +8,7 @@ import (
 
 	"github.com/cortexapps/axon/common"
 	"github.com/cortexapps/axon/config"
+	"github.com/cortexapps/axon/memlimit"
 	"github.com/cortexapps/axon/server"
 	cortexHttp "github.com/cortexapps/axon/server/http"
 	"github.com/spf13/cobra"
@@ -67,6 +68,13 @@ var AgentModule = fx.Module("agent",
 		if config.CortexApiToken == "" && !config.DryRun {
 			logger.Fatal("Cannot start agent: either CORTEX_API_TOKEN or DRYRUN is required")
 		}
+	}),
+
+	// Size the Go heap budget from the container the agent was actually given,
+	// so that memory is tuned by sizing the container rather than by an
+	// agent-side setting an operator has to discover.
+	fx.Invoke(func(logger *zap.Logger) {
+		logger.Info("Configuring runtime memory limit", zap.String("result", memlimit.Configure()))
 	}),
 	fx.Invoke(server.NewAxonAgent),
 )
