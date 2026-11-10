@@ -439,7 +439,7 @@ func NewAgentEnvConfig() AgentConfig {
 
 	cfg.GrpcTunnelServer = os.Getenv("GRPC_TUNNEL_SERVER")
 
-	cfg.MaxInflightRequests = 256
+	cfg.MaxInflightRequests = 2048
 	if maxInflight := os.Getenv("MAX_INFLIGHT_REQUESTS"); maxInflight != "" {
 		v, err := strconv.Atoi(maxInflight)
 		if err != nil {

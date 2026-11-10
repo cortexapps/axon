@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand/v2"
@@ -55,21 +56,37 @@ const (
 	failuresBeforeReregister  = 5
 
 	// idleStreamsPerServer is how many streams are kept idle and ready on
-	// each server instance the agent is connected to. It sets how large a
-	// burst is absorbed without waiting for a stream to open — a latency
-	// property, not a capacity one, which is why it is a constant and not a
-	// knob.
+	// each tunnel server the agent is connected to, at rest. It sets how large
+	// a burst is absorbed before growth (coverage.go) has opened more — a
+	// latency property, not a capacity one, which is why it is a constant and
+	// not a knob. Every idle stream costs its tunnel server a heartbeat each
+	// way per interval and a few goroutines, multiplied across every agent
+	// sharing that server, so the resting reserve is kept small -- enough
+	// that a call in flight never makes the next one wait -- and bursts are
+	// met by opening greedily instead. A larger one also proved harder to
+	// place: the balancer favours the nearest zone, so a server that gets one
+	// stream in ten rarely collects several, and the agent ended up giving
+	// such servers up rather than covering them.
 	idleStreamsPerServer = 2
 
 	// maxStreams is the concurrency backstop. Reaching it is not a failure:
 	// the agent stops offering idle streams, the server's dispatch blocks,
 	// and the wait reaches the caller as latency. Without a ceiling the
 	// agent would accept work it cannot do and the queue would move into its
-	// heap, where nothing can see it.
-	maxStreams = 256
+	// heap, where nothing can see it. Streams carry I/O, not work, so the
+	// ceiling is set by what one agent should relay at once -- thousands of
+	// calls a second -- not by the agent's CPU.
+	maxStreams = 2048
 
 	// sizeInterval is how often the stream count is re-evaluated.
 	sizeInterval = time.Second
+
+	// pruneMinAge is how long a stream lives before it may be pruned as
+	// surplus. Growth opens greedily and the balancer places where it likes,
+	// so under sustained load some of what opens lands on servers that do not
+	// need it; pruning those the next tick, while the load that asked for them
+	// is still running, would close and reopen streams every tick.
+	pruneMinAge = 2 * time.Minute
 
 	// streamIdleWindow is how long the agent keeps the streams a burst
 	// needed after the burst has passed. Sizing holds the peak concurrency
@@ -164,6 +181,11 @@ type tunnelClient struct {
 	// is what resize sizes on.
 	peak busyPeak
 
+	// cov is per-tunnel-server coverage state, and coverageFloor the stream
+	// count it holds the target at while a server is short; see coverage.go.
+	cov           coverage
+	coverageFloor atomic.Int32
+
 	// streamLifetime is how long this instance lets a stream live before
 	// recycling it; zero disables recycling. Picked on every Start.
 	streamLifetime time.Duration
@@ -200,6 +222,8 @@ type tunnelClient struct {
 	heartbeatTimeoutsTotal *prometheus.CounterVec
 	tokenRotationsTotal    prometheus.Counter
 	connectErrorsTotal     *prometheus.CounterVec
+	serverStreamsGauge     *prometheus.GaugeVec
+	coverageActions        *prometheus.CounterVec
 }
 
 type tunnelStream struct {
@@ -321,6 +345,29 @@ func NewTunnelClient(p TunnelClientParams) snykbroker.RelayInstanceManager {
 		tc.inflightSem = make(chan struct{}, p.Config.MaxInflightRequests)
 	}
 
+	collectors := tc.initMetrics()
+
+	p.HttpServer.RegisterHandler(tc)
+
+	if p.Registry != nil {
+		p.Registry.MustRegister(collectors...)
+	}
+
+	if p.Lifecycle != nil {
+		p.Lifecycle.Append(fx.Hook{
+			OnStart: func(ctx context.Context) error { return tc.Start() },
+			OnStop:  func(ctx context.Context) error { return tc.Close() },
+		})
+	}
+
+	return tc
+}
+
+// RegisterRoutes implements cortexHttp.Handler. Exposes /restart and
+// /systemcheck under the broker path prefix to preserve the snyk-broker URL
+// shape.
+// initMetrics creates the client's metrics and returns them for registering.
+func (tc *tunnelClient) initMetrics() []prometheus.Collector {
 	tc.connectionsActive = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{Name: "grpc_tunnel_connections_active", Help: "Active gRPC tunnel streams"},
 		[]string{"server_id"},
@@ -359,35 +406,30 @@ func NewTunnelClient(p TunnelClientParams) snykbroker.RelayInstanceManager {
 		[]string{"phase"},
 	)
 
-	p.HttpServer.RegisterHandler(tc)
+	tc.serverStreamsGauge = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{Name: "grpc_tunnel_server_streams", Help: "Tunnel streams on each tunnel server, idle and busy"},
+		[]string{"server_id", "state"},
+	)
+	tc.coverageActions = prometheus.NewCounterVec(
+		prometheus.CounterOpts{Name: "grpc_tunnel_coverage_actions_total", Help: "Streams opened to cover a short tunnel server (fill), or recycled off one given up on (evacuate)"},
+		[]string{"action"},
+	)
 
-	if p.Registry != nil {
-		p.Registry.MustRegister(
-			tc.connectionsActive,
-			tc.requestsTotal,
-			tc.requestsInflight,
-			tc.requestsRejected,
-			tc.reconnectsTotal,
-			tc.requestDuration,
-			tc.heartbeatTimeoutsTotal,
-			tc.tokenRotationsTotal,
-			tc.connectErrorsTotal,
-		)
+	return []prometheus.Collector{
+		tc.connectionsActive,
+		tc.requestsTotal,
+		tc.requestsInflight,
+		tc.requestsRejected,
+		tc.reconnectsTotal,
+		tc.requestDuration,
+		tc.heartbeatTimeoutsTotal,
+		tc.tokenRotationsTotal,
+		tc.connectErrorsTotal,
+		tc.serverStreamsGauge,
+		tc.coverageActions,
 	}
-
-	if p.Lifecycle != nil {
-		p.Lifecycle.Append(fx.Hook{
-			OnStart: func(ctx context.Context) error { return tc.Start() },
-			OnStop:  func(ctx context.Context) error { return tc.Close() },
-		})
-	}
-
-	return tc
 }
 
-// RegisterRoutes implements cortexHttp.Handler. Exposes /restart and
-// /systemcheck under the broker path prefix to preserve the snyk-broker URL
-// shape.
 func (tc *tunnelClient) RegisterRoutes(mux *mux.Router) error {
 	sub := mux.PathPrefix(fmt.Sprintf("%s/broker", cortexHttp.AxonPathRoot)).Subrouter()
 	sub.HandleFunc("/restart", tc.handleRestart)
@@ -421,8 +463,14 @@ func (tc *tunnelClient) handleSystemCheck(w http.ResponseWriter, req *http.Reque
 	active := len(tc.streams)
 	tc.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprintf(w, `{"status":"ok","relay_mode":"grpc-tunnel","streams":%d,"busy":%d,"target":%d}`,
-		active, tc.busySlots.Load(), tc.targetSlots.Load())
+	_ = json.NewEncoder(w).Encode(struct {
+		Status    string          `json:"status"`
+		RelayMode string          `json:"relay_mode"`
+		Streams   int             `json:"streams"`
+		Busy      int32           `json:"busy"`
+		Target    int32           `json:"target"`
+		Servers   []serverSummary `json:"servers"`
+	}{"ok", "grpc-tunnel", active, tc.busySlots.Load(), tc.targetSlots.Load(), tc.cov.summaries(time.Now().UnixNano())})
 }
 
 func (tc *tunnelClient) Start() error {
@@ -469,6 +517,8 @@ func (tc *tunnelClient) resetForStart() {
 	tc.streamLifetime = pickStreamLifetime()
 	tc.observedServers.Store(0)
 	tc.targetSlots.Store(int32(tc.idleReserve()))
+	tc.cov.reset()
+	tc.coverageFloor.Store(0)
 	ctx, cancel := context.WithCancel(context.Background())
 	tc.parentCtx = ctx
 	tc.cancelAll = cancel
@@ -815,6 +865,13 @@ func (tc *tunnelClient) resize() {
 	}
 	desired := busy + tc.idleReserve()
 
+	// Hold whatever coverage needs while a tunnel server is short of its
+	// budget: the streams it opened to reach that server, including the ones
+	// that landed elsewhere, until the server is covered or given up on.
+	if floor := int(tc.coverageFloor.Load()); desired < floor {
+		desired = floor
+	}
+
 	// Never ask for fewer streams than there are connections to anchor.
 	// Without this the target can sit below the anchor count, and every
 	// tick retireExcess would try to cancel streams that refuse to retire.
@@ -957,11 +1014,85 @@ func (tc *tunnelClient) sizeLoop() {
 		case <-tc.parentCtx.Done():
 			return
 		case <-ticker.C:
-			tc.refreshObservedServers()
-			tc.resize()
-			tc.retireExcess()
-			tc.recycleAged()
+			tc.sizeTick()
 		}
+	}
+}
+
+// sizeTick is one pass of the sizing loop.
+func (tc *tunnelClient) sizeTick() {
+	tc.refreshObservedServers()
+	tc.balanceCoverage()
+	tc.resize()
+	tc.retireExcess()
+	tc.recycleAged()
+	tc.recordServerStreams()
+}
+
+// balanceCoverage runs once per sizing tick, before resize: it hands the
+// agent's streams per tunnel server to coverage (coverage.go) and carries out
+// the plan it returns -- the floor resize honours, metrics, logs, and
+// recycling evacuated servers' idle streams.
+func (tc *tunnelClient) balanceCoverage() {
+	now := time.Now()
+
+	tc.mu.Lock()
+	counts := countServerStreams(tc.streams, now)
+	workers := tc.runningWorkers
+	pending := workers - len(tc.streams) // workers still opening a stream
+	tc.mu.Unlock()
+
+	p := tc.cov.tick(counts, now.UnixNano(), workers, pending)
+
+	tc.coverageFloor.Store(int32(p.floor))
+	if p.grown > 0 {
+		tc.coverageActions.WithLabelValues("grow").Add(float64(p.grown))
+	}
+	if p.filled > 0 {
+		tc.coverageActions.WithLabelValues("fill").Add(float64(p.filled))
+	}
+	for _, id := range p.evacuate {
+		s := counts[id]
+		tc.logger.Info("Leaving tunnel server that cannot be covered",
+			zap.String("serverId", id),
+			zap.Int("streams", s.have),
+			zap.Int("busy", s.busy),
+			zap.Int("budget", s.budget()),
+			zap.Duration("shortFor", coverageGrace))
+	}
+	if p.exhausted {
+		tc.logger.Warn("Tunnel server coverage budget spent with servers still short",
+			zap.Strings("shortServers", p.short),
+			zap.Int("budget", p.budget),
+			zap.Duration("window", streamIdleWindow))
+	}
+
+	if len(p.recycle) > 0 {
+		// Marked under the lock, like every retirement, so the worker sees
+		// the reason before the cancel.
+		tc.mu.Lock()
+		for _, st := range p.recycle {
+			st.recycling.Store(true)
+			st.retiring.Store(true)
+		}
+		tc.mu.Unlock()
+		tc.coverageActions.WithLabelValues("evacuate").Add(float64(len(p.recycle)))
+		for _, st := range p.recycle {
+			st.cancel()
+		}
+	}
+}
+
+// recordServerStreams publishes each tunnel server's streams, idle and busy,
+// replacing the previous tick's so a server the agent has left drops out.
+func (tc *tunnelClient) recordServerStreams() {
+	tc.mu.Lock()
+	servers := countServerStreams(tc.streams, time.Now())
+	tc.mu.Unlock()
+	tc.serverStreamsGauge.Reset()
+	for srv, s := range servers {
+		tc.serverStreamsGauge.WithLabelValues(srv, "busy").Set(float64(s.busy))
+		tc.serverStreamsGauge.WithLabelValues(srv, "idle").Set(float64(s.have - s.busy))
 	}
 }
 
@@ -1049,6 +1180,7 @@ func (tc *tunnelClient) retireExcess() {
 	// narrow the window in which the server dispatches onto a stream we are
 	// cancelling; the dispatcher fails such a call back to its caller.
 	cutoff := now.Add(-sizeInterval).UnixNano()
+	youngAfter := now.Add(-pruneMinAge).UnixNano()
 
 	tc.mu.Lock()
 
@@ -1079,7 +1211,7 @@ func (tc *tunnelClient) retireExcess() {
 		switch {
 		case st.inflight.Load() != 0 || st.lastCallAt.Load() >= staleBefore:
 			g.used++
-		case st.anchor || st.quietSince() >= cutoff:
+		case st.anchor || st.quietSince() >= cutoff || st.openedAt.Load() >= youngAfter:
 			g.pinned++
 		default:
 			g.prunable = append(g.prunable, st)
@@ -1089,9 +1221,10 @@ func (tc *tunnelClient) retireExcess() {
 	// The order the surplus is spent in. Streams with no server yet go first:
 	// they protect no coverage, because no dispatcher knows about them. Then
 	// whatever sits above a server's own budget, which is the surplus wherever
-	// the fleet count came from. Only then the stalest anywhere, for the case
-	// the first two do not cover the count — a cap dropping under us, or every
-	// server sitting exactly at budget while the fleet is still over target.
+	// the fleet count came from. A server's budget is otherwise a veto: taking
+	// it below its reserve is how a server ends up one in-flight call from making
+	// every caller there wait. The one exception is a stream cap dropping under
+	// us, which must be obeyed, so only then is the stalest anywhere fair game.
 	var spend, overBudget, rest []*tunnelStream
 	for serverID, g := range groups {
 		sortStalestFirst(g.prunable)
@@ -1118,9 +1251,11 @@ func (tc *tunnelClient) retireExcess() {
 		rest = append(rest, g.prunable[over:]...)
 	}
 	sortStalestFirst(overBudget)
-	sortStalestFirst(rest)
 	spend = append(spend, overBudget...)
-	spend = append(spend, rest...)
+	if tc.runningWorkers > tc.streamCap() {
+		sortStalestFirst(rest)
+		spend = append(spend, rest...)
+	}
 
 	if surplus > len(spend) {
 		surplus = len(spend)
@@ -1143,7 +1278,7 @@ func (tc *tunnelClient) retireExcess() {
 // serverStreams buckets one server's streams by what may be done with them.
 type serverStreams struct {
 	used     int             // carried a call inside the window
-	pinned   int             // anchors, and streams quiet for under a tick
+	pinned   int             // anchors, streams quiet for under a tick, and streams younger than pruneMinAge
 	prunable []*tunnelStream // the rest, stalest first once sorted
 }
 
@@ -1401,10 +1536,9 @@ func (tc *tunnelClient) openSlot(id int, recovering bool) (*streamCtx, error) {
 		tc.serverMaxStreams.Store(serverHello.MaxStreams)
 	}
 
-	// The per-server cap counts connections, not streams: on a shared
-	// connection only the first stream takes a slot, since every stream on it
-	// talks to the same backend. That keeps MaxStreamsPerServer meaning "how
-	// many connections may land on one server instance" in every mode.
+	// Behind the load balancer each stream is placed on its own, so streams on
+	// one connection can land on different server instances; ServerId is the
+	// only record of where this one went.
 	ts := newTunnelStream(id, serverHello, conn, cancel, id <= tc.anchorSlots())
 	ts.recycleAt = tc.recycleDeadline(ts.openedAt.Load())
 

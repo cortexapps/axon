@@ -240,30 +240,7 @@ func newTestClient(t *testing.T, cfg config.AgentConfig, reg snykbroker.Registra
 		tc.inflightSem = make(chan struct{}, cfg.MaxInflightRequests)
 	}
 
-	tc.connectionsActive = prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{Name: "grpc_tunnel_connections_active"}, []string{"server_id"})
-	tc.requestsTotal = prometheus.NewCounterVec(
-		prometheus.CounterOpts{Name: "grpc_tunnel_requests_total"}, []string{"method", "status"})
-	tc.requestsInflight = prometheus.NewGauge(
-		prometheus.GaugeOpts{Name: "grpc_tunnel_requests_inflight"})
-	tc.requestsRejected = prometheus.NewCounter(
-		prometheus.CounterOpts{Name: "grpc_tunnel_request_rejected_total"})
-	tc.reconnectsTotal = prometheus.NewCounterVec(
-		prometheus.CounterOpts{Name: "grpc_tunnel_reconnects_total"}, []string{"server_id"})
-	tc.requestDuration = prometheus.NewHistogramVec(
-		prometheus.HistogramOpts{Name: "grpc_tunnel_request_duration_ms"}, []string{"method"})
-	tc.heartbeatTimeoutsTotal = prometheus.NewCounterVec(
-		prometheus.CounterOpts{Name: "grpc_tunnel_heartbeat_timeouts_total"}, []string{"server_id"})
-	tc.tokenRotationsTotal = prometheus.NewCounter(
-		prometheus.CounterOpts{Name: "grpc_tunnel_token_rotations_total"})
-	tc.connectErrorsTotal = prometheus.NewCounterVec(
-		prometheus.CounterOpts{Name: "grpc_tunnel_connect_errors_total"}, []string{"phase"})
-
-	registry.MustRegister(
-		tc.connectionsActive, tc.requestsTotal, tc.requestsInflight,
-		tc.requestsRejected, tc.reconnectsTotal, tc.requestDuration,
-		tc.heartbeatTimeoutsTotal, tc.tokenRotationsTotal, tc.connectErrorsTotal,
-	)
+	registry.MustRegister(tc.initMetrics()...)
 
 	return tc, registry
 }

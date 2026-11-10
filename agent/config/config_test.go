@@ -19,7 +19,7 @@ func TestEnvConfig_TunnelDefaults(t *testing.T) {
 	assert.Equal(t, 4, cfg.TunnelConns,
 		"connections are the only tunnel dial; default is a blast-radius choice")
 	assert.Equal(t, 128, cfg.UpstreamMaxConnsPerHost)
-	assert.Equal(t, 256, cfg.MaxInflightRequests)
+	assert.Equal(t, 2048, cfg.MaxInflightRequests)
 	assert.False(t, cfg.GrpcInsecure, "TLS stays on unless explicitly disabled")
 }
 

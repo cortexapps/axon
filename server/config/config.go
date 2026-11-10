@@ -11,11 +11,15 @@ import (
 )
 
 const (
-	DefaultGrpcPort           = 50052
-	DefaultHttpPort           = 8080
-	DefaultHeartbeatInterval  = 30 * time.Second
-	DefaultMaxFrameBytes      = 1 << 20 // 1 MiB
-	DefaultMaxStreamsPerToken = 64
+	DefaultGrpcPort          = 50052
+	DefaultHttpPort          = 8080
+	DefaultHeartbeatInterval = 30 * time.Second
+	DefaultMaxFrameBytes     = 1 << 20 // 1 MiB
+	// DefaultMaxStreamsPerToken is high because the dispatcher sends a
+	// token's calls to one tunnel server at a time, so this server's share is
+	// all of the agent's concurrency. It guards against a runaway agent, not
+	// ordinary load.
+	DefaultMaxStreamsPerToken = 1024
 	// DefaultAgentReportGrace is how long a call the server cancelled stays
 	// open for the agent's answer. The agent replies within a round trip of
 	// seeing the cancel; a second covers a slow path without holding a stream

@@ -102,24 +102,25 @@ func TestSizing_OpensAStreamPerCallOnTopOfTheReserve(t *testing.T) {
 
 	tc.resize()
 
-	// 5 in flight + 2 reserve. The reserve stays whole under load; that is
+	// 5 in flight + the reserve. The reserve stays whole under load; that is
 	// what keeps the next call from waiting on a stream open.
-	assert.Equal(t, int32(7), tc.targetSlots.Load())
+	assert.Equal(t, int32(5+idleStreamsPerServer), tc.targetSlots.Load())
 }
 
 func TestSizing_GivesStreamsBackOnceTheBurstHasAged(t *testing.T) {
 	tc := newSizingClient(t)
-	seedStreams(tc, 20, "srv-a")
+	burst := 18 + idleStreamsPerServer
+	seedStreams(tc, burst, "srv-a")
 
 	require.Equal(t, 18, markUsed(tc, 18))
 	tc.resize()
-	require.Equal(t, int32(20), tc.targetSlots.Load())
+	require.Equal(t, int32(burst), tc.targetSlots.Load())
 
 	// The burst passes. The streams it needed are kept, because reopening one
 	// costs a round trip and a dispatcher notification and the next request is
 	// probably seconds away.
 	tc.resize()
-	assert.Equal(t, int32(20), tc.targetSlots.Load(),
+	assert.Equal(t, int32(burst), tc.targetSlots.Load(),
 		"the streams that served the burst are still inside the window")
 
 	// Once they fall out of it, the target drops straight to the reserve.
@@ -520,6 +521,15 @@ func seedRetirable(tc *tunnelClient, placement []string) (map[string][]*tunnelSt
 	}
 }
 
+// repeatServer is n placements on the same server.
+func repeatServer(server string, n int) []string {
+	out := make([]string, n)
+	for i := range out {
+		out[i] = server
+	}
+	return out
+}
+
 // useStream says st has just carried a call, alone: the stream is warm and the
 // peak saw one call in flight.
 func useStream(tc *tunnelClient, st *tunnelStream) {
@@ -535,10 +545,10 @@ func useStream(tc *tunnelClient, st *tunnelStream) {
 // leaving the second exactly as fat as it was.
 func TestRetire_PrunesFromTheServerHoldingTheSurplus(t *testing.T) {
 	tc := newSizingClient(t)
-	placement := make([]string, 0, 9)
-	for i := 0; i < 8; i++ {
-		placement = append(placement, "srv-a")
-	}
+	// srv-a holds its budget (one recent call plus the reserve) and seven
+	// more; srv-b holds one stream.
+	over := idleStreamsPerServer + 3
+	placement := repeatServer("srv-a", 1+idleStreamsPerServer+over)
 	placement = append(placement, "srv-b")
 	byServer, cancelled := seedRetirable(tc, placement)
 
@@ -549,9 +559,9 @@ func TestRetire_PrunesFromTheServerHoldingTheSurplus(t *testing.T) {
 	tc.retireExcess()
 
 	got := cancelled()
-	// Four, not five: five is what srv-a holds above its own budget, but the
-	// fleet is only four above target, and the fleet count is what says how
-	// many streams to give back. Shedding the fifth would leave the agent
+	// Four, not seven: seven is what srv-a holds above its own budget, but
+	// the fleet is only four above target, and the fleet count is what says
+	// how many streams to give back. Shedding more would leave the agent
 	// below target and a replacement would open on the next tick — the churn
 	// that per-server quotas used to cause.
 	assert.Equal(t, 4, got["srv-a"],
@@ -564,7 +574,7 @@ func TestRetire_PrunesFromTheServerHoldingTheSurplus(t *testing.T) {
 // ability to reach this agent, is never what pays for someone else's idleness.
 func TestRetire_NeverTakesAServerBelowItsOwnReserve(t *testing.T) {
 	tc := newSizingClient(t)
-	placement := []string{"srv-a", "srv-a", "srv-a", "srv-a", "srv-a", "srv-a", "srv-b", "srv-b"}
+	placement := append(repeatServer("srv-a", idleStreamsPerServer+4), repeatServer("srv-b", idleStreamsPerServer)...)
 	_, cancelled := seedRetirable(tc, placement)
 
 	tc.resize()
@@ -710,9 +720,9 @@ func TestStreamCap_UnknownServerCountAssumesOneServer(t *testing.T) {
 func TestStreamCap_NeverExceedsOurOwnPolicy(t *testing.T) {
 	tc := newSizingClient(t)
 	seedStreams(tc, 8, "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8")
-	tc.serverMaxStreams.Store(64)
+	tc.serverMaxStreams.Store(int32(maxStreams / 4))
 
-	assert.Equal(t, maxStreams, tc.streamCap(), "8 x 64 exceeds our own ceiling")
+	assert.Equal(t, maxStreams, tc.streamCap(), "8 servers x their cap exceeds our own ceiling")
 }
 
 // -----------------------------------------------------------------------------
@@ -817,12 +827,15 @@ func TestRetireExcess_SparesStreamsThatJustOpened(t *testing.T) {
 // slot spent most of its life waiting rather than serving.
 func TestRetireExcess_DoesNotChurnWhenTheFleetIsAtTarget(t *testing.T) {
 	tc := newSizingClient(t)
-	_, cancelled := seedRetirable(tc, []string{
-		"srv-a", "srv-a", "srv-a", "srv-b", "srv-b", "srv-c", "srv-c", "srv-d",
-	})
+	// Uneven, but exactly the reserve across four servers in total.
+	placement := repeatServer("srv-a", idleStreamsPerServer+1)
+	placement = append(placement, repeatServer("srv-b", idleStreamsPerServer)...)
+	placement = append(placement, repeatServer("srv-c", idleStreamsPerServer)...)
+	placement = append(placement, repeatServer("srv-d", idleStreamsPerServer-1)...)
+	_, cancelled := seedRetirable(tc, placement)
 
 	tc.resize()
-	require.Equal(t, int32(8), tc.targetSlots.Load(), "the reserve across four servers")
+	require.Equal(t, int32(4*idleStreamsPerServer), tc.targetSlots.Load(), "the reserve across four servers")
 	tc.retireExcess()
 
 	total := 0
@@ -838,9 +851,9 @@ func TestRetireExcess_DoesNotChurnWhenTheFleetIsAtTarget(t *testing.T) {
 // backoff, so a slot retired for being surplus came back slower every time.
 func TestRetire_MarksTheStreamSoTheWorkerKnowsItWasDeliberate(t *testing.T) {
 	tc := newSizingClient(t)
-	byServer, _ := seedRetirable(tc, []string{"srv-a", "srv-a", "srv-a", "srv-a"})
+	byServer, _ := seedRetirable(tc, repeatServer("srv-a", idleStreamsPerServer+2))
 
-	tc.targetSlots.Store(2)
+	tc.targetSlots.Store(int32(idleStreamsPerServer))
 	tc.retireExcess()
 
 	retiring := 0
