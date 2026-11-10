@@ -13,6 +13,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -40,6 +42,9 @@ var (
 	// errCallAborted covers a call that ended before its response started
 	// without any more specific error, so Dispatch never returns (nil, nil).
 	errCallAborted = errors.New("call ended before response started")
+	// errCallCancelled closes the response pipe of a call the server is
+	// ending, for frames the agent sends before it sees the cancel.
+	errCallCancelled = errors.New("call cancelled")
 )
 
 // FailureKind classifies why a dispatch failed, for logs and callers.
@@ -66,12 +71,28 @@ const (
 	FailureAborted FailureKind = "aborted"
 )
 
+// FailurePhase is where in its life a dispatch failed. Kind says what ended
+// it and who gave up; Phase says what it was waiting for at the time, which is
+// the difference between "no stream was free" and "a stream was free, the
+// call went out, and nothing came back" -- both of which can end in the same
+// caller timeout.
+type FailurePhase string
+
+const (
+	// PhaseAcquire: waiting for an idle stream. Nothing reached the agent.
+	PhaseAcquire FailurePhase = "acquire"
+	// PhaseAwaitingResponse: the call was sent to the agent and its response
+	// had not started.
+	PhaseAwaitingResponse FailurePhase = "awaiting_response"
+)
+
 // DispatchError is returned by Dispatch for every failure. It wraps the
 // underlying error, so errors.Is(err, ErrNoTunnel), errors.As(err,
 // *CancelError) and errors.Is(err, context.DeadlineExceeded) still work, and
 // adds what a log line needs to name the call and the agent that had it.
 type DispatchError struct {
-	Kind FailureKind
+	Kind  FailureKind
+	Phase FailurePhase
 	// CallID and StreamID are empty when no stream was acquired.
 	CallID   string
 	StreamID string
@@ -80,7 +101,93 @@ type DispatchError struct {
 	Agent tunnel.ClientIdentity
 	// AcquireWait is how long Dispatch waited for an idle stream.
 	AcquireWait time.Duration
-	Err         error
+	// Elapsed is how long the call had been with the agent when it failed:
+	// from CallStart sent to the failure. Zero when no stream was acquired.
+	Elapsed time.Duration
+	// Streams is the token's state on this server when the dispatch failed:
+	// its streams, how many were busy, how many dispatches were waiting, and
+	// the oldest calls holding streams. It is what tells "every stream was
+	// held by slow calls" apart from "this call alone was slow".
+	Streams StreamState
+	Err     error
+
+	// call is the failed call, when one was sent, so AwaitAgentReport can
+	// collect what the agent says about it.
+	call *call
+}
+
+// StreamState is a token's streams on this server at the moment a dispatch
+// failed.
+type StreamState struct {
+	tunnel.StreamSnapshot
+	// Waiters is how many dispatches for the token were waiting for a stream,
+	// this one included when it failed waiting.
+	Waiters int
+	// Holders are the oldest calls for the token still in flight, oldest
+	// first, at most maxHolders of them.
+	Holders []HeldCall
+}
+
+// HeldCall is one call holding a stream, for explaining why none was free.
+type HeldCall struct {
+	CallID     string
+	InstanceID string
+	Method     string
+	Path       string
+	Age        time.Duration
+	// Cancelled is true while the server has cancelled the call and is
+	// waiting for the agent's answer, with the stream still held.
+	Cancelled bool
+}
+
+// maxHolders bounds how many holding calls a failure reports.
+const maxHolders = 3
+
+// AgentOutcome is what the agent did about a call the server had to give up
+// on.
+type AgentOutcome string
+
+const (
+	// AgentReported: the agent sent CallCancel explaining where the call was.
+	AgentReported AgentOutcome = "reported"
+	// AgentCompletedLate: the agent finished the call normally, after the
+	// server had already given up on it.
+	AgentCompletedLate AgentOutcome = "completed_late"
+	// AgentSilent: the agent said nothing within the grace period.
+	AgentSilent AgentOutcome = "silent"
+	// AgentNotAsked: there was nothing to ask -- no call reached the agent, or
+	// the server is configured not to wait.
+	AgentNotAsked AgentOutcome = "not_asked"
+)
+
+// AwaitAgentReport waits for the agent's account of a call the server gave
+// up on, and returns it. It returns at once when no call was sent, and
+// otherwise blocks until the call finishes, which the grace timer bounds;
+// call it after the caller has its response. The CancelError is the agent's
+// own, if it sent one -- for a call the agent cancelled itself, that is the
+// error Dispatch already returned.
+func (e *DispatchError) AwaitAgentReport() (*CancelError, AgentOutcome) {
+	c := e.call
+	if c == nil {
+		var cancelErr *CancelError
+		if errors.As(e.Err, &cancelErr) {
+			return cancelErr, AgentReported
+		}
+		return nil, AgentNotAsked
+	}
+	<-c.doneC
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	switch {
+	case c.agentReport != nil:
+		return c.agentReport, AgentReported
+	case c.agentEnded:
+		return nil, AgentCompletedLate
+	case !c.held:
+		return nil, AgentNotAsked
+	default:
+		return nil, AgentSilent
+	}
 }
 
 func (e *DispatchError) Error() string {
@@ -122,9 +229,30 @@ const acquireRetryInterval = 10 * time.Millisecond
 // CancelError is returned when the agent cancels a call before starting its
 // response. Code carries the agent's HTTP status hint (404 no matching rule,
 // 502 upstream unreachable, 503 at in-flight cap); 0 means unspecified.
+//
+// The remaining fields are the agent's account of where the call was and why
+// it stopped. An older agent leaves them zero (STAGE_UNSPECIFIED,
+// CAUSE_UNSPECIFIED).
 type CancelError struct {
-	Reason string
-	Code   int32
+	Reason       string
+	Code         int32
+	Stage        pb.CallCancel_Stage
+	Cause        pb.CallCancel_Cause
+	StageElapsed time.Duration
+	TotalElapsed time.Duration
+	UpstreamHost string
+}
+
+func cancelErrorFrom(c *pb.CallCancel) *CancelError {
+	return &CancelError{
+		Reason:       c.Reason,
+		Code:         c.Code,
+		Stage:        c.Stage,
+		Cause:        c.Cause,
+		StageElapsed: time.Duration(c.StageElapsedMs) * time.Millisecond,
+		TotalElapsed: time.Duration(c.TotalElapsedMs) * time.Millisecond,
+		UpstreamHost: c.UpstreamHost,
+	}
 }
 
 func (e *CancelError) Error() string {
@@ -182,6 +310,13 @@ type Dispatcher struct {
 	mu       sync.Mutex
 	calls    map[string]*call            // call_id → call
 	byStream map[string]map[string]*call // stream_id → call_id → call
+	// waiters counts dispatches per token (hashed) currently waiting for a
+	// stream, for StreamState. Guarded by mu.
+	waiters map[string]int
+
+	// agentReportGrace is how long a call the server cancelled stays open
+	// for the agent's answer; see config.Config.AgentReportGrace.
+	agentReportGrace time.Duration
 
 	// Cumulative backpressure accounting, alongside the tagged metrics, so
 	// /healthz can report it without a metrics scrape. acquireWaits counts
@@ -213,6 +348,9 @@ func NewDispatcher(
 		logger:   logger.Named("dispatch"),
 		calls:    make(map[string]*call),
 		byStream: make(map[string]map[string]*call),
+		waiters:  make(map[string]int),
+
+		agentReportGrace: cfg.AgentReportGrace,
 	}
 }
 
@@ -221,6 +359,17 @@ type call struct {
 	id     string
 	stream *tunnel.StreamHandle
 	logger *zap.Logger
+
+	// What a failure of another call reports about this one while it holds
+	// its stream: whose it is, what it asked for, and since when.
+	tokenHash string
+	method    string
+	path      string // without the query string, which can carry credentials
+	sentAt    time.Time
+
+	// doneC is closed when the call finishes and its stream is released.
+	doneC    chan struct{}
+	doneOnce sync.Once
 
 	// respStartC delivers the agent's response CallStart (cap 1).
 	respStartC chan *pb.CallStart
@@ -242,6 +391,14 @@ type call struct {
 	recvDone   bool // agent sent its terminal frame (End or Cancel)
 	cancelSent bool // we sent CallCancel
 	finished   bool // cleanup ran
+	// held is true when the server cancelled the call and kept it open,
+	// stream busy, for the agent's answer; holdTimer ends the wait.
+	held      bool
+	holdTimer *time.Timer
+	// agentReport is the agent's CallCancel, if it sent one; agentEnded is
+	// true if it sent CallEnd instead.
+	agentReport *CancelError
+	agentEnded  bool
 	// chansClosed guards trailersC/errC. Delivery and close both take mu
 	// and consult it, so a terminal frame arriving as the call finishes
 	// cannot send on a closed channel.
@@ -297,22 +454,37 @@ func (c *call) closeChans() {
 //
 // Every error it returns is a *DispatchError.
 func (d *Dispatcher) Dispatch(ctx context.Context, token broker.Token, req *Request) (*Response, error) {
-	stream, waited, err := d.acquireStream(ctx, token)
+	stream, waited, state, err := d.acquireStream(ctx, token)
 	if err != nil {
 		kind := FailureNoTunnel
 		if !errors.Is(err, ErrNoTunnel) {
 			kind = kindForContext(err, FailureAcquireTimeout)
 		}
-		return nil, &DispatchError{Kind: kind, AcquireWait: waited, Err: err}
+		return nil, &DispatchError{
+			Kind:        kind,
+			Phase:       PhaseAcquire,
+			AcquireWait: waited,
+			Streams:     state,
+			Err:         err,
+		}
 	}
 
 	callID := uuid.New().String()
 	pumpCtx, pumpCancel := context.WithCancel(context.Background())
 	bodyR, bodyW := io.Pipe()
+	path := req.PseudoHeaders[":path"]
+	if i := strings.IndexByte(path, '?'); i >= 0 {
+		path = path[:i]
+	}
 	c := &call{
 		id:         callID,
 		stream:     stream,
 		logger:     d.logger.With(zap.String("callId", callID), zap.String("streamId", stream.StreamID)),
+		tokenHash:  token.Hashed(),
+		method:     req.PseudoHeaders[":method"],
+		path:       path,
+		sentAt:     time.Now(),
+		doneC:      make(chan struct{}),
 		respStartC: make(chan *pb.CallStart, 1),
 		bodyR:      bodyR,
 		bodyW:      bodyW,
@@ -327,11 +499,15 @@ func (d *Dispatcher) Dispatch(ctx context.Context, token broker.Token, req *Requ
 	fail := func(kind FailureKind, err error) error {
 		return &DispatchError{
 			Kind:        kind,
+			Phase:       PhaseAwaitingResponse,
 			CallID:      callID,
 			StreamID:    stream.StreamID,
 			Agent:       stream.Identity,
 			AcquireWait: waited,
+			Elapsed:     time.Since(c.sentAt),
+			Streams:     d.streamState(token),
 			Err:         err,
+			call:        c,
 		}
 	}
 
@@ -377,8 +553,11 @@ func (d *Dispatcher) Dispatch(ctx context.Context, token broker.Token, req *Requ
 		return nil, fail(kindForPreStart(err), err)
 
 	case <-ctx.Done():
+		// Snapshot before cancelling, so this call is still counted among
+		// the token's busy streams -- it is holding one.
+		dispErr := fail(kindForContext(ctx.Err(), FailureResponseTimeout), ctx.Err())
 		d.cancelCall(c, "caller timeout", true)
-		return nil, fail(kindForContext(ctx.Err(), FailureResponseTimeout), ctx.Err())
+		return nil, dispErr
 	}
 }
 
@@ -388,15 +567,22 @@ func (d *Dispatcher) Dispatch(ctx context.Context, token broker.Token, req *Requ
 // mechanism: an agent at capacity stops offering idle streams, and that
 // shows up as latency to whoever made the request rather than as work
 // piling up invisibly inside the agent. The wait is measured so the
-// difference is visible, and returned so a failure can report it.
-func (d *Dispatcher) acquireStream(ctx context.Context, token broker.Token) (*tunnel.StreamHandle, time.Duration, error) {
+// difference is visible, and returned so a failure can report it, along with
+// the token's stream state at the moment it gave up -- taken while this
+// dispatch still counts as a waiter, which is the point of reporting it.
+func (d *Dispatcher) acquireStream(ctx context.Context, token broker.Token) (*tunnel.StreamHandle, time.Duration, StreamState, error) {
 	start := time.Now()
 	waited := false
+	defer func() {
+		if waited {
+			d.addWaiter(token, -1)
+		}
+	}()
 	for {
 		handle, allBusy := d.registry.AcquireIdleStream(token)
 		if handle != nil {
 			if !waited {
-				return handle, 0, nil
+				return handle, 0, StreamState{}, nil
 			}
 			wait := time.Since(start)
 			waitMs := wait.Milliseconds()
@@ -404,13 +590,14 @@ func (d *Dispatcher) acquireStream(ctx context.Context, token broker.Token) (*tu
 			d.withIdentity(token, func(tenant, integration, alias string) {
 				d.metrics.DispatchAcquireWait(tenant, integration, alias, float64(waitMs))
 			})
-			return handle, wait, nil
+			return handle, wait, StreamState{}, nil
 		}
 		if !allBusy {
-			return nil, time.Since(start), ErrNoTunnel
+			return nil, time.Since(start), StreamState{}, ErrNoTunnel
 		}
 		if !waited {
 			waited = true
+			d.addWaiter(token, 1)
 			d.acquireWaits.Add(1)
 			d.withIdentity(token, func(tenant, integration, alias string) {
 				d.metrics.DispatchAllBusy(tenant, integration, alias)
@@ -418,10 +605,59 @@ func (d *Dispatcher) acquireStream(ctx context.Context, token broker.Token) (*tu
 		}
 		select {
 		case <-ctx.Done():
-			return nil, time.Since(start), ctx.Err()
+			return nil, time.Since(start), d.streamState(token), ctx.Err()
 		case <-time.After(acquireRetryInterval):
 		}
 	}
+}
+
+func (d *Dispatcher) addWaiter(token broker.Token, delta int) {
+	key := token.Hashed()
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if n := d.waiters[key] + delta; n > 0 {
+		d.waiters[key] = n
+	} else {
+		delete(d.waiters, key)
+	}
+}
+
+// streamState reports the token's streams on this server, the dispatches
+// waiting for one, and the oldest calls holding them. Only failures call
+// it, so it may scan every in-flight call.
+func (d *Dispatcher) streamState(token broker.Token) StreamState {
+	state := StreamState{StreamSnapshot: d.registry.Snapshot(token)}
+	key := token.Hashed()
+	now := time.Now()
+
+	d.mu.Lock()
+	state.Waiters = d.waiters[key]
+	var holders []*call
+	for _, c := range d.calls {
+		if c.tokenHash == key {
+			holders = append(holders, c)
+		}
+	}
+	d.mu.Unlock()
+
+	slices.SortFunc(holders, func(a, b *call) int { return a.sentAt.Compare(b.sentAt) })
+	if len(holders) > maxHolders {
+		holders = holders[:maxHolders]
+	}
+	for _, c := range holders {
+		c.mu.Lock()
+		cancelled := c.held
+		c.mu.Unlock()
+		state.Holders = append(state.Holders, HeldCall{
+			CallID:     c.id,
+			InstanceID: c.stream.Identity.InstanceID,
+			Method:     c.method,
+			Path:       c.path,
+			Age:        now.Sub(c.sentAt),
+			Cancelled:  cancelled,
+		})
+	}
+	return state
 }
 
 // withIdentity looks up a token's client identity for metric tagging. It is
@@ -528,6 +764,7 @@ func (d *Dispatcher) HandleFrame(streamID string, frame *pb.CallFrame) {
 		c.mu.Lock()
 		preStart := !c.started
 		c.recvDone = true
+		c.agentEnded = true
 		c.mu.Unlock()
 		if preStart {
 			c.logger.Warn("CallEnd before response CallStart; treating as abort")
@@ -541,14 +778,14 @@ func (d *Dispatcher) HandleFrame(streamID string, frame *pb.CallFrame) {
 		d.maybeFinish(c)
 
 	case *pb.CallFrame_Cancel:
-		reason := body.Cancel.Reason
-		code := body.Cancel.Code
+		err := cancelErrorFrom(body.Cancel)
 		c.logger.Debug("Call cancelled by agent",
-			zap.String("reason", reason), zap.Int32("code", code))
+			zap.String("reason", err.Reason), zap.Int32("code", err.Code),
+			zap.Stringer("stage", err.Stage), zap.Stringer("cause", err.Cause))
 		c.mu.Lock()
 		c.recvDone = true
+		c.agentReport = err
 		c.mu.Unlock()
-		err := &CancelError{Reason: reason, Code: code}
 		d.deliverErr(c, err)
 		c.bodyW.CloseWithError(err)
 		// The agent is done; stop pumping request body and finish.
@@ -568,6 +805,8 @@ func (d *Dispatcher) HandleStreamClose(streamID string) {
 
 	for _, c := range calls {
 		d.abortCall(c, ErrStreamClosed, false)
+		// The agent cannot answer on a stream that is gone.
+		d.endHold(c)
 	}
 }
 
@@ -596,8 +835,21 @@ func (d *Dispatcher) deliverErr(c *call, err error) {
 
 // cancelCall aborts a call: stops the body pump, optionally notifies the
 // agent with CallCancel, and finishes the call.
+//
+// When the server is the one ending the call (notifyAgent) and the agent has
+// not finished it, the call is held rather than finished: it stays
+// registered, its stream stays busy, and it finishes when the agent answers
+// the cancel or agentReportGrace runs out. The agent is still running the
+// call until it sees the cancel, so the stream is not free yet, and its answer
+// says where the call was -- which is the difference between an upstream that
+// was slow and an agent that was not answering.
 func (d *Dispatcher) cancelCall(c *call, reason string, notifyAgent bool) {
 	c.pumpCancel()
+	// Nothing reads the response any more. Closing the pipe makes a late
+	// CallData from the agent fail its write at once instead of blocking the
+	// stream's receive loop on a reader that is gone; CloseWithError keeps the
+	// first error, so an abort's own error stands.
+	c.bodyW.CloseWithError(errCallCancelled)
 
 	c.mu.Lock()
 	// Cancel is a call-level abort, not a direction terminal: it is valid
@@ -608,16 +860,42 @@ func (d *Dispatcher) cancelCall(c *call, reason string, notifyAgent bool) {
 		c.cancelSent = true
 	}
 	c.sendDone = true
-	c.recvDone = true
+	hold := sendCancel && !c.recvDone && d.agentReportGrace > 0
+	switch {
+	case hold:
+		c.held = true
+		c.holdTimer = time.AfterFunc(d.agentReportGrace, func() { d.endHold(c) })
+	case !c.held:
+		// Nothing to wait for.
+		c.recvDone = true
+	}
+	// A held call is never released here, whoever cancels it next: only the
+	// agent's own terminal frame (HandleFrame), the grace timer, a cancel
+	// that could not be sent, or the stream closing (HandleStreamClose) ends
+	// the hold. Not notifying the agent is not the same as the agent being
+	// done -- Dispatch cancels without notifying after a request-body failure
+	// has already cancelled and held the call, and releasing it there handed
+	// a stream the agent was still using to the next dispatch.
 	c.mu.Unlock()
 
 	if sendCancel {
 		frame := callFrame(c.id, &pb.CallFrame_Cancel{Cancel: &pb.CallCancel{Reason: reason}})
 		if err := c.stream.Send(frame); err != nil {
 			c.logger.Debug("Failed to send CallCancel", zap.Error(err))
+			// The agent cannot answer a cancel it never got.
+			d.endHold(c)
 		}
 	}
 
+	d.maybeFinish(c)
+}
+
+// endHold stops waiting for the agent's answer to a cancel and lets the call
+// finish.
+func (d *Dispatcher) endHold(c *call) {
+	c.mu.Lock()
+	c.recvDone = true
+	c.mu.Unlock()
 	d.maybeFinish(c)
 }
 
@@ -638,7 +916,13 @@ func (d *Dispatcher) maybeFinish(c *call) {
 func (d *Dispatcher) finish(c *call, closeChans bool) {
 	d.unregister(c)
 	c.pumpCancel()
+	c.mu.Lock()
+	if c.holdTimer != nil {
+		c.holdTimer.Stop()
+	}
+	c.mu.Unlock()
 	c.stream.Release()
+	c.doneOnce.Do(func() { close(c.doneC) })
 	d.metrics.DispatchInflight.Update(float64(d.InflightCount()))
 	if closeChans {
 		c.closeChans()

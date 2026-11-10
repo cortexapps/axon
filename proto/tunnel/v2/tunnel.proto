@@ -196,7 +196,55 @@ message CallEnd {
 // response (e.g. 404 no matching accept-file rule, 502 upstream
 // unreachable, 503 agent at in-flight cap). 0 means unspecified (the
 // adapter picks).
+//
+// The agent also says where the call was and why it stopped (fields 3-7), so
+// a failed call explains itself on the server instead of only in the agent's
+// own logs. That includes the agent's answer to a server-sent Cancel: the
+// server waits briefly for it, which is how a server-side timeout learns
+// whether the request ever left the agent and how long the upstream had it.
+// All optional; a receiver that sees STAGE_UNSPECIFIED knows nothing more
+// than an older peer would have told it.
 message CallCancel {
   string reason = 1;
   int32  code   = 2;
+
+  // Where the call was when it stopped. Agent-sent only.
+  Stage stage = 3;
+  enum Stage {
+    STAGE_UNSPECIFIED = 0;
+    // Waiting for the agent's own in-flight capacity; nothing sent upstream.
+    QUEUED_FOR_CAPACITY = 1;
+    // Matching the request to an upstream route.
+    ROUTING = 2;
+    // Request sent upstream; no response headers yet.
+    AWAITING_UPSTREAM_HEADERS = 3;
+    // Response headers received; relaying the body.
+    STREAMING_BODY = 4;
+  }
+
+  // Why it stopped. Agent-sent only.
+  Cause cause = 4;
+  enum Cause {
+    CAUSE_UNSPECIFIED = 0;
+    // The server sent Cancel (its caller timed out or went away).
+    CANCELED_BY_SERVER = 1;
+    // The agent's own deadline for the call expired.
+    AGENT_TIMEOUT = 2;
+    // The upstream failed: connection error, reset, unreadable body.
+    UPSTREAM_ERROR = 3;
+    // No route matched, or the route refused the request.
+    ROUTE_REJECTED = 4;
+    // The agent was at its in-flight cap until the deadline.
+    CAPACITY = 5;
+    // The agent is shutting down or restarting.
+    AGENT_SHUTDOWN = 6;
+  }
+
+  // How long the call had been in its final stage, and in the agent overall
+  // (from receipt of CallStart, queueing included).
+  int64 stage_elapsed_ms = 5;
+  int64 total_elapsed_ms = 6;
+  // Host the request was routed to, when it got that far. Host only: never a
+  // path or query, which can carry credentials.
+  string upstream_host = 7;
 }

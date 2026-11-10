@@ -16,6 +16,11 @@ const (
 	DefaultHeartbeatInterval  = 30 * time.Second
 	DefaultMaxFrameBytes      = 1 << 20 // 1 MiB
 	DefaultMaxStreamsPerToken = 64
+	// DefaultAgentReportGrace is how long a call the server cancelled stays
+	// open for the agent's answer. The agent replies within a round trip of
+	// seeing the cancel; a second covers a slow path without holding a stream
+	// hostage to an agent that will never answer.
+	DefaultAgentReportGrace = time.Second
 	// DefaultBuildVersion is what an unstamped binary reports. The release
 	// image sets AXON_BUILD_VERSION at build time; anything without it — a
 	// local `go run`, a hand-built image — is honestly labeled "dev" rather
@@ -48,6 +53,15 @@ type Config struct {
 	// DispatchTimeout is the maximum time to wait for a client response
 	// to a dispatched HTTP request.
 	DispatchTimeout time.Duration
+	// AgentReportGrace is how long the server keeps a call it cancelled (its
+	// caller timed out or left) registered, with its stream still busy, waiting
+	// for the agent's own CallCancel. That reply says where the call was --
+	// queued in the agent, waiting on the upstream, streaming -- and is what
+	// tells "the upstream was slow" from "the agent never answered". Holding
+	// the stream also stops the server dispatching onto it while the agent is
+	// still running the old call. 0 releases the stream at once and logs
+	// without the agent's side.
+	AgentReportGrace time.Duration
 	// ServerID identifies this server instance. Used in metrics and
 	// returned to clients in ServerHello for dedup.
 	ServerID string
@@ -83,6 +97,7 @@ func (c Config) Fields() []zap.Field {
 		zap.String("server_id", c.ServerID),
 		zap.Duration("heartbeat_interval", c.HeartbeatInterval),
 		zap.Duration("dispatch_timeout", c.DispatchTimeout),
+		zap.Duration("agent_report_grace", c.AgentReportGrace),
 		zap.Duration("re_registration_interval", c.ReRegistrationInterval),
 		zap.Int("max_frame_bytes", c.MaxFrameBytes),
 		zap.Int("max_streams_per_token", c.MaxStreamsPerToken),
@@ -101,6 +116,7 @@ func NewConfigFromEnv() Config {
 		HttpPort:               DefaultHttpPort,
 		HeartbeatInterval:      DefaultHeartbeatInterval,
 		DispatchTimeout:        60 * time.Second,
+		AgentReportGrace:       DefaultAgentReportGrace,
 		ServerID:               getServerID(),
 		ReRegistrationInterval: 5 * time.Minute,
 		MaxFrameBytes:          DefaultMaxFrameBytes,
@@ -164,6 +180,14 @@ func NewConfigFromEnv() Config {
 			panic(fmt.Errorf("invalid DISPATCH_TIMEOUT: %w", err))
 		}
 		cfg.DispatchTimeout = d
+	}
+
+	if v := os.Getenv("AGENT_REPORT_GRACE"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			panic(fmt.Errorf("invalid AGENT_REPORT_GRACE: %w", err))
+		}
+		cfg.AgentReportGrace = d
 	}
 
 	if v := os.Getenv("RE_REGISTRATION_INTERVAL"); v != "" {
