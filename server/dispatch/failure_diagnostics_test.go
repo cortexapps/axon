@@ -330,3 +330,36 @@ func TestDispatch_AgentCancelCarriesItsReport(t *testing.T) {
 	require.NotNil(t, rep)
 	assert.Equal(t, pb.CallCancel_QUEUED_FOR_CAPACITY, rep.Stage)
 }
+
+// Review finding on #186: the caller's request body failing mid-read cancels
+// the call toward the agent and holds it -- and then Dispatch, seeing the
+// error on errC, cancelled it again without notifying the agent. That second
+// cancel took "don't notify" to mean "the agent is done" and released the
+// stream while the agent was still running the call, so the next dispatch
+// could land on it. A held call is released only by the agent, the grace
+// period, or the stream dying.
+func TestDispatch_RequestBodyFailureHoldsStreamUntilAgentReports(t *testing.T) {
+	d, token, fs, handle := newHoldingDispatcher(t, 5*time.Second)
+
+	readErr := errors.New("caller hung up mid-upload")
+	_, err := d.Dispatch(context.Background(), token, &Request{
+		PseudoHeaders: map[string]string{":method": "POST", ":path": "/upload"},
+		Body:          failingReader{err: readErr},
+	})
+	dispErr := asDispatchError(t, err)
+	assert.Equal(t, FailureRequestBody, dispErr.Kind)
+
+	start := fs.next(t)
+	require.NotNil(t, start.GetStart())
+	require.NotNil(t, fs.next(t).GetCancel(), "the agent must be told to stop")
+
+	assert.True(t, handle.Busy(), "the agent is still running the call; its stream is not free")
+	assert.Equal(t, 1, d.InflightCount())
+
+	d.HandleFrame("stream-1", &pb.CallFrame{CallId: start.CallId, Body: &pb.CallFrame_Cancel{Cancel: &pb.CallCancel{
+		Stage: pb.CallCancel_AWAITING_UPSTREAM_HEADERS, Cause: pb.CallCancel_CANCELED_BY_SERVER,
+	}}})
+	_, outcome := dispErr.AwaitAgentReport()
+	assert.Equal(t, AgentReported, outcome)
+	assert.False(t, handle.Busy(), "released once the agent answered")
+}

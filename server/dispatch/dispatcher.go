@@ -805,6 +805,8 @@ func (d *Dispatcher) HandleStreamClose(streamID string) {
 
 	for _, c := range calls {
 		d.abortCall(c, ErrStreamClosed, false)
+		// The agent cannot answer on a stream that is gone.
+		d.endHold(c)
 	}
 }
 
@@ -863,12 +865,17 @@ func (d *Dispatcher) cancelCall(c *call, reason string, notifyAgent bool) {
 	case hold:
 		c.held = true
 		c.holdTimer = time.AfterFunc(d.agentReportGrace, func() { d.endHold(c) })
-	case !notifyAgent || !c.held:
-		// Either the agent's own side is over (its Cancel or End, or the
-		// stream died under it), or there is nothing to wait for. A repeat
-		// server-side cancel of a held call keeps waiting.
+	case !c.held:
+		// Nothing to wait for.
 		c.recvDone = true
 	}
+	// A held call is never released here, whoever cancels it next: only the
+	// agent's own terminal frame (HandleFrame), the grace timer, a cancel
+	// that could not be sent, or the stream closing (HandleStreamClose) ends
+	// the hold. Not notifying the agent is not the same as the agent being
+	// done -- Dispatch cancels without notifying after a request-body failure
+	// has already cancelled and held the call, and releasing it there handed
+	// a stream the agent was still using to the next dispatch.
 	c.mu.Unlock()
 
 	if sendCancel {
