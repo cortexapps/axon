@@ -177,6 +177,28 @@ across every server instance, so losing one costs a fraction of capacity for
 one redial and never all of it. Streams are opened as calls arrive and given
 back as they finish, so concurrency is whatever the agent can actually serve.
 
+A tunnel server (one `relay-grpc-tunnel` instance) dispatches only onto the
+streams the agent holds on that server, and the dispatcher sends a token's
+calls to one tunnel server at a time. So the agent sizes per tunnel server:
+
+- **Grow.** A tunnel server with calls in flight and fewer idle streams than
+  the reserve gets at least 8 more streams opened that tick, or as many as it
+  has calls in flight, so capacity doubles each second under pressure. Streams
+  carry I/O, not work, so opening is cheap; the limits are the stream caps.
+- **Prune.** Streams idle for 10 minutes, and at least 2 minutes old, are given
+  back down to a small resting reserve (2 per tunnel server). Every idle
+  stream costs its shared tunnel server a heartbeat and a few goroutines, so
+  what is not in use does not stay open.
+- **Cover.** The load balancer places each new stream and does not spread them
+  evenly. A tunnel server with nothing in flight that is short of the reserve
+  gets streams opened toward it, within a budget; one still short after 30s is
+  left, so it drops the token. A tunnel server with calls in flight is never
+  left.
+
+Per-server counts are in `grpc_tunnel_server_streams{server_id,state}` and
+`/systemcheck`, and what the agent did is in
+`grpc_tunnel_coverage_actions_total{action="grow"|"fill"|"evacuate"}`.
+
 When the agent falls behind, it runs out of idle streams, the server's
 dispatch blocks briefly, and the delay reaches the caller as latency. That is
 the backpressure, and it needs no configuration: `dispatch.acquire_wait_ms`
