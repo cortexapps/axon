@@ -37,8 +37,7 @@ type Agent struct {
 	sleepOnError time.Duration
 	done         chan struct{}
 
-	preDispatch  PreDispatchHook
-	postDispatch PostDispatchHook
+	onFailure FailureHook
 }
 
 // NewAxonAgent creates a new AxonAgent with the specified options.  You
@@ -61,8 +60,7 @@ func NewAxonAgent(options ...Option) *Agent {
 		logger:       logger,
 		sleepOnError: ao.sleepOnError,
 		done:         make(chan struct{}),
-		preDispatch:  ao.preDispatch,
-		postDispatch: ao.postDispatch,
+		onFailure:    ao.onFailure,
 	}
 
 	a.logger = logger
@@ -256,7 +254,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	// retries from a handler still has a live agent connection.
 	eventsCtx, stopEvents := context.WithCancel(context.Background())
 	eventsDone := make(chan struct{})
-	if a.postDispatch != nil {
+	if a.onFailure != nil {
 		go func() {
 			defer close(eventsDone)
 			a.runFailureEvents(eventsCtx)
@@ -309,7 +307,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		err = stream.Send(&pb.DispatchRequest{
 			DispatchId:    a.DispatchId,
 			ClientVersion: version.Client,
-			FailureEvents: a.postDispatch != nil,
+			FailureEvents: a.onFailure != nil,
 		})
 		if err != nil {
 			a.logger.Error("failed to send registration id", zap.Error(err))
@@ -460,9 +458,6 @@ func (a *Agent) invokeHandler(ctx context.Context, invoke *pb.DispatchHandlerInv
 		return
 	}
 
-	info := newInvocationInfo(invoke)
-	a.runPreDispatch(info)
-
 	report := &pb.ReportInvocationRequest{
 		HandlerInvoke:        invoke,
 		StartClientTimestamp: timestamppb.Now(),
@@ -555,7 +550,9 @@ func (a *Agent) invokeHandler(ctx context.Context, invoke *pb.DispatchHandlerInv
 
 	// After the report, so a slow hook can't make the agent decide this
 	// invocation was never answered and report the failure a second time.
-	a.runPostDispatch(info, failure)
+	if failure != nil {
+		a.runFailureHook(newInvocationInfo(invoke), failure)
+	}
 }
 
 func (a *Agent) executeHandlerWithRecover(handler *handlerInfo, ctx HandlerContext) (result any, d time.Duration, err error) {

@@ -109,16 +109,15 @@ Set it to `1` for the old behaviour, where handlers run one at a time.
 
 ## Failure hooks
 
-Pass `post_dispatch` to `AxonClient` to run your own code when an
+Pass `on_failure` to `AxonClient` to run your own code whenever an
 invocation fails, for example to send the failed message somewhere you can
-replay it from. The hook runs after every invocation (`failure` is `None` on
-success). It also runs for failures that only the agent can see, such as a
-webhook the agent couldn't hand to this process because every handler was
-busy. Those failures arrive on their own stream, so they get through even
+replay it from. It also runs for failures that only the agent can see, such
+as a webhook the agent couldn't hand to this process because every handler
+was busy. Those failures arrive on their own stream, so they get through even
 while every handler slot is taken.
 
 ```python
-from cortex_axon import AxonClient, FailureSource, PostAction
+from cortex_axon import AxonClient, FailureAction, FailureSource
 from cortex_axon.handler import cortex_webhook
 
 
@@ -127,9 +126,7 @@ def my_webhook_handler(context):
     process(context.args["body"])
 
 
-def on_dispatch(info, failure):
-    if failure is None:
-        return  # it worked
+def on_failure(info, failure):
     # info.args holds the original webhook: "body", "content-type", "url"
     dead_letters.publish({
         "handler": info.handler_name,
@@ -142,30 +139,27 @@ def on_dispatch(info, failure):
     })
     # Optionally have the agent run it again, as a new attempt.
     if failure.source == FailureSource.RUNTIME and info.attempt < 3:
-        return PostAction.RETRY
+        return FailureAction.RETRY
 
 
-client = AxonClient(scope=globals(), post_dispatch=on_dispatch)
+client = AxonClient(scope=globals(), on_failure=on_failure)
 client.run()
 ```
 
 | Reason | When | Source |
 |---|---|---|
 | `HANDLER_ERROR` | The handler raised | `APPLICATION` |
-| `TIMEOUT` | The handler ran past its timeout | `RUNTIME` if a Cortex API call was in flight or the agent never got a result; otherwise `APPLICATION` |
+| `TIMEOUT` | The handler ran past its timeout | `RUNTIME` if a Cortex API call was in flight, the invocation waited for a free handler, or the agent never got a result; otherwise `APPLICATION` |
 | `NO_RESOURCES` | The agent's queue was full, or the message expired waiting for a free handler | `RUNTIME` |
 
 `caller_rejected` is true when the sender was told the message wasn't
 accepted (a webhook got a 503), so the sender may also retry it.
 
-Returning `PostAction.RETRY` asks the agent to queue the invocation again,
-with `attempt` incremented. The agent stops after 5 attempts. Returning
-nothing ignores the failure.
+Returning `FailureAction.RETRY` asks the agent to queue the invocation
+again, with `attempt` incremented. The agent stops after 5 attempts.
+Returning nothing ignores the failure.
 
-`pre_dispatch` takes a function of `info` that runs before each handler,
-e.g. to record every inbound message before processing it.
-
-Hooks run for every handler type, not only webhooks. Python can't stop a
+The hook runs for every handler type, not only webhooks. Python can't stop a
 handler that overruns its timeout: at the deadline the SDK reports the
 `TIMEOUT` and runs the hook, and whatever the handler does after that is
 dropped.

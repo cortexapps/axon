@@ -28,8 +28,7 @@ type agentOptions struct {
 	sleepOnError          time.Duration
 	version               string
 	maxReceiveMessageSize int
-	preDispatch           PreDispatchHook
-	postDispatch          PostDispatchHook
+	onFailure             FailureHook
 }
 
 func resolveMaxReceiveMessageSize() int {

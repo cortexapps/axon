@@ -24,7 +24,7 @@ class FailureSource(IntEnum):
     RUNTIME = cortex_axon_agent_pb2.RUNTIME
 
 
-class PostAction(Enum):
+class FailureAction(Enum):
     # Leave the failure as it is.
     IGNORE = "ignore"
     # Queue the invocation again as its next attempt.
@@ -75,11 +75,7 @@ class Failure:
         )
 
 
-# Runs before each handler.
-PreDispatchHook = Callable[[InvocationInfo], None]
-
-# Runs after each invocation with failure=None on success, and for every
-# failure the agent detects on its own, such as an invocation that never
-# reached this process. Returning None means PostAction.IGNORE; the return
-# value only matters for a failure.
-PostDispatchHook = Callable[[InvocationInfo, Optional[Failure]], Optional[PostAction]]
+# Runs for every failed invocation, including failures the agent detects on
+# its own, such as an invocation that never reached this process. Returning
+# None means FailureAction.IGNORE.
+FailureHook = Callable[[InvocationInfo, Failure], Optional[FailureAction]]

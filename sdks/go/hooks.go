@@ -13,7 +13,7 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// InvocationInfo identifies one invocation for the dispatch hooks. For a
+// InvocationInfo identifies one invocation for the failure hook. For a
 // webhook, Args holds the inbound message: "body", "content-type" and "url".
 type InvocationInfo struct {
 	InvocationID string
@@ -57,69 +57,44 @@ func failureFromProto(f *pb.InvocationFailure) *Failure {
 	}
 }
 
-// PostAction is what a PostDispatchHook wants done with a failed invocation.
-type PostAction int
+// FailureAction is what a FailureHook wants done with a failed invocation.
+type FailureAction int
 
 const (
-	// PostActionIgnore leaves the failure as it is.
-	PostActionIgnore PostAction = iota
-	// PostActionRetry queues the invocation again as its next attempt.
-	PostActionRetry
+	// FailureActionIgnore leaves the failure as it is.
+	FailureActionIgnore FailureAction = iota
+	// FailureActionRetry queues the invocation again as its next attempt.
+	FailureActionRetry
 )
 
-// PreDispatchHook runs before each invocation's handler.
-type PreDispatchHook func(ctx context.Context, info InvocationInfo)
+// FailureHook runs for every failed invocation, including failures the agent
+// detects on its own, such as an invocation that never reached this process.
+type FailureHook func(ctx context.Context, info InvocationInfo, failure *Failure) FailureAction
 
-// PostDispatchHook runs after each invocation, with a nil failure when it
-// succeeded. It also runs for failures the agent detects on its own, such as
-// an invocation that never reached this process, so it sees every failed
-// message. Its return value only matters for a failure.
-type PostDispatchHook func(ctx context.Context, info InvocationInfo, failure *Failure) PostAction
-
-// WithPreDispatchHook sets a hook that runs before every handler.
-func WithPreDispatchHook(hook PreDispatchHook) Option {
+// WithFailureHook sets a hook that runs for every failed invocation.
+func WithFailureHook(hook FailureHook) Option {
 	return func(a *agentOptions) {
-		a.preDispatch = hook
+		a.onFailure = hook
 	}
 }
 
-// WithPostDispatchHook sets a hook that runs after every invocation and for
-// every failure, including ones the agent detects.
-func WithPostDispatchHook(hook PostDispatchHook) Option {
-	return func(a *agentOptions) {
-		a.postDispatch = hook
-	}
-}
-
-func (a *Agent) runPreDispatch(info InvocationInfo) {
-	if a.preDispatch == nil {
+func (a *Agent) runFailureHook(info InvocationInfo, failure *Failure) {
+	if a.onFailure == nil {
 		return
 	}
-	defer func() {
-		if r := recover(); r != nil {
-			a.logger.Error("panic in pre-dispatch hook", zap.Any("panic", r))
-		}
-	}()
-	a.preDispatch(context.Background(), info)
-}
-
-func (a *Agent) runPostDispatch(info InvocationInfo, failure *Failure) {
-	if a.postDispatch == nil {
-		return
-	}
-	if a.callPostDispatch(info, failure) == PostActionRetry && failure != nil {
+	if a.callFailureHook(info, failure) == FailureActionRetry {
 		a.retryInvocation(info)
 	}
 }
 
-func (a *Agent) callPostDispatch(info InvocationInfo, failure *Failure) (action PostAction) {
+func (a *Agent) callFailureHook(info InvocationInfo, failure *Failure) (action FailureAction) {
 	defer func() {
 		if r := recover(); r != nil {
-			a.logger.Error("panic in post-dispatch hook", zap.Any("panic", r))
-			action = PostActionIgnore
+			a.logger.Error("panic in failure hook", zap.Any("panic", r))
+			action = FailureActionIgnore
 		}
 	}()
-	return a.postDispatch(context.Background(), info, failure)
+	return a.onFailure(context.Background(), info, failure)
 }
 
 func (a *Agent) retryInvocation(info InvocationInfo) {
@@ -198,6 +173,6 @@ func (a *Agent) readFailureEvents(ctx context.Context) error {
 		if ev.GetInvoke() == nil {
 			continue
 		}
-		a.runPostDispatch(newInvocationInfo(ev.GetInvoke()), failureFromProto(ev.GetFailure()))
+		a.runFailureHook(newInvocationInfo(ev.GetInvoke()), failureFromProto(ev.GetFailure()))
 	}
 }

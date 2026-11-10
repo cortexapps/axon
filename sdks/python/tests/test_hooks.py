@@ -9,9 +9,9 @@ import pytest
 
 from cortex_axon import (
     AxonClient,
+    FailureAction,
     FailureReason,
     FailureSource,
-    PostAction,
 )
 from cortex_axon.handler import CortexWebhook
 from generated import (
@@ -106,14 +106,10 @@ def serve(servicer, add):
 class Hooks:
     def __init__(self, action=None):
         self.action = action
-        self.pre = queue.Queue()
-        self.post = queue.Queue()
+        self.failures = queue.Queue()
 
-    def pre_dispatch(self, info):
-        self.pre.put(info)
-
-    def post_dispatch(self, info, failure):
-        self.post.put((info, failure))
+    def on_failure(self, info, failure):
+        self.failures.put((info, failure))
         return self.action
 
 
@@ -141,8 +137,7 @@ def run_client():
             cortex_port=api_port,
             handlers=[webhook],
             max_concurrent_handlers=max_concurrent_handlers,
-            pre_dispatch=hooks.pre_dispatch if hooks else None,
-            post_dispatch=hooks.post_dispatch if hooks else None,
+            on_failure=hooks.on_failure if hooks else None,
         )
         threading.Thread(target=client.run, daemon=True).start()
         clients.append(client)
@@ -164,8 +159,8 @@ def run_client():
             client._events_thread.join(timeout=5)
 
 
-def test_post_dispatch_on_success(run_client):
-    hooks = Hooks(action=PostAction.RETRY)
+def test_failure_hook_not_called_on_success(run_client):
+    hooks = Hooks(action=FailureAction.RETRY)
     agent = HookAgent(invokes=[invoke(body="payload")])
 
     def my_hooked_webhook(ctx):
@@ -173,19 +168,14 @@ def test_post_dispatch_on_success(run_client):
 
     run_client(agent, my_hooked_webhook, hooks)
 
-    pre = hooks.pre.get(timeout=5)
-    info, failure = hooks.post.get(timeout=5)
-    assert pre.invocation_id == info.invocation_id == "1"
-    assert failure is None
-    assert info.args == {"body": "payload"}
-    assert info.attempt == 1
-    # RETRY on success is ignored.
+    assert agent.reports.get(timeout=5).result.value == "ok"
     with pytest.raises(queue.Empty):
-        agent.retries.get(timeout=0.5)
+        hooks.failures.get(timeout=0.5)
+    assert agent.retries.empty()
 
 
-def test_post_dispatch_on_handler_error_and_retry(run_client):
-    hooks = Hooks(action=PostAction.RETRY)
+def test_failure_hook_on_handler_error_and_retry(run_client):
+    hooks = Hooks(action=FailureAction.RETRY)
     agent = HookAgent(invokes=[invoke(body="payload")])
 
     def my_hooked_webhook(ctx):
@@ -193,7 +183,10 @@ def test_post_dispatch_on_handler_error_and_retry(run_client):
 
     run_client(agent, my_hooked_webhook, hooks)
 
-    info, failure = hooks.post.get(timeout=5)
+    info, failure = hooks.failures.get(timeout=5)
+    assert info.invocation_id == "1"
+    assert info.args == {"body": "payload"}
+    assert info.attempt == 1
     assert failure.reason == FailureReason.HANDLER_ERROR
     assert failure.source == FailureSource.APPLICATION
     assert failure.message == "ohnoes"
@@ -213,7 +206,7 @@ def test_api_timeout_is_runtime(run_client):
 
     try:
         run_client(agent, my_hooked_webhook, hooks, api=api)
-        _, failure = hooks.post.get(timeout=5)
+        _, failure = hooks.failures.get(timeout=5)
     finally:
         api.release.set()
     assert failure.reason == FailureReason.TIMEOUT
@@ -231,7 +224,7 @@ def test_slow_handler_times_out_as_application(run_client):
 
     run_client(agent, my_hooked_webhook, hooks)
 
-    _, failure = hooks.post.get(timeout=5)
+    _, failure = hooks.failures.get(timeout=5)
     assert failure.reason == FailureReason.TIMEOUT
     assert failure.source == FailureSource.APPLICATION
     report = agent.reports.get(timeout=5)
@@ -240,7 +233,7 @@ def test_slow_handler_times_out_as_application(run_client):
     # The late finish is dropped: no second report, no second hook call.
     assert finished.wait(timeout=5)
     with pytest.raises(queue.Empty):
-        hooks.post.get(timeout=0.5)
+        hooks.failures.get(timeout=0.5)
     assert agent.reports.empty()
 
 
@@ -259,12 +252,11 @@ def test_expired_invocation_is_not_started(run_client):
 
     run_client(agent, my_hooked_webhook, hooks)
 
-    info, failure = hooks.post.get(timeout=5)
-    assert info.invocation_id == "fresh"
-    assert failure is None
     assert agent.reports.get(timeout=5).handler_invoke.invocation_id == "fresh"
+    # The stale one neither ran nor reached the hook: the agent reports it.
     with pytest.raises(queue.Empty):
-        hooks.post.get(timeout=0.5)
+        hooks.failures.get(timeout=0.5)
+    assert agent.reports.empty()
     assert ran.qsize() == 1
 
 
@@ -278,7 +270,7 @@ def test_timeout_capped_by_agent_deadline_is_runtime(run_client):
 
     run_client(agent, my_hooked_webhook, hooks)
 
-    _, failure = hooks.post.get(timeout=5)
+    _, failure = hooks.failures.get(timeout=5)
     assert failure.reason == FailureReason.TIMEOUT
     assert failure.source == FailureSource.RUNTIME
     assert agent.reports.get(timeout=5).error.code == "timeout"
@@ -289,15 +281,19 @@ def test_hook_errors_are_contained(run_client):
     ran = queue.Queue()
 
     class Broken(Hooks):
-        def post_dispatch(self, info, failure):
+        def on_failure(self, info, failure):
             raise RuntimeError("hook bug")
 
     def my_hooked_webhook(ctx):
         ran.put(True)
+        raise ValueError("ohnoes")
 
     run_client(agent, my_hooked_webhook, Broken())
+    # Both still run and report, despite the hook raising each time.
     ran.get(timeout=5)
     ran.get(timeout=5)
+    assert agent.reports.get(timeout=5).error.code == "unexpected"
+    assert agent.reports.get(timeout=5).error.code == "unexpected"
 
 
 def test_dispatch_request_advertises_failure_events(run_client):
@@ -331,7 +327,7 @@ def test_failure_events_reach_hook_while_handlers_are_saturated(run_client):
     ]
     # More invocations than slots, so the dispatch reader blocks.
     agent = HookAgent(invokes=[invoke(str(i)) for i in range(slots + 2)], events=events)
-    hooks = Hooks(action=PostAction.RETRY)
+    hooks = Hooks(action=FailureAction.RETRY)
 
     def my_hooked_webhook(ctx):
         with contextlib.suppress(threading.BrokenBarrierError):
@@ -342,7 +338,7 @@ def test_failure_events_reach_hook_while_handlers_are_saturated(run_client):
         run_client(agent, my_hooked_webhook, hooks, max_concurrent_handlers=slots)
         started.wait(timeout=5)
 
-        seen = [hooks.post.get(timeout=5) for _ in events]
+        seen = [hooks.failures.get(timeout=5) for _ in events]
         bodies = sorted(info.args["body"] for info, _ in seen)
         assert bodies == sorted(f"msg-{i}" for i in range(20))
         for _, failure in seen:

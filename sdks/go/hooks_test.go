@@ -21,19 +21,19 @@ type hookCall struct {
 	failure *Failure
 }
 
-// hookRecorder is a post-dispatch hook that records each call.
+// hookRecorder is a failure hook that records each call.
 type hookRecorder struct {
 	mu     sync.Mutex
 	calls  []hookCall
-	action PostAction
+	action FailureAction
 	seen   chan struct{}
 }
 
-func newHookRecorder(action PostAction) *hookRecorder {
+func newHookRecorder(action FailureAction) *hookRecorder {
 	return &hookRecorder{action: action, seen: make(chan struct{}, 10)}
 }
 
-func (r *hookRecorder) hook(_ context.Context, info InvocationInfo, failure *Failure) PostAction {
+func (r *hookRecorder) hook(_ context.Context, info InvocationInfo, failure *Failure) FailureAction {
 	r.mu.Lock()
 	r.calls = append(r.calls, hookCall{info, failure})
 	r.mu.Unlock()
@@ -81,11 +81,11 @@ func expectEventStream(mock *mockGrpcClient, events ...*pb.DispatchEvent) {
 		})
 }
 
-func runWithPostHook(t *testing.T, handler any, timeoutMs int, rec *hookRecorder, setup ...func(*mockGrpcClient)) {
+func runWithFailureHook(t *testing.T, handler any, timeoutMs int, rec *hookRecorder, setup ...func(*mockGrpcClient)) {
 	controller := gomock.NewController(t)
 	defer controller.Finish()
 	executeHandlerWithAgent(t, controller, handler, timeoutMs, nil, func(agent *Agent, mock *mockGrpcClient) {
-		agent.postDispatch = rec.hook
+		agent.onFailure = rec.hook
 		expectEventStream(mock)
 		for _, s := range setup {
 			s(mock)
@@ -93,41 +93,42 @@ func runWithPostHook(t *testing.T, handler any, timeoutMs int, rec *hookRecorder
 	})
 }
 
-func TestPostDispatchHookOnSuccess(t *testing.T) {
-	rec := newHookRecorder(PostActionRetry)
-	runWithPostHook(t, func(ctx HandlerContext) error { return nil }, 0, rec)
+func TestFailureHookNotCalledOnSuccess(t *testing.T) {
+	rec := newHookRecorder(FailureActionRetry)
+	runWithFailureHook(t, func(ctx HandlerContext) error { return nil }, 0, rec)
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	require.Empty(t, rec.calls)
+}
+
+func TestFailureHookOnHandlerError(t *testing.T) {
+	rec := newHookRecorder(FailureActionIgnore)
+	runWithFailureHook(t, func(ctx HandlerContext) error { return fmt.Errorf("ohnoes") }, 0, rec)
 
 	call := rec.only(t)
-	require.Nil(t, call.failure)
 	require.Equal(t, "func1", call.info.HandlerName)
 	require.Equal(t, pb.HandlerInvokeType_RUN_NOW, call.info.InvokeType)
 	require.Equal(t, 1, call.info.Attempt, "an agent that doesn't send attempt means the first")
-	// Retry on success is ignored: no RetryInvocation expectation is set.
-}
-
-func TestPostDispatchHookOnHandlerError(t *testing.T) {
-	rec := newHookRecorder(PostActionIgnore)
-	runWithPostHook(t, func(ctx HandlerContext) error { return fmt.Errorf("ohnoes") }, 0, rec)
-
-	failure := rec.only(t).failure
+	failure := call.failure
 	require.NotNil(t, failure)
 	require.Equal(t, pb.FailureReason_HANDLER_ERROR, failure.Reason)
 	require.Equal(t, pb.FailureSource_APPLICATION, failure.Source)
 	require.Equal(t, "ohnoes", failure.Message)
 }
 
-func TestPostDispatchHookOnPanic(t *testing.T) {
-	rec := newHookRecorder(PostActionIgnore)
-	runWithPostHook(t, func(ctx HandlerContext) error { panic("ohnoes") }, 0, rec)
+func TestFailureHookOnPanic(t *testing.T) {
+	rec := newHookRecorder(FailureActionIgnore)
+	runWithFailureHook(t, func(ctx HandlerContext) error { panic("ohnoes") }, 0, rec)
 
 	failure := rec.only(t).failure
 	require.Equal(t, pb.FailureReason_HANDLER_ERROR, failure.Reason)
 	require.Equal(t, pb.FailureSource_APPLICATION, failure.Source)
 }
 
-func TestPostDispatchHookOnHandlerTimeout(t *testing.T) {
-	rec := newHookRecorder(PostActionIgnore)
-	runWithPostHook(t, func(ctx HandlerContext) error {
+func TestFailureHookOnHandlerTimeout(t *testing.T) {
+	rec := newHookRecorder(FailureActionIgnore)
+	runWithFailureHook(t, func(ctx HandlerContext) error {
 		time.Sleep(50 * time.Millisecond)
 		return nil
 	}, 1, rec)
@@ -137,9 +138,9 @@ func TestPostDispatchHookOnHandlerTimeout(t *testing.T) {
 	require.Equal(t, pb.FailureSource_APPLICATION, failure.Source)
 }
 
-func TestPostDispatchHookTimeoutDuringApiCallIsRuntime(t *testing.T) {
-	rec := newHookRecorder(PostActionIgnore)
-	runWithPostHook(t, func(ctx HandlerContext) error {
+func TestFailureHookTimeoutDuringApiCallIsRuntime(t *testing.T) {
+	rec := newHookRecorder(FailureActionIgnore)
+	runWithFailureHook(t, func(ctx HandlerContext) error {
 		_, err := ctx.CortexJsonApiCall("GET", "/api/v1/slow", "")
 		return err
 	}, 20, rec, func(mock *mockGrpcClient) {
@@ -155,10 +156,10 @@ func TestPostDispatchHookTimeoutDuringApiCallIsRuntime(t *testing.T) {
 	require.Equal(t, pb.FailureSource_RUNTIME, failure.Source)
 }
 
-func TestPostDispatchHookRetry(t *testing.T) {
-	rec := newHookRecorder(PostActionRetry)
+func TestFailureHookRetry(t *testing.T) {
+	rec := newHookRecorder(FailureActionRetry)
 	retried := make(chan *pb.RetryInvocationRequest, 1)
-	runWithPostHook(t, func(ctx HandlerContext) error { return fmt.Errorf("ohnoes") }, 0, rec, func(mock *mockGrpcClient) {
+	runWithFailureHook(t, func(ctx HandlerContext) error { return fmt.Errorf("ohnoes") }, 0, rec, func(mock *mockGrpcClient) {
 		mock.agentStub.EXPECT().RetryInvocation(gomock.Any(), gomock.Any()).DoAndReturn(
 			func(ctx context.Context, req *pb.RetryInvocationRequest, opts ...grpc.CallOption) (*pb.RetryInvocationResponse, error) {
 				retried <- req
@@ -170,7 +171,7 @@ func TestPostDispatchHookRetry(t *testing.T) {
 	require.Equal(t, "func1", req.Invoke.HandlerName)
 }
 
-func TestPostDispatchHookPanicIsContained(t *testing.T) {
+func TestFailureHookPanicIsContained(t *testing.T) {
 	controller := gomock.NewController(t)
 	defer controller.Finish()
 
@@ -178,31 +179,14 @@ func TestPostDispatchHookPanicIsContained(t *testing.T) {
 	executeHandlerWithAgent(t, controller, func(ctx HandlerContext) error { return fmt.Errorf("ohnoes") }, 0,
 		func(*pb.ReportInvocationRequest) { reported = true },
 		func(agent *Agent, mock *mockGrpcClient) {
-			agent.postDispatch = func(context.Context, InvocationInfo, *Failure) PostAction { panic("hook bug") }
+			agent.onFailure = func(context.Context, InvocationInfo, *Failure) FailureAction { panic("hook bug") }
 			expectEventStream(mock)
 		})
 	require.True(t, reported)
 }
 
-func TestPreDispatchHookRunsBeforeHandler(t *testing.T) {
-	controller := gomock.NewController(t)
-	defer controller.Finish()
-
-	var order []string
-	executeHandlerWithAgent(t, controller, func(ctx HandlerContext) error {
-		order = append(order, "handler")
-		return nil
-	}, 0, nil, func(agent *Agent, mock *mockGrpcClient) {
-		agent.preDispatch = func(_ context.Context, info InvocationInfo) {
-			require.Equal(t, "func1", info.HandlerName)
-			order = append(order, "pre")
-		}
-	})
-	require.Equal(t, []string{"pre", "handler"}, order)
-}
-
-func TestFailureEventReachesPostDispatchHook(t *testing.T) {
-	rec := newHookRecorder(PostActionRetry)
+func TestFailureEventReachesFailureHook(t *testing.T) {
+	rec := newHookRecorder(FailureActionRetry)
 	retried := make(chan *pb.RetryInvocationRequest, 1)
 
 	ev := &pb.DispatchEvent{
@@ -228,7 +212,7 @@ func TestFailureEventReachesPostDispatchHook(t *testing.T) {
 		<-rec.seen
 		return nil
 	}, 0, nil, func(agent *Agent, mock *mockGrpcClient) {
-		agent.postDispatch = rec.hook
+		agent.onFailure = rec.hook
 		expectEventStream(mock, ev)
 		mock.agentStub.EXPECT().RetryInvocation(gomock.Any(), gomock.Any()).DoAndReturn(
 			func(ctx context.Context, req *pb.RetryInvocationRequest, opts ...grpc.CallOption) (*pb.RetryInvocationResponse, error) {
@@ -256,7 +240,7 @@ func TestFailureEventsStopOnOlderAgent(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 		return nil
 	}, 0, nil, func(agent *Agent, mock *mockGrpcClient) {
-		agent.postDispatch = func(context.Context, InvocationInfo, *Failure) PostAction { return PostActionIgnore }
+		agent.onFailure = func(context.Context, InvocationInfo, *Failure) FailureAction { return FailureActionIgnore }
 		// Times(1): an agent without the RPC must not be redialed in a loop.
 		mock.agentStub.EXPECT().DispatchEvents(gomock.Any(), gomock.Any()).Times(1).Return(
 			&eventStream{err: status.Error(codes.Unimplemented, "unknown method DispatchEvents")}, nil)
@@ -273,7 +257,7 @@ func TestDispatchRequestAdvertisesFailureEvents(t *testing.T) {
 			executeHandlerWithAgent(t, controller, func(ctx HandlerContext) error { return nil }, 0, nil,
 				func(agent *Agent, mock *mockGrpcClient) {
 					if withHook {
-						agent.postDispatch = func(context.Context, InvocationInfo, *Failure) PostAction { return PostActionIgnore }
+						agent.onFailure = func(context.Context, InvocationInfo, *Failure) FailureAction { return FailureActionIgnore }
 						expectEventStream(mock)
 					}
 					sent = mock.lastStream

@@ -26,12 +26,11 @@ from .handler import (
 )
 from .hooks import (
     Failure,
+    FailureAction,
+    FailureHook,
     FailureReason,
     FailureSource,
     InvocationInfo,
-    PostAction,
-    PostDispatchHook,
-    PreDispatchHook,
 )
 
 DEFAULT_MAX_CONCURRENT_HANDLERS = 8
@@ -181,8 +180,7 @@ class AxonClient:
         scope=None,
         max_receive_message_size: Optional[int] = None,
         max_concurrent_handlers: int = DEFAULT_MAX_CONCURRENT_HANDLERS,
-        pre_dispatch: Optional[PreDispatchHook] = None,
-        post_dispatch: Optional[PostDispatchHook] = None,
+        on_failure: Optional[FailureHook] = None,
     ):
         if max_concurrent_handlers < 1:
             raise ValueError("max_concurrent_handlers must be at least 1")
@@ -227,8 +225,7 @@ class AxonClient:
         )
         self._handler_slots = threading.BoundedSemaphore(max_concurrent_handlers)
 
-        self.pre_dispatch = pre_dispatch
-        self.post_dispatch = post_dispatch
+        self.on_failure = on_failure
         # Failure events have their own thread and pool, apart from the
         # handler slots: they arrive exactly when every handler is busy, and
         # must never wait for one to free up.
@@ -236,7 +233,7 @@ class AxonClient:
         self._events_thread = None
         self._events_stop = threading.Event()
         self._events_call = None
-        if post_dispatch:
+        if on_failure:
             self._hook_executor = ThreadPoolExecutor(
                 max_workers=2, thread_name_prefix="axon-hook"
             )
@@ -276,25 +273,16 @@ class AxonClient:
                 return h
         return None
 
-    def _run_pre_dispatch(self, info: InvocationInfo):
-        if not self.pre_dispatch:
+    def _run_failure_hook(self, info: InvocationInfo, failure: Failure, stub):
+        if not self.on_failure:
             return
         try:
-            self.pre_dispatch(info)
+            action = self.on_failure(info, failure)
         except Exception:
-            print(f"Error in pre_dispatch hook for {info.handler_name} (id={info.invocation_id})")
-            traceback.print_exc()
-
-    def _run_post_dispatch(self, info: InvocationInfo, failure: Optional[Failure], stub):
-        if not self.post_dispatch:
-            return
-        try:
-            action = self.post_dispatch(info, failure)
-        except Exception:
-            print(f"Error in post_dispatch hook for {info.handler_name} (id={info.invocation_id})")
+            print(f"Error in on_failure hook for {info.handler_name} (id={info.invocation_id})")
             traceback.print_exc()
             return
-        if action == PostAction.RETRY and failure is not None:
+        if action == FailureAction.RETRY:
             self._retry_invocation(info, stub)
 
     def _retry_invocation(self, info: InvocationInfo, stub):
@@ -317,7 +305,7 @@ class AxonClient:
         )
 
     def _start_failure_events(self):
-        if not self.post_dispatch or self._events_thread:
+        if not self.on_failure or self._events_thread:
             return
         self._events_thread = threading.Thread(
             target=self._run_failure_events, name="axon-failure-events", daemon=True
@@ -351,7 +339,7 @@ class AxonClient:
                         if not event.HasField("invoke"):
                             continue
                         self._hook_executor.submit(
-                            self._run_post_dispatch,
+                            self._run_failure_hook,
                             InvocationInfo.from_proto(event.invoke),
                             Failure.from_proto(event.failure),
                             stub,
@@ -404,7 +392,6 @@ class AxonClient:
         failure = None
         result = None
         info = InvocationInfo.from_proto(invoke)
-        self._run_pre_dispatch(info)
         now = datetime.now()
         timeout, capped, _ = _invoke_timeout(invoke, time())
         ctx = self._handler_context(invoke.args, timeout * 1000 if timeout else 0)
@@ -443,7 +430,7 @@ class AxonClient:
                 error=common_pb2.Error(code="timeout", message=message),
                 logs=list(ctx.logs),
             ))
-            self._run_post_dispatch(
+            self._run_failure_hook(
                 info, Failure(reason=FailureReason.TIMEOUT, source=source, message=message), stub
             )
 
@@ -501,7 +488,8 @@ class AxonClient:
 
         # After the report, so a slow hook can't make the agent decide this
         # invocation was never answered and report the failure a second time.
-        self._run_post_dispatch(info, failure, stub)
+        if failure is not None:
+            self._run_failure_hook(info, failure, stub)
 
     def _report(self, stub, invoke_info):
         # A failure here must not escape the worker: the dispatch loop is no
@@ -538,7 +526,7 @@ class AxonClient:
                 initial_message = cortex_axon_agent_pb2.DispatchRequest(
                     dispatch_id=self.id,
                     client_version=AGENT_VERSION,
-                    failure_events=self.post_dispatch is not None,
+                    failure_events=self.on_failure is not None,
                 )
                 for response in stub.Dispatch(
                     _client_message_iterator(initial_message)

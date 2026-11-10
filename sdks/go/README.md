@@ -111,23 +111,19 @@ This will begin executing your handler every second.
 
 ## Failure hooks
 
-`WithPostDispatchHook` runs your own code after every invocation, and for
-every failure, including ones only the agent sees (such as a webhook dropped
-because every handler was busy). Use it to send failed messages somewhere you
-can replay them from.
+`WithFailureHook` runs your own code for every failed invocation, including
+ones only the agent sees (such as a webhook dropped because every handler was
+busy). Use it to send failed messages somewhere you can replay them from.
 
 ```go
 agent := axon.NewAxonAgent(
-	axon.WithPostDispatchHook(func(ctx context.Context, info axon.InvocationInfo, failure *axon.Failure) axon.PostAction {
-		if failure == nil {
-			return axon.PostActionIgnore // it worked
-		}
+	axon.WithFailureHook(func(ctx context.Context, info axon.InvocationInfo, failure *axon.Failure) axon.FailureAction {
 		// info.Args holds the original webhook: "body", "content-type", "url"
 		deadLetters.Publish(info, failure)
 		if failure.Source == pb.FailureSource_RUNTIME && info.Attempt < 3 {
-			return axon.PostActionRetry
+			return axon.FailureActionRetry
 		}
-		return axon.PostActionIgnore
+		return axon.FailureActionIgnore
 	}),
 )
 ```
@@ -136,5 +132,5 @@ agent := axon.NewAxonAgent(
 `failure.Source` says whether handler code (`APPLICATION`) or Axon
 (`RUNTIME`) failed. A timeout during a Cortex API call counts as `RUNTIME`.
 `CallerRejected` means the sender was told the message wasn't accepted (a
-webhook got a 503). `PostActionRetry` queues the invocation again as its next
-attempt, up to 5 attempts. `WithPreDispatchHook` runs before each handler.
+webhook got a 503). `FailureActionRetry` queues the invocation again as its
+next attempt, up to 5 attempts.
