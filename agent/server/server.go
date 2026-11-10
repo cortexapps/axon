@@ -205,6 +205,10 @@ func (s *AxonAgent) sendInvocations(dispatchId string, stream pb.AxonAgent_Dispa
 
 			now := time.Now()
 			msg := invoke.ToDispatchInvoke()
+			// The client may not read this for a while if every handler is
+			// busy, so it gets an absolute deadline rather than only a timeout.
+			deadline := now.Add(time.Duration(msg.TimeoutMs)*time.Millisecond + reportGrace)
+			msg.Deadline = timestamppb.New(deadline)
 
 			dispatchMessage := &pb.DispatchMessage{
 				Type:    pb.DispatchMessageType_DISPATCH_MESSAGE_INVOKE,
@@ -224,7 +228,7 @@ func (s *AxonAgent) sendInvocations(dispatchId string, stream pb.AxonAgent_Dispa
 				// The grace lets a client that enforces the timeout itself
 				// report it first, so the failure is described once, by the
 				// side that saw it.
-				<-time.After(time.Duration(msg.TimeoutMs)*time.Millisecond + reportGrace)
+				<-time.After(time.Until(deadline))
 				message := fmt.Sprintf("handler did not report a result within %dms", msg.TimeoutMs)
 				completed := s.completeInvocation(context.Background(), &pb.ReportInvocationRequest{
 					HandlerInvoke: msg,

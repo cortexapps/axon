@@ -394,17 +394,27 @@ func (a *Agent) processDispatchStream(ctx context.Context, stream grpc.BidiStrea
 				continue
 			}
 
+			deadline, capped, expired := invokeDeadline(invoke, time.Now())
+			if expired {
+				// The agent has already reported this one as failed; running
+				// it now would duplicate work a failure hook may be replaying.
+				a.logger.Warn("skipping invocation that expired before it could start",
+					zap.String("handler", invoke.HandlerName),
+					zap.String("invocation-id", invoke.InvocationId))
+				continue
+			}
+
 			timeoutCtx := ctx
 			cancel := func() {}
-			if invoke.TimeoutMs != 0 {
-				timeoutCtx, cancel = context.WithTimeout(context.Background(), time.Millisecond*time.Duration(invoke.TimeoutMs))
+			if !deadline.IsZero() {
+				timeoutCtx, cancel = context.WithDeadline(context.Background(), deadline)
 			}
 
 			runningHandlers.Add(1)
 			go func() {
 				defer runningHandlers.Done()
 				defer cancel()
-				a.invokeHandler(timeoutCtx, invoke)
+				a.invokeHandler(timeoutCtx, invoke, capped)
 			}()
 		case pb.DispatchMessageType_DISPATCH_MESSAGE_WORK_COMPLETED:
 			a.logger.Info("work completed, shutting down")
@@ -415,7 +425,35 @@ func (a *Agent) processDispatchStream(ctx context.Context, stream grpc.BidiStrea
 	}
 }
 
-func (a *Agent) invokeHandler(ctx context.Context, invoke *pb.DispatchHandlerInvoke) {
+// deadlineMargin is how far ahead of the agent's deadline a handler must
+// finish, so its report reaches the agent before the agent gives up on it.
+const deadlineMargin = time.Second
+
+// invokeDeadline works out when a handler must finish: its own timeout, but no
+// later than the agent's deadline. capped means the agent's deadline is the
+// tighter one, i.e. the invocation waited before it got here. expired means
+// it is already too late to start.
+func invokeDeadline(invoke *pb.DispatchHandlerInvoke, now time.Time) (deadline time.Time, capped bool, expired bool) {
+	if invoke.TimeoutMs != 0 {
+		deadline = now.Add(time.Duration(invoke.TimeoutMs) * time.Millisecond)
+	}
+	if invoke.GetDeadline() == nil {
+		return deadline, false, false
+	}
+	agentDeadline := invoke.GetDeadline().AsTime().Add(-deadlineMargin)
+	if !now.Before(agentDeadline) {
+		return time.Time{}, false, true
+	}
+	if deadline.IsZero() || agentDeadline.Before(deadline) {
+		return agentDeadline, true, false
+	}
+	return deadline, false, false
+}
+
+// invokeHandler runs one invocation. capped means its deadline came from the
+// agent rather than its own timeout, so a timeout is time spent waiting, not
+// the handler being slow.
+func (a *Agent) invokeHandler(ctx context.Context, invoke *pb.DispatchHandlerInvoke, capped bool) {
 	handlerInfo, ok := a.registeredHandlers[invoke.HandlerId]
 	if !ok {
 		a.logger.Error("handler not found", zap.String("handler", invoke.HandlerName))
@@ -485,6 +523,9 @@ func (a *Agent) invokeHandler(ctx context.Context, invoke *pb.DispatchHandlerInv
 		if hc, ok := hctx.(*handlerContext); ok && hc.calls.blockedOnApi() {
 			failure.Source = pb.FailureSource_RUNTIME
 			failure.Message += " while waiting on a Cortex API call"
+		} else if capped {
+			failure.Source = pb.FailureSource_RUNTIME
+			failure.Message = "invocation waited for a free handler and ran out of time"
 		}
 	}
 

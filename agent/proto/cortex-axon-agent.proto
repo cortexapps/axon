@@ -125,6 +125,10 @@ message DispatchHandlerInvoke{
   map<string, string> args = 20;
   // 1 for the first attempt; 0 means the agent didn't say, so treat it as 1.
   int32  attempt = 30;
+  // When the agent stops waiting for this invocation's result and reports
+  // the failure itself. A client must not start a handler after it, since
+  // the failure has already been reported. Unset from older agents.
+  google.protobuf.Timestamp deadline = 31;
 }
 
 //

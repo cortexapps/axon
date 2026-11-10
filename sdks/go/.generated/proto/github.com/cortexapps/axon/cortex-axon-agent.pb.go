@@ -877,7 +877,11 @@ type DispatchHandlerInvoke struct {
 	Reason       HandlerInvokeType      `protobuf:"varint,11,opt,name=reason,proto3,enum=cortex.axon.HandlerInvokeType" json:"reason,omitempty"`
 	Args         map[string]string      `protobuf:"bytes,20,rep,name=args,proto3" json:"args,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// 1 for the first attempt; 0 means the agent didn't say, so treat it as 1.
-	Attempt       int32 `protobuf:"varint,30,opt,name=attempt,proto3" json:"attempt,omitempty"`
+	Attempt int32 `protobuf:"varint,30,opt,name=attempt,proto3" json:"attempt,omitempty"`
+	// When the agent stops waiting for this invocation's result and reports
+	// the failure itself. A client must not start a handler after it, since
+	// the failure has already been reported. Unset from older agents.
+	Deadline      *timestamppb.Timestamp `protobuf:"bytes,31,opt,name=deadline,proto3" json:"deadline,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -966,6 +970,13 @@ func (x *DispatchHandlerInvoke) GetAttempt() int32 {
 		return x.Attempt
 	}
 	return 0
+}
+
+func (x *DispatchHandlerInvoke) GetDeadline() *timestamppb.Timestamp {
+	if x != nil {
+		return x.Deadline
+	}
+	return nil
 }
 
 type InvocationFailure struct {
@@ -1738,7 +1749,7 @@ const file_cortex_axon_agent_proto_rawDesc = "" +
 	"\x04type\x18\x01 \x01(\x0e2 .cortex.axon.DispatchMessageTypeR\x04type\x12<\n" +
 	"\x06invoke\x18\n" +
 	" \x01(\v2\".cortex.axon.DispatchHandlerInvokeH\x00R\x06invokeB\t\n" +
-	"\amessage\"\x8b\x03\n" +
+	"\amessage\"\xc3\x03\n" +
 	"\x15DispatchHandlerInvoke\x12#\n" +
 	"\rinvocation_id\x18\x01 \x01(\tR\finvocationId\x12\x1f\n" +
 	"\vdispatch_id\x18\x02 \x01(\tR\n" +
@@ -1751,7 +1762,8 @@ const file_cortex_axon_agent_proto_rawDesc = "" +
 	" \x01(\x05R\ttimeoutMs\x126\n" +
 	"\x06reason\x18\v \x01(\x0e2\x1e.cortex.axon.HandlerInvokeTypeR\x06reason\x12@\n" +
 	"\x04args\x18\x14 \x03(\v2,.cortex.axon.DispatchHandlerInvoke.ArgsEntryR\x04args\x12\x18\n" +
-	"\aattempt\x18\x1e \x01(\x05R\aattempt\x1a7\n" +
+	"\aattempt\x18\x1e \x01(\x05R\aattempt\x126\n" +
+	"\bdeadline\x18\x1f \x01(\v2\x1a.google.protobuf.TimestampR\bdeadline\x1a7\n" +
 	"\tArgsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xbe\x01\n" +
@@ -1901,49 +1913,50 @@ var file_cortex_axon_agent_proto_depIdxs = []int32{
 	15, // 10: cortex.axon.DispatchMessage.invoke:type_name -> cortex.axon.DispatchHandlerInvoke
 	0,  // 11: cortex.axon.DispatchHandlerInvoke.reason:type_name -> cortex.axon.HandlerInvokeType
 	27, // 12: cortex.axon.DispatchHandlerInvoke.args:type_name -> cortex.axon.DispatchHandlerInvoke.ArgsEntry
-	2,  // 13: cortex.axon.InvocationFailure.reason:type_name -> cortex.axon.FailureReason
-	3,  // 14: cortex.axon.InvocationFailure.source:type_name -> cortex.axon.FailureSource
-	15, // 15: cortex.axon.DispatchEvent.invoke:type_name -> cortex.axon.DispatchHandlerInvoke
-	16, // 16: cortex.axon.DispatchEvent.failure:type_name -> cortex.axon.InvocationFailure
-	15, // 17: cortex.axon.RetryInvocationRequest.invoke:type_name -> cortex.axon.DispatchHandlerInvoke
-	28, // 18: cortex.axon.RetryInvocationResponse.error:type_name -> cortex.axon.Error
-	29, // 19: cortex.axon.Log.timestamp:type_name -> google.protobuf.Timestamp
-	15, // 20: cortex.axon.ReportInvocationRequest.handler_invoke:type_name -> cortex.axon.DispatchHandlerInvoke
-	29, // 21: cortex.axon.ReportInvocationRequest.start_client_timestamp:type_name -> google.protobuf.Timestamp
-	23, // 22: cortex.axon.ReportInvocationRequest.result:type_name -> cortex.axon.InvokeResult
-	28, // 23: cortex.axon.ReportInvocationRequest.error:type_name -> cortex.axon.Error
-	20, // 24: cortex.axon.ReportInvocationRequest.logs:type_name -> cortex.axon.Log
-	28, // 25: cortex.axon.ReportInvocationResponse.error:type_name -> cortex.axon.Error
-	29, // 26: cortex.axon.GetHandlerHistoryRequest.start_time:type_name -> google.protobuf.Timestamp
-	29, // 27: cortex.axon.GetHandlerHistoryRequest.end_time:type_name -> google.protobuf.Timestamp
-	29, // 28: cortex.axon.HandlerExecution.publish_server_timestamp:type_name -> google.protobuf.Timestamp
-	29, // 29: cortex.axon.HandlerExecution.receive_server_timestamp:type_name -> google.protobuf.Timestamp
-	29, // 30: cortex.axon.HandlerExecution.start_client_timestamp:type_name -> google.protobuf.Timestamp
-	28, // 31: cortex.axon.HandlerExecution.error:type_name -> cortex.axon.Error
-	20, // 32: cortex.axon.HandlerExecution.logs:type_name -> cortex.axon.Log
-	28, // 33: cortex.axon.GetHandlerHistoryResponse.error:type_name -> cortex.axon.Error
-	25, // 34: cortex.axon.GetHandlerHistoryResponse.history:type_name -> cortex.axon.HandlerExecution
-	4,  // 35: cortex.axon.AxonAgent.RegisterHandler:input_type -> cortex.axon.RegisterHandlerRequest
-	8,  // 36: cortex.axon.AxonAgent.UnregisterHandler:input_type -> cortex.axon.UnregisterHandlerRequest
-	10, // 37: cortex.axon.AxonAgent.ListHandlers:input_type -> cortex.axon.ListHandlersRequest
-	24, // 38: cortex.axon.AxonAgent.GetHandlerHistory:input_type -> cortex.axon.GetHandlerHistoryRequest
-	13, // 39: cortex.axon.AxonAgent.Dispatch:input_type -> cortex.axon.DispatchRequest
-	21, // 40: cortex.axon.AxonAgent.ReportInvocation:input_type -> cortex.axon.ReportInvocationRequest
-	13, // 41: cortex.axon.AxonAgent.DispatchEvents:input_type -> cortex.axon.DispatchRequest
-	18, // 42: cortex.axon.AxonAgent.RetryInvocation:input_type -> cortex.axon.RetryInvocationRequest
-	7,  // 43: cortex.axon.AxonAgent.RegisterHandler:output_type -> cortex.axon.RegisterHandlerResponse
-	9,  // 44: cortex.axon.AxonAgent.UnregisterHandler:output_type -> cortex.axon.UnregisterHandlerResponse
-	12, // 45: cortex.axon.AxonAgent.ListHandlers:output_type -> cortex.axon.ListHandlersResponse
-	26, // 46: cortex.axon.AxonAgent.GetHandlerHistory:output_type -> cortex.axon.GetHandlerHistoryResponse
-	14, // 47: cortex.axon.AxonAgent.Dispatch:output_type -> cortex.axon.DispatchMessage
-	22, // 48: cortex.axon.AxonAgent.ReportInvocation:output_type -> cortex.axon.ReportInvocationResponse
-	17, // 49: cortex.axon.AxonAgent.DispatchEvents:output_type -> cortex.axon.DispatchEvent
-	19, // 50: cortex.axon.AxonAgent.RetryInvocation:output_type -> cortex.axon.RetryInvocationResponse
-	43, // [43:51] is the sub-list for method output_type
-	35, // [35:43] is the sub-list for method input_type
-	35, // [35:35] is the sub-list for extension type_name
-	35, // [35:35] is the sub-list for extension extendee
-	0,  // [0:35] is the sub-list for field type_name
+	29, // 13: cortex.axon.DispatchHandlerInvoke.deadline:type_name -> google.protobuf.Timestamp
+	2,  // 14: cortex.axon.InvocationFailure.reason:type_name -> cortex.axon.FailureReason
+	3,  // 15: cortex.axon.InvocationFailure.source:type_name -> cortex.axon.FailureSource
+	15, // 16: cortex.axon.DispatchEvent.invoke:type_name -> cortex.axon.DispatchHandlerInvoke
+	16, // 17: cortex.axon.DispatchEvent.failure:type_name -> cortex.axon.InvocationFailure
+	15, // 18: cortex.axon.RetryInvocationRequest.invoke:type_name -> cortex.axon.DispatchHandlerInvoke
+	28, // 19: cortex.axon.RetryInvocationResponse.error:type_name -> cortex.axon.Error
+	29, // 20: cortex.axon.Log.timestamp:type_name -> google.protobuf.Timestamp
+	15, // 21: cortex.axon.ReportInvocationRequest.handler_invoke:type_name -> cortex.axon.DispatchHandlerInvoke
+	29, // 22: cortex.axon.ReportInvocationRequest.start_client_timestamp:type_name -> google.protobuf.Timestamp
+	23, // 23: cortex.axon.ReportInvocationRequest.result:type_name -> cortex.axon.InvokeResult
+	28, // 24: cortex.axon.ReportInvocationRequest.error:type_name -> cortex.axon.Error
+	20, // 25: cortex.axon.ReportInvocationRequest.logs:type_name -> cortex.axon.Log
+	28, // 26: cortex.axon.ReportInvocationResponse.error:type_name -> cortex.axon.Error
+	29, // 27: cortex.axon.GetHandlerHistoryRequest.start_time:type_name -> google.protobuf.Timestamp
+	29, // 28: cortex.axon.GetHandlerHistoryRequest.end_time:type_name -> google.protobuf.Timestamp
+	29, // 29: cortex.axon.HandlerExecution.publish_server_timestamp:type_name -> google.protobuf.Timestamp
+	29, // 30: cortex.axon.HandlerExecution.receive_server_timestamp:type_name -> google.protobuf.Timestamp
+	29, // 31: cortex.axon.HandlerExecution.start_client_timestamp:type_name -> google.protobuf.Timestamp
+	28, // 32: cortex.axon.HandlerExecution.error:type_name -> cortex.axon.Error
+	20, // 33: cortex.axon.HandlerExecution.logs:type_name -> cortex.axon.Log
+	28, // 34: cortex.axon.GetHandlerHistoryResponse.error:type_name -> cortex.axon.Error
+	25, // 35: cortex.axon.GetHandlerHistoryResponse.history:type_name -> cortex.axon.HandlerExecution
+	4,  // 36: cortex.axon.AxonAgent.RegisterHandler:input_type -> cortex.axon.RegisterHandlerRequest
+	8,  // 37: cortex.axon.AxonAgent.UnregisterHandler:input_type -> cortex.axon.UnregisterHandlerRequest
+	10, // 38: cortex.axon.AxonAgent.ListHandlers:input_type -> cortex.axon.ListHandlersRequest
+	24, // 39: cortex.axon.AxonAgent.GetHandlerHistory:input_type -> cortex.axon.GetHandlerHistoryRequest
+	13, // 40: cortex.axon.AxonAgent.Dispatch:input_type -> cortex.axon.DispatchRequest
+	21, // 41: cortex.axon.AxonAgent.ReportInvocation:input_type -> cortex.axon.ReportInvocationRequest
+	13, // 42: cortex.axon.AxonAgent.DispatchEvents:input_type -> cortex.axon.DispatchRequest
+	18, // 43: cortex.axon.AxonAgent.RetryInvocation:input_type -> cortex.axon.RetryInvocationRequest
+	7,  // 44: cortex.axon.AxonAgent.RegisterHandler:output_type -> cortex.axon.RegisterHandlerResponse
+	9,  // 45: cortex.axon.AxonAgent.UnregisterHandler:output_type -> cortex.axon.UnregisterHandlerResponse
+	12, // 46: cortex.axon.AxonAgent.ListHandlers:output_type -> cortex.axon.ListHandlersResponse
+	26, // 47: cortex.axon.AxonAgent.GetHandlerHistory:output_type -> cortex.axon.GetHandlerHistoryResponse
+	14, // 48: cortex.axon.AxonAgent.Dispatch:output_type -> cortex.axon.DispatchMessage
+	22, // 49: cortex.axon.AxonAgent.ReportInvocation:output_type -> cortex.axon.ReportInvocationResponse
+	17, // 50: cortex.axon.AxonAgent.DispatchEvents:output_type -> cortex.axon.DispatchEvent
+	19, // 51: cortex.axon.AxonAgent.RetryInvocation:output_type -> cortex.axon.RetryInvocationResponse
+	44, // [44:52] is the sub-list for method output_type
+	36, // [36:44] is the sub-list for method input_type
+	36, // [36:36] is the sub-list for extension type_name
+	36, // [36:36] is the sub-list for extension extendee
+	0,  // [0:36] is the sub-list for field type_name
 }
 
 func init() { file_cortex_axon_agent_proto_init() }

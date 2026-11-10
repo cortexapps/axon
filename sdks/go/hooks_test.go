@@ -13,6 +13,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type hookCall struct {
@@ -281,4 +282,31 @@ func TestDispatchRequestAdvertisesFailureEvents(t *testing.T) {
 			require.Equal(t, withHook, sent.sent[0].FailureEvents)
 		})
 	}
+}
+
+func TestInvokeDeadline(t *testing.T) {
+	now := time.Now()
+	agentDeadline := func(d time.Duration) *timestamppb.Timestamp { return timestamppb.New(now.Add(d)) }
+
+	// Older agent: only the timeout counts.
+	d, capped, expired := invokeDeadline(&pb.DispatchHandlerInvoke{TimeoutMs: 1000}, now)
+	require.Equal(t, now.Add(time.Second), d)
+	require.False(t, capped)
+	require.False(t, expired)
+
+	// Plenty of time left: the handler's own timeout is tighter.
+	d, capped, expired = invokeDeadline(&pb.DispatchHandlerInvoke{TimeoutMs: 1000, Deadline: agentDeadline(time.Minute)}, now)
+	require.Equal(t, now.Add(time.Second), d)
+	require.False(t, capped)
+	require.False(t, expired)
+
+	// It waited before arriving: the agent's deadline, less the margin, wins.
+	d, capped, expired = invokeDeadline(&pb.DispatchHandlerInvoke{TimeoutMs: 10000, Deadline: agentDeadline(3 * time.Second)}, now)
+	require.WithinDuration(t, now.Add(2*time.Second), d, time.Millisecond)
+	require.True(t, capped)
+	require.False(t, expired)
+
+	// Too late to start: the agent has reported it already.
+	_, _, expired = invokeDeadline(&pb.DispatchHandlerInvoke{TimeoutMs: 10000, Deadline: agentDeadline(500 * time.Millisecond)}, now)
+	require.True(t, expired)
 }
