@@ -273,36 +273,24 @@ class AxonClient:
                 return h
         return None
 
-    def _run_failure_hook(self, info: InvocationInfo, failure: Failure, stub):
-        if not self.on_failure:
-            return
+    def _run_failure_hook(self, info: InvocationInfo, failure: Failure) -> FailureAction:
         try:
             action = self.on_failure(info, failure)
         except Exception:
-            print(f"Error in on_failure hook for {info.handler_name} (id={info.invocation_id})")
+            print(f"Error in on_failure hook for {info.handler_name} (id={info.invocation_id}), dropping it")
             traceback.print_exc()
-            return
-        if action == FailureAction.RETRY:
-            self._retry_invocation(info, stub)
+            return FailureAction.DROP
+        return action or FailureAction.DROP
 
-    def _retry_invocation(self, info: InvocationInfo, stub):
-        try:
-            response = stub.RetryInvocation(
-                cortex_axon_agent_pb2.RetryInvocationRequest(invoke=info.invoke)
+    def _answer_failure(self, event, answers: queue.Queue):
+        info = InvocationInfo.from_proto(event.invoke)
+        action = self._run_failure_hook(info, Failure.from_proto(event.failure))
+        answers.put(cortex_axon_agent_pb2.DispatchEventsRequest(
+            resolution=cortex_axon_agent_pb2.FailureResolution(
+                invocation_id=info.invocation_id,
+                action=action.to_proto(),
             )
-        except grpc.RpcError as e:
-            if e.code() == grpc.StatusCode.UNIMPLEMENTED:
-                print("Agent does not support retries, upgrade the agent")
-            else:
-                print(f"Error retrying invocation {info.invocation_id}: {e}")
-            return
-        if response.error and response.error.code:
-            print(f"Agent rejected retry of {info.invocation_id}: {response.error.message}")
-            return
-        print(
-            f"Retrying {info.handler_name} (id={info.invocation_id}) "
-            f"as id={response.invocation_id} attempt={info.attempt + 1}"
-        )
+        ))
 
     def _start_failure_events(self):
         if not self.on_failure or self._events_thread:
@@ -327,30 +315,32 @@ class AxonClient:
         stub = cortex_axon_agent_pb2_grpc.AxonAgentStub(channel)
         try:
             while not self._events_stop.is_set():
-                try:
-                    self._events_call = stub.DispatchEvents(
-                        cortex_axon_agent_pb2.DispatchRequest(
-                            dispatch_id=self.id,
-                            client_version=AGENT_VERSION,
-                            failure_events=True,
-                        )
+                # Answers for this stream only: one the agent never got is
+                # sent again on the next stream, and answered there.
+                answers = queue.Queue()
+
+                def requests(answers=answers):
+                    yield cortex_axon_agent_pb2.DispatchEventsRequest(
+                        dispatch_id=self.id, client_version=AGENT_VERSION
                     )
+                    while (answer := answers.get()) is not None:
+                        yield answer
+
+                try:
+                    self._events_call = stub.DispatchEvents(requests())
                     for event in self._events_call:
                         if not event.HasField("invoke"):
                             continue
-                        self._hook_executor.submit(
-                            self._run_failure_hook,
-                            InvocationInfo.from_proto(event.invoke),
-                            Failure.from_proto(event.failure),
-                            stub,
-                        )
+                        self._hook_executor.submit(self._answer_failure, event, answers)
                 except grpc.RpcError as e:
                     if self._events_stop.is_set():
                         return
                     if e.code() == grpc.StatusCode.UNIMPLEMENTED:
-                        print("Agent does not send failure events, upgrade the agent to receive them")
+                        print("Agent does not send failure events, upgrade the agent to use on_failure")
                         return
                     print(f"Failure event stream ended ({e.code()}), reconnecting in {RECONNECT_WAIT_SECONDS} seconds...")
+                finally:
+                    answers.put(None)
                 self._events_stop.wait(RECONNECT_WAIT_SECONDS)
         finally:
             channel.close()
@@ -391,7 +381,6 @@ class AxonClient:
         handler_result = None
         failure = None
         result = None
-        info = InvocationInfo.from_proto(invoke)
         now = datetime.now()
         timeout, capped, _ = _invoke_timeout(invoke, time())
         ctx = self._handler_context(invoke.args, timeout * 1000 if timeout else 0)
@@ -428,11 +417,9 @@ class AxonClient:
                 start_client_timestamp=now,
                 duration_ms=invoke.timeout_ms,
                 error=common_pb2.Error(code="timeout", message=message),
+                failure=Failure(reason=FailureReason.TIMEOUT, source=source, message=message).to_proto(),
                 logs=list(ctx.logs),
             ))
-            self._run_failure_hook(
-                info, Failure(reason=FailureReason.TIMEOUT, source=source, message=message), stub
-            )
 
         timer = None
         if timeout:
@@ -481,15 +468,13 @@ class AxonClient:
             duration_ms=duration_ms,
             result=handler_result,
             error=handler_err,
+            # The agent sends the failure back to on_failure, so it is
+            # handled the same way as failures only the agent can see.
+            failure=failure.to_proto() if failure else None,
             logs=ctx.logs,
         )
 
         self._report(stub, invoke_info)
-
-        # After the report, so a slow hook can't make the agent decide this
-        # invocation was never answered and report the failure a second time.
-        if failure is not None:
-            self._run_failure_hook(info, failure, stub)
 
     def _report(self, stub, invoke_info):
         # A failure here must not escape the worker: the dispatch loop is no

@@ -33,7 +33,8 @@ class HookAgent(cortex_axon_agent_pb2_grpc.AxonAgentServicer):
         self.events = list(events)
         self.events_code = events_code
         self.dispatch_requests = queue.Queue()
-        self.retries = queue.Queue()
+        self.events_requests = queue.Queue()
+        self.resolutions = queue.Queue()
         self.events_calls = 0
         self.reports = queue.Queue()
         self.stop = threading.Event()
@@ -55,10 +56,20 @@ class HookAgent(cortex_axon_agent_pb2_grpc.AxonAgentServicer):
         self.invokes = []
         self.stop.wait(timeout=10)
 
-    def DispatchEvents(self, request, context):
+    def DispatchEvents(self, request_iterator, context):
         self.events_calls += 1
         if self.events_code:
             context.abort(self.events_code, "not here")
+        self.events_requests.put(next(request_iterator))
+
+        def read_answers():
+            # Ends with an error when the client goes away at teardown.
+            with contextlib.suppress(Exception):
+                for request in request_iterator:
+                    if request.HasField("resolution"):
+                        self.resolutions.put(request.resolution)
+
+        threading.Thread(target=read_answers, daemon=True).start()
         events, self.events = self.events, []
         yield from events
         self.stop.wait(timeout=10)
@@ -66,10 +77,6 @@ class HookAgent(cortex_axon_agent_pb2_grpc.AxonAgentServicer):
     def ReportInvocation(self, request, context):
         self.reports.put(request)
         return cortex_axon_agent_pb2.ReportInvocationResponse()
-
-    def RetryInvocation(self, request, context):
-        self.retries.put(request)
-        return cortex_axon_agent_pb2.RetryInvocationResponse(invocation_id="retry-1")
 
 
 class SlowApi(cortex_api_pb2_grpc.CortexApiServicer):
@@ -93,6 +100,20 @@ def invoke(invocation_id="1", timeout_ms=0, deadline_in=None, **args):
     if deadline_in is not None:
         msg.deadline.FromMicroseconds(int((time.time() + deadline_in) * 1e6))
     return msg
+
+
+def failure_event(invocation_id, attempt=1, **args):
+    msg = invoke(invocation_id, **args)
+    msg.attempt = attempt
+    return cortex_axon_agent_pb2.DispatchEvent(
+        invoke=msg,
+        failure=cortex_axon_agent_pb2.InvocationFailure(
+            reason=cortex_axon_agent_pb2.NO_RESOURCES,
+            source=cortex_axon_agent_pb2.RUNTIME,
+            message="dispatch queue is full",
+            caller_rejected=True,
+        ),
+    )
 
 
 def serve(servicer, add):
@@ -159,22 +180,23 @@ def run_client():
             client._events_thread.join(timeout=5)
 
 
-def test_failure_hook_not_called_on_success(run_client):
-    hooks = Hooks(action=FailureAction.RETRY)
+def reported_failure(agent):
+    report = agent.reports.get(timeout=5)
+    return report.failure if report.HasField("failure") else None
+
+
+def test_success_reports_no_failure(run_client):
     agent = HookAgent(invokes=[invoke(body="payload")])
 
     def my_hooked_webhook(ctx):
         return "ok"
 
-    run_client(agent, my_hooked_webhook, hooks)
+    run_client(agent, my_hooked_webhook, Hooks())
 
-    assert agent.reports.get(timeout=5).result.value == "ok"
-    with pytest.raises(queue.Empty):
-        hooks.failures.get(timeout=0.5)
-    assert agent.retries.empty()
+    assert reported_failure(agent) is None
 
 
-def test_failure_hook_on_handler_error_and_retry(run_client):
+def test_handler_error_is_reported_not_hooked_locally(run_client):
     hooks = Hooks(action=FailureAction.RETRY)
     agent = HookAgent(invokes=[invoke(body="payload")])
 
@@ -183,21 +205,16 @@ def test_failure_hook_on_handler_error_and_retry(run_client):
 
     run_client(agent, my_hooked_webhook, hooks)
 
-    info, failure = hooks.failures.get(timeout=5)
-    assert info.invocation_id == "1"
-    assert info.args == {"body": "payload"}
-    assert info.attempt == 1
+    failure = reported_failure(agent)
     assert failure.reason == FailureReason.HANDLER_ERROR
     assert failure.source == FailureSource.APPLICATION
     assert failure.message == "ohnoes"
+    # The agent sends it back as an event; the SDK doesn't run the hook itself.
+    with pytest.raises(queue.Empty):
+        hooks.failures.get(timeout=0.5)
 
-    retry = agent.retries.get(timeout=5)
-    assert retry.invoke.invocation_id == "1"
-    assert retry.invoke.args["body"] == "payload"
 
-
-def test_api_timeout_is_runtime(run_client):
-    hooks = Hooks()
+def test_api_timeout_is_reported_as_runtime(run_client):
     api = SlowApi()
     agent = HookAgent(invokes=[invoke(timeout_ms=200)])
 
@@ -205,16 +222,15 @@ def test_api_timeout_is_runtime(run_client):
         ctx.cortex_api_call("/api/v1/slow", "GET")
 
     try:
-        run_client(agent, my_hooked_webhook, hooks, api=api)
-        _, failure = hooks.failures.get(timeout=5)
+        run_client(agent, my_hooked_webhook, Hooks(), api=api)
+        failure = reported_failure(agent)
     finally:
         api.release.set()
     assert failure.reason == FailureReason.TIMEOUT
     assert failure.source == FailureSource.RUNTIME
 
 
-def test_slow_handler_times_out_as_application(run_client):
-    hooks = Hooks()
+def test_slow_handler_is_reported_as_application_timeout(run_client):
     agent = HookAgent(invokes=[invoke(timeout_ms=200)])
     finished = threading.Event()
 
@@ -222,25 +238,22 @@ def test_slow_handler_times_out_as_application(run_client):
         time.sleep(0.6)
         finished.set()
 
-    run_client(agent, my_hooked_webhook, hooks)
+    run_client(agent, my_hooked_webhook, Hooks())
 
-    _, failure = hooks.failures.get(timeout=5)
-    assert failure.reason == FailureReason.TIMEOUT
-    assert failure.source == FailureSource.APPLICATION
     report = agent.reports.get(timeout=5)
     assert report.error.code == "timeout"
+    assert report.failure.reason == FailureReason.TIMEOUT
+    assert report.failure.source == FailureSource.APPLICATION
 
-    # The late finish is dropped: no second report, no second hook call.
+    # The late finish is dropped: no second report.
     assert finished.wait(timeout=5)
-    with pytest.raises(queue.Empty):
-        hooks.failures.get(timeout=0.5)
+    time.sleep(0.2)
     assert agent.reports.empty()
 
 
 def test_expired_invocation_is_not_started(run_client):
     """The agent has already reported an invocation past its deadline, so the
     SDK must not run it: a failure hook may be replaying it."""
-    hooks = Hooks()
     ran = queue.Queue()
     agent = HookAgent(invokes=[
         invoke("stale", timeout_ms=10000, deadline_in=0.5),
@@ -250,50 +263,70 @@ def test_expired_invocation_is_not_started(run_client):
     def my_hooked_webhook(ctx):
         ran.put(ctx.args)
 
-    run_client(agent, my_hooked_webhook, hooks)
+    run_client(agent, my_hooked_webhook, Hooks())
 
     assert agent.reports.get(timeout=5).handler_invoke.invocation_id == "fresh"
-    # The stale one neither ran nor reached the hook: the agent reports it.
-    with pytest.raises(queue.Empty):
-        hooks.failures.get(timeout=0.5)
+    time.sleep(0.5)
     assert agent.reports.empty()
     assert ran.qsize() == 1
 
 
 def test_timeout_capped_by_agent_deadline_is_runtime(run_client):
-    hooks = Hooks()
     # Its own timeout is long, but the agent gives up in 1.5s: it waited.
     agent = HookAgent(invokes=[invoke(timeout_ms=60000, deadline_in=1.5)])
 
     def my_hooked_webhook(ctx):
         time.sleep(2)
 
-    run_client(agent, my_hooked_webhook, hooks)
+    run_client(agent, my_hooked_webhook, Hooks())
 
-    _, failure = hooks.failures.get(timeout=5)
+    failure = reported_failure(agent)
     assert failure.reason == FailureReason.TIMEOUT
     assert failure.source == FailureSource.RUNTIME
-    assert agent.reports.get(timeout=5).error.code == "timeout"
 
 
-def test_hook_errors_are_contained(run_client):
-    agent = HookAgent(invokes=[invoke("1"), invoke("2")])
-    ran = queue.Queue()
+def test_failure_event_runs_hook_and_answers(run_client):
+    hooks = Hooks(action=FailureAction.RETRY)
+    agent = HookAgent(events=[failure_event("lost-1", attempt=2, body="payload")])
+
+    run_client(agent, lambda ctx: None, hooks)
+
+    first = agent.events_requests.get(timeout=5)
+    assert first.dispatch_id
+    assert not first.HasField("resolution")
+
+    info, failure = hooks.failures.get(timeout=5)
+    assert info.invocation_id == "lost-1"
+    assert info.args == {"body": "payload"}
+    assert info.attempt == 2
+    assert failure.reason == FailureReason.NO_RESOURCES
+    assert failure.source == FailureSource.RUNTIME
+    assert failure.caller_rejected
+
+    answer = agent.resolutions.get(timeout=5)
+    assert answer.invocation_id == "lost-1"
+    assert answer.action == cortex_axon_agent_pb2.FAILURE_ACTION_RETRY
+
+
+def test_hook_returning_nothing_drops(run_client):
+    agent = HookAgent(events=[failure_event("lost-1")])
+    run_client(agent, lambda ctx: None, Hooks(action=None))
+
+    assert agent.resolutions.get(timeout=5).action == cortex_axon_agent_pb2.FAILURE_ACTION_DROP
+
+
+def test_hook_errors_drop_and_are_contained(run_client):
+    agent = HookAgent(events=[failure_event("lost-1"), failure_event("lost-2")])
 
     class Broken(Hooks):
         def on_failure(self, info, failure):
             raise RuntimeError("hook bug")
 
-    def my_hooked_webhook(ctx):
-        ran.put(True)
-        raise ValueError("ohnoes")
+    run_client(agent, lambda ctx: None, Broken())
 
-    run_client(agent, my_hooked_webhook, Broken())
-    # Both still run and report, despite the hook raising each time.
-    ran.get(timeout=5)
-    ran.get(timeout=5)
-    assert agent.reports.get(timeout=5).error.code == "unexpected"
-    assert agent.reports.get(timeout=5).error.code == "unexpected"
+    answers = [agent.resolutions.get(timeout=5) for _ in range(2)]
+    assert {a.invocation_id for a in answers} == {"lost-1", "lost-2"}
+    assert all(a.action == cortex_axon_agent_pb2.FAILURE_ACTION_DROP for a in answers)
 
 
 def test_dispatch_request_advertises_failure_events(run_client):
@@ -313,18 +346,7 @@ def test_failure_events_reach_hook_while_handlers_are_saturated(run_client):
     slots = 2
     release = threading.Event()
     started = threading.Barrier(slots + 1)
-    events = [
-        cortex_axon_agent_pb2.DispatchEvent(
-            invoke=invoke(f"lost-{i}", body=f"msg-{i}"),
-            failure=cortex_axon_agent_pb2.InvocationFailure(
-                reason=cortex_axon_agent_pb2.NO_RESOURCES,
-                source=cortex_axon_agent_pb2.RUNTIME,
-                message="dispatch queue is full",
-                caller_rejected=True,
-            ),
-        )
-        for i in range(20)
-    ]
+    events = [failure_event(f"lost-{i}", body=f"msg-{i}") for i in range(20)]
     # More invocations than slots, so the dispatch reader blocks.
     agent = HookAgent(invokes=[invoke(str(i)) for i in range(slots + 2)], events=events)
     hooks = Hooks(action=FailureAction.RETRY)
@@ -341,12 +363,8 @@ def test_failure_events_reach_hook_while_handlers_are_saturated(run_client):
         seen = [hooks.failures.get(timeout=5) for _ in events]
         bodies = sorted(info.args["body"] for info, _ in seen)
         assert bodies == sorted(f"msg-{i}" for i in range(20))
-        for _, failure in seen:
-            assert failure.reason == FailureReason.NO_RESOURCES
-            assert failure.source == FailureSource.RUNTIME
-            assert failure.caller_rejected
-        retried = {agent.retries.get(timeout=5).invoke.invocation_id for _ in events}
-        assert retried == {f"lost-{i}" for i in range(20)}
+        answered = {agent.resolutions.get(timeout=5).invocation_id for _ in events}
+        assert answered == {f"lost-{i}" for i in range(20)}
     finally:
         release.set()
         started.abort()

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net/url"
 	"path/filepath"
-	"sync"
 	"testing"
 	"time"
 
@@ -15,19 +14,16 @@ import (
 	"github.com/cortexapps/axon/server/handler"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
-	"google.golang.org/protobuf/proto"
+	"google.golang.org/grpc"
 )
 
 const failureTestWebhook = "failure-test-hook"
 
 type failureEventsFixture struct {
-	t       *testing.T
-	ctx     context.Context
-	manager handler.Manager
-	client  *testAxonClient
-
-	mu       sync.Mutex
-	invokes  []*pb.DispatchHandlerInvoke
+	t        *testing.T
+	ctx      context.Context
+	manager  handler.Manager
+	client   *testAxonClient
 	received chan *pb.DispatchHandlerInvoke
 }
 
@@ -49,7 +45,8 @@ func startFailureEventsFixture(t *testing.T, timeout time.Duration, respond func
 
 	logger, _ := zap.NewDevelopment()
 	manager := handler.NewHandlerManager(logger, cron.New(), nil)
-	agent := NewAxonAgent(Params{Logger: logger, Config: cfg, Manager: manager})
+	failures := handler.NewFailureManager(logger, nil, manager)
+	agent := NewAxonAgent(Params{Logger: logger, Config: cfg, Manager: manager, Failures: failures})
 	require.NoError(t, agent.Start(context.Background()))
 	t.Cleanup(agent.Close)
 
@@ -108,25 +105,38 @@ func (f *failureEventsFixture) nextInvoke() *pb.DispatchHandlerInvoke {
 	}
 }
 
-func (f *failureEventsFixture) events() <-chan *pb.DispatchEvent {
-	stream, err := f.client.DispatchEvents(f.ctx)
+type eventStream struct {
+	stream grpc.BidiStreamingClient[pb.DispatchEventsRequest, pb.DispatchEvent]
+	events chan *pb.DispatchEvent
+}
+
+// events opens the failure event stream, as a client with a failure hook
+// does. ctx bounds the stream, so cancelling it simulates a disconnect.
+func (f *failureEventsFixture) events(ctx context.Context) *eventStream {
+	stream, err := f.client.DispatchEvents(ctx)
 	require.NoError(f.t, err)
-	out := make(chan *pb.DispatchEvent, 10)
+	s := &eventStream{stream: stream, events: make(chan *pb.DispatchEvent, 10)}
 	go func() {
 		for {
 			ev, err := stream.Recv()
 			if err != nil {
 				return
 			}
-			out <- ev
+			s.events <- ev
 		}
 	}()
-	return out
+	return s
 }
 
-func requireEvent(t *testing.T, events <-chan *pb.DispatchEvent) *pb.DispatchEvent {
+func (s *eventStream) resolve(t *testing.T, ev *pb.DispatchEvent, action pb.FailureAction) {
+	require.NoError(t, s.stream.Send(&pb.DispatchEventsRequest{
+		Resolution: &pb.FailureResolution{InvocationId: ev.Invoke.InvocationId, Action: action},
+	}))
+}
+
+func requireEvent(t *testing.T, s *eventStream) *pb.DispatchEvent {
 	select {
-	case ev := <-events:
+	case ev := <-s.events:
 		return ev
 	case <-time.After(5 * time.Second):
 		require.FailNow(t, "no failure event arrived")
@@ -134,9 +144,9 @@ func requireEvent(t *testing.T, events <-chan *pb.DispatchEvent) *pb.DispatchEve
 	}
 }
 
-func requireNoEvent(t *testing.T, events <-chan *pb.DispatchEvent, wait time.Duration) {
+func requireNoEvent(t *testing.T, s *eventStream, wait time.Duration) {
 	select {
-	case ev := <-events:
+	case ev := <-s.events:
 		require.FailNow(t, "unexpected failure event", "%v", ev)
 	case <-time.After(wait):
 	}
@@ -158,19 +168,17 @@ func TestFailureEvents_UnreportedInvocationTimesOutAndRetries(t *testing.T) {
 	require.Equal(t, int32(1), first.Attempt)
 	time.Sleep(500 * time.Millisecond)
 
-	events := f.events()
+	events := f.events(f.ctx)
 	ev := requireEvent(t, events)
 	require.Equal(t, first.InvocationId, ev.Invoke.InvocationId)
 	require.Equal(t, `{"id": 1}`, ev.Invoke.Args["body"])
 	require.Equal(t, pb.FailureReason_TIMEOUT, ev.Failure.Reason)
 	require.Equal(t, pb.FailureSource_RUNTIME, ev.Failure.Source)
 
-	resp, err := f.client.RetryInvocation(f.ctx, ev.Invoke)
-	require.NoError(t, err)
-	require.Nil(t, resp.Error)
+	events.resolve(t, ev, pb.FailureAction_FAILURE_ACTION_RETRY)
 
 	retried := f.nextInvoke()
-	require.Equal(t, resp.InvocationId, retried.InvocationId)
+	require.NotEqual(t, first.InvocationId, retried.InvocationId)
 	require.Equal(t, int32(2), retried.Attempt)
 	require.Equal(t, `{"id": 1}`, retried.Args["body"])
 
@@ -178,31 +186,49 @@ func TestFailureEvents_UnreportedInvocationTimesOutAndRetries(t *testing.T) {
 	requireNoEvent(t, events, time.Second)
 }
 
-func TestFailureEvents_ClientReportedFailureIsNotRepeated(t *testing.T) {
+func TestFailureEvents_ClientReportedFailureIsDeliveredOnce(t *testing.T) {
 	f := startFailureEventsFixture(t, 200*time.Millisecond, func(*pb.DispatchHandlerInvoke) (clientResult, error) {
-		// The client saw the failure and fires its own hook.
-		return clientResult{}, errors.New("handler blew up")
+		return clientResult{failure: &pb.InvocationFailure{
+			Reason:  pb.FailureReason_HANDLER_ERROR,
+			Source:  pb.FailureSource_APPLICATION,
+			Message: "handler blew up",
+		}}, errors.New("handler blew up")
 	})
-	events := f.events()
+	events := f.events(f.ctx)
 
 	f.postWebhook(`{}`)
-	f.nextInvoke()
+	invoke := f.nextInvoke()
 
-	// Past the timeout and grace, the agent must stay quiet.
+	ev := requireEvent(t, events)
+	require.Equal(t, invoke.InvocationId, ev.Invoke.InvocationId)
+	require.Equal(t, pb.FailureReason_HANDLER_ERROR, ev.Failure.Reason)
+	require.Equal(t, pb.FailureSource_APPLICATION, ev.Failure.Source)
+	events.resolve(t, ev, pb.FailureAction_FAILURE_ACTION_DROP)
+
+	// Past the timeout and grace, the agent must not report it again, and
+	// dropping it must not run it again.
 	requireNoEvent(t, events, time.Second)
+	select {
+	case again := <-f.received:
+		require.FailNow(t, "dropped invocation ran again", "%v", again)
+	default:
+	}
 }
 
-func TestFailureEvents_RetryRejectedAtLimit(t *testing.T) {
-	f := startFailureEventsFixture(t, time.Second, func(*pb.DispatchHandlerInvoke) (clientResult, error) {
-		return clientResult{result: "ok"}, nil
+func TestFailureEvents_UnresolvedEventIsResentOnReconnect(t *testing.T) {
+	f := startFailureEventsFixture(t, 200*time.Millisecond, func(*pb.DispatchHandlerInvoke) (clientResult, error) {
+		return clientResult{noReport: true}, nil
 	})
 
 	f.postWebhook(`{}`)
-	invoke := proto.Clone(f.nextInvoke()).(*pb.DispatchHandlerInvoke)
-	invoke.Attempt = 5
+	invoke := f.nextInvoke()
 
-	resp, err := f.client.RetryInvocation(f.ctx, invoke)
-	require.NoError(t, err)
-	require.NotNil(t, resp.Error)
-	require.Equal(t, "rejected", resp.Error.Code)
+	// The client receives the failure but disconnects before answering.
+	firstCtx, disconnect := context.WithCancel(f.ctx)
+	ev := requireEvent(t, f.events(firstCtx))
+	require.Equal(t, invoke.InvocationId, ev.Invoke.InvocationId)
+	disconnect()
+
+	again := requireEvent(t, f.events(f.ctx))
+	require.Equal(t, invoke.InvocationId, again.Invoke.InvocationId)
 }

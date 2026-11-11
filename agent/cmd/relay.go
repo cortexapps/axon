@@ -91,6 +91,7 @@ func buildRelayStack(cmd *cobra.Command, cfg config.AgentConfig, integrationInfo
 		initStack(cmd, cfg, integrationInfo),
 		AgentModule,
 		fx.Provide(handler.NewHandlerManager),
+		fx.Provide(handler.NewFailureManager),
 		relayModule,
 	)
 	return stack

@@ -13,14 +13,12 @@ service AxonAgent {
   rpc Dispatch (stream DispatchRequest) returns (stream DispatchMessage);  
   rpc ReportInvocation(ReportInvocationRequest) returns (ReportInvocationResponse);
 
-  // DispatchEvents streams failures the agent detected on its own: invocations
-  // that never reached the client, or that the client never reported. They use
-  // their own stream so a client that has stopped reading Dispatch because
-  // every handler is busy still hears about them.
-  rpc DispatchEvents(DispatchRequest) returns (stream DispatchEvent);
-
-  // RetryInvocation queues a failed invocation again as a new attempt.
-  rpc RetryInvocation(RetryInvocationRequest) returns (RetryInvocationResponse);
+  // DispatchEvents sends the client every failed invocation, and the client
+  // answers each with what to do about it. It is its own stream so a client
+  // that has stopped reading Dispatch because every handler is busy still
+  // hears about failures. An event the client has not answered when the
+  // stream ends is sent again on the next one.
+  rpc DispatchEvents(stream DispatchEventsRequest) returns (stream DispatchEvent);
 }
 
 
@@ -168,13 +166,26 @@ message DispatchEvent {
   InvocationFailure failure = 2;
 }
 
-message RetryInvocationRequest {
-  DispatchHandlerInvoke invoke = 1;
+enum FailureAction {
+  // Treated as DROP.
+  FAILURE_ACTION_UNSPECIFIED = 0;
+  // Do nothing more with the invocation.
+  FAILURE_ACTION_DROP = 1;
+  // Queue the invocation again as its next attempt.
+  FAILURE_ACTION_RETRY = 2;
 }
 
-message RetryInvocationResponse {
-  Error error = 1;
-  string invocation_id = 2;
+message FailureResolution {
+  string invocation_id = 1;
+  FailureAction action = 2;
+}
+
+message DispatchEventsRequest {
+  // Identifies the client on the first message of the stream.
+  string dispatch_id = 1;
+  string client_version = 2;
+  // The client's answer to a DispatchEvent; unset on the first message.
+  FailureResolution resolution = 3;
 }
 
 //
@@ -195,6 +206,10 @@ message ReportInvocationRequest {
     InvokeResult result = 200;
     Error error = 201;
   }
+  // Why the invocation failed, from a client that classifies its failures.
+  // The agent passes it on as a failure event; an error without it is only
+  // recorded.
+  InvocationFailure failure = 202;
   repeated Log logs = 300;
 }
 

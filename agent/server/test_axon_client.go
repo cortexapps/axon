@@ -23,6 +23,9 @@ type clientResult struct {
 	result string
 	// noReport skips ReportInvocation, like a client that hung.
 	noReport bool
+	// failure is reported with an error, as a client that classifies its
+	// failures does.
+	failure *pb.InvocationFailure
 }
 
 type testAxonClient struct {
@@ -122,6 +125,7 @@ func (c *testAxonClient) Run(ctx context.Context) error {
 						Message: err.Error(),
 					},
 				}
+				report.Failure = result.failure
 			} else {
 				report.Message = &pb.ReportInvocationRequest_Result{
 					Result: &pb.InvokeResult{
@@ -162,10 +166,14 @@ func (c *testAxonClient) GetHandlerHistory(ctx context.Context, name string) ([]
 	return resp.History, nil
 }
 
-func (c *testAxonClient) DispatchEvents(ctx context.Context) (grpc.ServerStreamingClient[pb.DispatchEvent], error) {
-	return c.client.DispatchEvents(ctx, &pb.DispatchRequest{DispatchId: c.dispatchId, FailureEvents: true})
-}
-
-func (c *testAxonClient) RetryInvocation(ctx context.Context, invoke *pb.DispatchHandlerInvoke) (*pb.RetryInvocationResponse, error) {
-	return c.client.RetryInvocation(ctx, &pb.RetryInvocationRequest{Invoke: invoke})
+// DispatchEvents opens the failure event stream and sends the first message.
+func (c *testAxonClient) DispatchEvents(ctx context.Context) (grpc.BidiStreamingClient[pb.DispatchEventsRequest, pb.DispatchEvent], error) {
+	stream, err := c.client.DispatchEvents(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := stream.Send(&pb.DispatchEventsRequest{DispatchId: c.dispatchId}); err != nil {
+		return nil, err
+	}
+	return stream, nil
 }

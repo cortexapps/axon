@@ -25,10 +25,15 @@ class FailureSource(IntEnum):
 
 
 class FailureAction(Enum):
-    # Leave the failure as it is.
-    IGNORE = "ignore"
-    # Queue the invocation again as its next attempt.
+    # Do nothing more with the invocation.
+    DROP = "drop"
+    # Have the agent queue the invocation again as its next attempt.
     RETRY = "retry"
+
+    def to_proto(self) -> int:
+        if self == FailureAction.RETRY:
+            return cortex_axon_agent_pb2.FAILURE_ACTION_RETRY
+        return cortex_axon_agent_pb2.FAILURE_ACTION_DROP
 
 
 @dataclass(frozen=True)
@@ -65,6 +70,14 @@ class Failure:
     # sender got a 503), so it may arrive again.
     caller_rejected: bool = False
 
+    def to_proto(self) -> cortex_axon_agent_pb2.InvocationFailure:
+        return cortex_axon_agent_pb2.InvocationFailure(
+            reason=self.reason,
+            source=self.source,
+            message=self.message,
+            caller_rejected=self.caller_rejected,
+        )
+
     @classmethod
     def from_proto(cls, failure: cortex_axon_agent_pb2.InvocationFailure) -> "Failure":
         return cls(
@@ -75,7 +88,8 @@ class Failure:
         )
 
 
-# Runs for every failed invocation, including failures the agent detects on
-# its own, such as an invocation that never reached this process. Returning
-# None means FailureAction.IGNORE.
+# Runs for every failed invocation, wherever it failed: in this process, or in
+# the agent, such as an invocation that never reached this process. The agent
+# sends each failure here and applies the answer. Returning None means
+# FailureAction.DROP.
 FailureHook = Callable[[InvocationInfo, Failure], Optional[FailureAction]]

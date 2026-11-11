@@ -107,22 +107,22 @@ func (mr *MockAxonAgentClientMockRecorder) Dispatch(ctx any, opts ...any) *gomoc
 }
 
 // DispatchEvents mocks base method.
-func (m *MockAxonAgentClient) DispatchEvents(ctx context.Context, in *axon.DispatchRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[axon.DispatchEvent], error) {
+func (m *MockAxonAgentClient) DispatchEvents(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[axon.DispatchEventsRequest, axon.DispatchEvent], error) {
 	m.ctrl.T.Helper()
-	varargs := []any{ctx, in}
+	varargs := []any{ctx}
 	for _, a := range opts {
 		varargs = append(varargs, a)
 	}
 	ret := m.ctrl.Call(m, "DispatchEvents", varargs...)
-	ret0, _ := ret[0].(grpc.ServerStreamingClient[axon.DispatchEvent])
+	ret0, _ := ret[0].(grpc.BidiStreamingClient[axon.DispatchEventsRequest, axon.DispatchEvent])
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // DispatchEvents indicates an expected call of DispatchEvents.
-func (mr *MockAxonAgentClientMockRecorder) DispatchEvents(ctx, in any, opts ...any) *gomock.Call {
+func (mr *MockAxonAgentClientMockRecorder) DispatchEvents(ctx any, opts ...any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	varargs := append([]any{ctx, in}, opts...)
+	varargs := append([]any{ctx}, opts...)
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DispatchEvents", reflect.TypeOf((*MockAxonAgentClient)(nil).DispatchEvents), varargs...)
 }
 
@@ -204,26 +204,6 @@ func (mr *MockAxonAgentClientMockRecorder) ReportInvocation(ctx, in any, opts ..
 	mr.mock.ctrl.T.Helper()
 	varargs := append([]any{ctx, in}, opts...)
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ReportInvocation", reflect.TypeOf((*MockAxonAgentClient)(nil).ReportInvocation), varargs...)
-}
-
-// RetryInvocation mocks base method.
-func (m *MockAxonAgentClient) RetryInvocation(ctx context.Context, in *axon.RetryInvocationRequest, opts ...grpc.CallOption) (*axon.RetryInvocationResponse, error) {
-	m.ctrl.T.Helper()
-	varargs := []any{ctx, in}
-	for _, a := range opts {
-		varargs = append(varargs, a)
-	}
-	ret := m.ctrl.Call(m, "RetryInvocation", varargs...)
-	ret0, _ := ret[0].(*axon.RetryInvocationResponse)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// RetryInvocation indicates an expected call of RetryInvocation.
-func (mr *MockAxonAgentClientMockRecorder) RetryInvocation(ctx, in any, opts ...any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	varargs := append([]any{ctx, in}, opts...)
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RetryInvocation", reflect.TypeOf((*MockAxonAgentClient)(nil).RetryInvocation), varargs...)
 }
 
 // UnregisterHandler mocks base method.

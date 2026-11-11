@@ -3,6 +3,7 @@ package axon
 import (
 	"context"
 	"fmt"
+	"io"
 	"sync"
 	"testing"
 	"time"
@@ -16,45 +17,103 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-type hookCall struct {
-	info    InvocationInfo
-	failure *Failure
+// reportedFailure runs handler once and returns the failure it reported to
+// the agent, or nil.
+func reportedFailure(t *testing.T, handler any, timeoutMs int, setup ...func(*mockGrpcClient)) *pb.InvocationFailure {
+	controller := gomock.NewController(t)
+	defer controller.Finish()
+	var reported *pb.ReportInvocationRequest
+	executeHandlerWithAgent(t, controller, handler, timeoutMs,
+		func(req *pb.ReportInvocationRequest) { reported = req },
+		func(_ *Agent, mock *mockGrpcClient) {
+			for _, s := range setup {
+				s(mock)
+			}
+		})
+	require.NotNil(t, reported)
+	return reported.GetFailure()
 }
 
-// hookRecorder is a failure hook that records each call.
-type hookRecorder struct {
-	mu     sync.Mutex
-	calls  []hookCall
-	action FailureAction
-	seen   chan struct{}
+func TestSuccessReportsNoFailure(t *testing.T) {
+	require.Nil(t, reportedFailure(t, func(ctx HandlerContext) error { return nil }, 0))
 }
 
-func newHookRecorder(action FailureAction) *hookRecorder {
-	return &hookRecorder{action: action, seen: make(chan struct{}, 10)}
+func TestHandlerErrorIsReportedAsApplicationFailure(t *testing.T) {
+	failure := reportedFailure(t, func(ctx HandlerContext) error { return fmt.Errorf("ohnoes") }, 0)
+	require.NotNil(t, failure)
+	require.Equal(t, pb.FailureReason_HANDLER_ERROR, failure.Reason)
+	require.Equal(t, pb.FailureSource_APPLICATION, failure.Source)
+	require.Equal(t, "ohnoes", failure.Message)
 }
 
-func (r *hookRecorder) hook(_ context.Context, info InvocationInfo, failure *Failure) FailureAction {
-	r.mu.Lock()
-	r.calls = append(r.calls, hookCall{info, failure})
-	r.mu.Unlock()
-	r.seen <- struct{}{}
-	return r.action
+func TestPanicIsReportedAsHandlerError(t *testing.T) {
+	failure := reportedFailure(t, func(ctx HandlerContext) error { panic("ohnoes") }, 0)
+	require.Equal(t, pb.FailureReason_HANDLER_ERROR, failure.Reason)
+	require.Equal(t, pb.FailureSource_APPLICATION, failure.Source)
 }
 
-func (r *hookRecorder) only(t *testing.T) hookCall {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	require.Len(t, r.calls, 1)
-	return r.calls[0]
+func TestSlowHandlerIsReportedAsApplicationTimeout(t *testing.T) {
+	failure := reportedFailure(t, func(ctx HandlerContext) error {
+		time.Sleep(50 * time.Millisecond)
+		return nil
+	}, 1)
+	require.Equal(t, pb.FailureReason_TIMEOUT, failure.Reason)
+	require.Equal(t, pb.FailureSource_APPLICATION, failure.Source)
 }
 
-// eventStream is a DispatchEvents stream that delivers events and then
-// blocks until the agent stops reading.
+func TestTimeoutDuringApiCallIsReportedAsRuntime(t *testing.T) {
+	failure := reportedFailure(t, func(ctx HandlerContext) error {
+		_, err := ctx.CortexJsonApiCall("GET", "/api/v1/slow", "")
+		return err
+	}, 20, func(mock *mockGrpcClient) {
+		mock.apiStub.EXPECT().Call(gomock.Any(), gomock.Any()).DoAndReturn(
+			func(ctx context.Context, req *pb.CallRequest, opts ...grpc.CallOption) (*pb.CallResponse, error) {
+				<-ctx.Done()
+				return nil, status.FromContextError(ctx.Err()).Err()
+			})
+	})
+	require.Equal(t, pb.FailureReason_TIMEOUT, failure.Reason)
+	require.Equal(t, pb.FailureSource_RUNTIME, failure.Source)
+}
+
+func TestFailureHookNotRunLocally(t *testing.T) {
+	controller := gomock.NewController(t)
+	defer controller.Finish()
+	called := false
+	executeHandlerWithAgent(t, controller, func(ctx HandlerContext) error { return fmt.Errorf("ohnoes") }, 0, nil,
+		func(agent *Agent, mock *mockGrpcClient) {
+			// The agent sends the failure back as an event; it is not run here.
+			agent.onFailure = func(context.Context, InvocationInfo, *Failure) FailureAction {
+				called = true
+				return FailureActionDrop
+			}
+			expectEventStream(mock)
+		})
+	require.False(t, called)
+}
+
+// eventStream is a DispatchEvents stream: it delivers events, records the
+// client's messages, and then blocks until the client stops reading.
 type eventStream struct {
 	grpc.ClientStream
 	ctx    context.Context
 	events chan *pb.DispatchEvent
 	err    error
+
+	mu   sync.Mutex
+	sent []*pb.DispatchEventsRequest
+	// answered gets each resolution the client sends.
+	answered chan *pb.FailureResolution
+}
+
+func (s *eventStream) Send(req *pb.DispatchEventsRequest) error {
+	s.mu.Lock()
+	s.sent = append(s.sent, req)
+	s.mu.Unlock()
+	if req.Resolution != nil {
+		s.answered <- req.Resolution
+	}
+	return nil
 }
 
 func (s *eventStream) Recv() (*pb.DispatchEvent, error) {
@@ -65,137 +124,39 @@ func (s *eventStream) Recv() (*pb.DispatchEvent, error) {
 	case ev := <-s.events:
 		return ev, nil
 	case <-s.ctx.Done():
-		return nil, s.ctx.Err()
+		return nil, io.EOF
 	}
 }
 
-func expectEventStream(mock *mockGrpcClient, events ...*pb.DispatchEvent) {
+func (s *eventStream) CloseSend() error { return nil }
+
+// expectEventStream serves events on the first DispatchEvents stream the
+// client opens, and returns the stream so the test can see its answers.
+func expectEventStream(mock *mockGrpcClient, events ...*pb.DispatchEvent) *eventStream {
+	stream := &eventStream{
+		ctx:      context.Background(),
+		events:   make(chan *pb.DispatchEvent, len(events)),
+		answered: make(chan *pb.FailureResolution, len(events)+1),
+	}
+	for _, ev := range events {
+		stream.events <- ev
+	}
 	mock.agentStub.EXPECT().DispatchEvents(gomock.Any(), gomock.Any()).AnyTimes().DoAndReturn(
-		func(ctx context.Context, req *pb.DispatchRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[pb.DispatchEvent], error) {
-			ch := make(chan *pb.DispatchEvent, len(events))
-			for _, ev := range events {
-				ch <- ev
-			}
-			events = nil
-			return &eventStream{ctx: ctx, events: ch}, nil
+		func(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[pb.DispatchEventsRequest, pb.DispatchEvent], error) {
+			stream.ctx = ctx
+			return stream, nil
 		})
+	return stream
 }
 
-func runWithFailureHook(t *testing.T, handler any, timeoutMs int, rec *hookRecorder, setup ...func(*mockGrpcClient)) {
-	controller := gomock.NewController(t)
-	defer controller.Finish()
-	executeHandlerWithAgent(t, controller, handler, timeoutMs, nil, func(agent *Agent, mock *mockGrpcClient) {
-		agent.onFailure = rec.hook
-		expectEventStream(mock)
-		for _, s := range setup {
-			s(mock)
-		}
-	})
-}
-
-func TestFailureHookNotCalledOnSuccess(t *testing.T) {
-	rec := newHookRecorder(FailureActionRetry)
-	runWithFailureHook(t, func(ctx HandlerContext) error { return nil }, 0, rec)
-
-	rec.mu.Lock()
-	defer rec.mu.Unlock()
-	require.Empty(t, rec.calls)
-}
-
-func TestFailureHookOnHandlerError(t *testing.T) {
-	rec := newHookRecorder(FailureActionIgnore)
-	runWithFailureHook(t, func(ctx HandlerContext) error { return fmt.Errorf("ohnoes") }, 0, rec)
-
-	call := rec.only(t)
-	require.Equal(t, "func1", call.info.HandlerName)
-	require.Equal(t, pb.HandlerInvokeType_RUN_NOW, call.info.InvokeType)
-	require.Equal(t, 1, call.info.Attempt, "an agent that doesn't send attempt means the first")
-	failure := call.failure
-	require.NotNil(t, failure)
-	require.Equal(t, pb.FailureReason_HANDLER_ERROR, failure.Reason)
-	require.Equal(t, pb.FailureSource_APPLICATION, failure.Source)
-	require.Equal(t, "ohnoes", failure.Message)
-}
-
-func TestFailureHookOnPanic(t *testing.T) {
-	rec := newHookRecorder(FailureActionIgnore)
-	runWithFailureHook(t, func(ctx HandlerContext) error { panic("ohnoes") }, 0, rec)
-
-	failure := rec.only(t).failure
-	require.Equal(t, pb.FailureReason_HANDLER_ERROR, failure.Reason)
-	require.Equal(t, pb.FailureSource_APPLICATION, failure.Source)
-}
-
-func TestFailureHookOnHandlerTimeout(t *testing.T) {
-	rec := newHookRecorder(FailureActionIgnore)
-	runWithFailureHook(t, func(ctx HandlerContext) error {
-		time.Sleep(50 * time.Millisecond)
-		return nil
-	}, 1, rec)
-
-	failure := rec.only(t).failure
-	require.Equal(t, pb.FailureReason_TIMEOUT, failure.Reason)
-	require.Equal(t, pb.FailureSource_APPLICATION, failure.Source)
-}
-
-func TestFailureHookTimeoutDuringApiCallIsRuntime(t *testing.T) {
-	rec := newHookRecorder(FailureActionIgnore)
-	runWithFailureHook(t, func(ctx HandlerContext) error {
-		_, err := ctx.CortexJsonApiCall("GET", "/api/v1/slow", "")
-		return err
-	}, 20, rec, func(mock *mockGrpcClient) {
-		mock.apiStub.EXPECT().Call(gomock.Any(), gomock.Any()).DoAndReturn(
-			func(ctx context.Context, req *pb.CallRequest, opts ...grpc.CallOption) (*pb.CallResponse, error) {
-				<-ctx.Done()
-				return nil, status.FromContextError(ctx.Err()).Err()
-			})
-	})
-
-	failure := rec.only(t).failure
-	require.Equal(t, pb.FailureReason_TIMEOUT, failure.Reason)
-	require.Equal(t, pb.FailureSource_RUNTIME, failure.Source)
-}
-
-func TestFailureHookRetry(t *testing.T) {
-	rec := newHookRecorder(FailureActionRetry)
-	retried := make(chan *pb.RetryInvocationRequest, 1)
-	runWithFailureHook(t, func(ctx HandlerContext) error { return fmt.Errorf("ohnoes") }, 0, rec, func(mock *mockGrpcClient) {
-		mock.agentStub.EXPECT().RetryInvocation(gomock.Any(), gomock.Any()).DoAndReturn(
-			func(ctx context.Context, req *pb.RetryInvocationRequest, opts ...grpc.CallOption) (*pb.RetryInvocationResponse, error) {
-				retried <- req
-				return &pb.RetryInvocationResponse{InvocationId: "retry-1"}, nil
-			})
-	})
-
-	req := <-retried
-	require.Equal(t, "func1", req.Invoke.HandlerName)
-}
-
-func TestFailureHookPanicIsContained(t *testing.T) {
-	controller := gomock.NewController(t)
-	defer controller.Finish()
-
-	reported := false
-	executeHandlerWithAgent(t, controller, func(ctx HandlerContext) error { return fmt.Errorf("ohnoes") }, 0,
-		func(*pb.ReportInvocationRequest) { reported = true },
-		func(agent *Agent, mock *mockGrpcClient) {
-			agent.onFailure = func(context.Context, InvocationInfo, *Failure) FailureAction { panic("hook bug") }
-			expectEventStream(mock)
-		})
-	require.True(t, reported)
-}
-
-func TestFailureEventReachesFailureHook(t *testing.T) {
-	rec := newHookRecorder(FailureActionRetry)
-	retried := make(chan *pb.RetryInvocationRequest, 1)
-
-	ev := &pb.DispatchEvent{
+func failureEvent(id string, attempt int32) *pb.DispatchEvent {
+	return &pb.DispatchEvent{
 		Invoke: &pb.DispatchHandlerInvoke{
-			InvocationId: "lost-1",
+			InvocationId: id,
 			HandlerName:  "func1",
 			Reason:       pb.HandlerInvokeType_WEBHOOK,
-			Args:         map[string]string{"body": "payload"},
-			Attempt:      2,
+			Args:         map[string]string{"body": "payload-" + id},
+			Attempt:      attempt,
 		},
 		Failure: &pb.InvocationFailure{
 			Reason:         pb.FailureReason_NO_RESOURCES,
@@ -204,32 +165,84 @@ func TestFailureEventReachesFailureHook(t *testing.T) {
 			CallerRejected: true,
 		},
 	}
+}
 
+// runWithEvents runs one handler invocation while the agent sends events.
+// The handler holds the run open until every event has been answered.
+func runWithEvents(t *testing.T, hook FailureHook, events ...*pb.DispatchEvent) *eventStream {
 	controller := gomock.NewController(t)
 	defer controller.Finish()
+	var stream *eventStream
+	answeredAll := make(chan struct{})
 	executeHandlerWithAgent(t, controller, func(ctx HandlerContext) error {
-		// Hold the run open until the event has been handled.
-		<-rec.seen
+		select {
+		case <-answeredAll:
+		case <-time.After(5 * time.Second):
+		}
 		return nil
 	}, 0, nil, func(agent *Agent, mock *mockGrpcClient) {
-		agent.onFailure = rec.hook
-		expectEventStream(mock, ev)
-		mock.agentStub.EXPECT().RetryInvocation(gomock.Any(), gomock.Any()).DoAndReturn(
-			func(ctx context.Context, req *pb.RetryInvocationRequest, opts ...grpc.CallOption) (*pb.RetryInvocationResponse, error) {
-				retried <- req
-				return &pb.RetryInvocationResponse{InvocationId: "retry-1"}, nil
-			})
+		agent.onFailure = hook
+		stream = expectEventStream(mock, events...)
+		go func() {
+			for {
+				stream.mu.Lock()
+				n := 0
+				for _, req := range stream.sent {
+					if req.Resolution != nil {
+						n++
+					}
+				}
+				stream.mu.Unlock()
+				if n >= len(events) {
+					close(answeredAll)
+					return
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+		}()
 	})
+	return stream
+}
 
-	rec.mu.Lock()
-	first := rec.calls[0]
-	rec.mu.Unlock()
-	require.Equal(t, "lost-1", first.info.InvocationID)
-	require.Equal(t, "payload", first.info.Args["body"])
-	require.Equal(t, 2, first.info.Attempt)
-	require.Equal(t, pb.FailureReason_NO_RESOURCES, first.failure.Reason)
-	require.True(t, first.failure.CallerRejected)
-	require.Equal(t, "lost-1", (<-retried).Invoke.InvocationId)
+func TestFailureEventRunsHookAndAnswers(t *testing.T) {
+	var got InvocationInfo
+	var gotFailure *Failure
+	stream := runWithEvents(t, func(_ context.Context, info InvocationInfo, failure *Failure) FailureAction {
+		got, gotFailure = info, failure
+		return FailureActionRetry
+	}, failureEvent("lost-1", 2))
+
+	require.Equal(t, "lost-1", got.InvocationID)
+	require.Equal(t, "payload-lost-1", got.Args["body"])
+	require.Equal(t, 2, got.Attempt)
+	require.Equal(t, pb.FailureReason_NO_RESOURCES, gotFailure.Reason)
+	require.True(t, gotFailure.CallerRejected)
+
+	stream.mu.Lock()
+	defer stream.mu.Unlock()
+	require.Equal(t, "", stream.sent[0].GetResolution().GetInvocationId(), "the first message only identifies the client")
+	require.NotEmpty(t, stream.sent[0].DispatchId)
+	res := stream.sent[1].GetResolution()
+	require.Equal(t, "lost-1", res.InvocationId)
+	require.Equal(t, pb.FailureAction_FAILURE_ACTION_RETRY, res.Action)
+}
+
+func TestFailureHookDropIsAnswered(t *testing.T) {
+	stream := runWithEvents(t, func(context.Context, InvocationInfo, *Failure) FailureAction {
+		return FailureActionDrop
+	}, failureEvent("lost-1", 1))
+	require.Equal(t, pb.FailureAction_FAILURE_ACTION_DROP, (<-stream.answered).Action)
+}
+
+func TestFailureHookPanicDrops(t *testing.T) {
+	stream := runWithEvents(t, func(context.Context, InvocationInfo, *Failure) FailureAction {
+		panic("hook bug")
+	}, failureEvent("lost-1", 1), failureEvent("lost-2", 1))
+	// The panic is contained, and the stream keeps going.
+	require.Equal(t, "lost-1", (<-stream.answered).InvocationId)
+	second := <-stream.answered
+	require.Equal(t, "lost-2", second.InvocationId)
+	require.Equal(t, pb.FailureAction_FAILURE_ACTION_DROP, second.Action)
 }
 
 func TestFailureEventsStopOnOlderAgent(t *testing.T) {
@@ -240,10 +253,10 @@ func TestFailureEventsStopOnOlderAgent(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 		return nil
 	}, 0, nil, func(agent *Agent, mock *mockGrpcClient) {
-		agent.onFailure = func(context.Context, InvocationInfo, *Failure) FailureAction { return FailureActionIgnore }
+		agent.onFailure = func(context.Context, InvocationInfo, *Failure) FailureAction { return FailureActionDrop }
 		// Times(1): an agent without the RPC must not be redialed in a loop.
 		mock.agentStub.EXPECT().DispatchEvents(gomock.Any(), gomock.Any()).Times(1).Return(
-			&eventStream{err: status.Error(codes.Unimplemented, "unknown method DispatchEvents")}, nil)
+			&eventStream{err: status.Error(codes.Unimplemented, "unknown method DispatchEvents"), answered: make(chan *pb.FailureResolution, 1)}, nil)
 	})
 }
 
@@ -257,7 +270,7 @@ func TestDispatchRequestAdvertisesFailureEvents(t *testing.T) {
 			executeHandlerWithAgent(t, controller, func(ctx HandlerContext) error { return nil }, 0, nil,
 				func(agent *Agent, mock *mockGrpcClient) {
 					if withHook {
-						agent.onFailure = func(context.Context, InvocationInfo, *Failure) FailureAction { return FailureActionIgnore }
+						agent.onFailure = func(context.Context, InvocationInfo, *Failure) FailureAction { return FailureActionDrop }
 						expectEventStream(mock)
 					}
 					sent = mock.lastStream

@@ -60,7 +60,7 @@ def on_failure(info, failure):
     # A real hook would save info.args somewhere it can be replayed from.
     if info.attempt < 3:
         return FailureAction.RETRY
-    return FailureAction.IGNORE
+    return FailureAction.DROP
 
 
 def run():

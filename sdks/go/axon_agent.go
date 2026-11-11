@@ -544,15 +544,14 @@ func (a *Agent) invokeHandler(ctx context.Context, invoke *pb.DispatchHandlerInv
 			zap.Any("error", report.GetError()),
 		)
 	}
+	// The agent sends the failure back to the failure hook, so it is
+	// handled the same way as failures only the agent can see.
+	if failure != nil {
+		report.Failure = failure.toProto()
+	}
 	_, err := a.client.agent().ReportInvocation(context.Background(), report)
 	if err != nil {
 		a.logger.Error("failed to report invocation", zap.Error(err))
-	}
-
-	// After the report, so a slow hook can't make the agent decide this
-	// invocation was never answered and report the failure a second time.
-	if failure != nil {
-		a.runFailureHook(newInvocationInfo(invoke), failure)
 	}
 }
 

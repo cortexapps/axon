@@ -111,10 +111,13 @@ Set it to `1` for the old behaviour, where handlers run one at a time.
 
 Pass `on_failure` to `AxonClient` to run your own code whenever an
 invocation fails, for example to send the failed message somewhere you can
-replay it from. It also runs for failures that only the agent can see, such
-as a webhook the agent couldn't hand to this process because every handler
-was busy. Those failures arrive on their own stream, so they get through even
-while every handler slot is taken.
+replay it from. Every failure goes through the agent, wherever it happened:
+a handler that raised in this process, or a webhook the agent couldn't hand
+to this process because every handler was busy. The agent sends each one to
+your hook and does what the hook returns. Failures arrive on their own
+stream, so they get through even while every handler slot is taken, and a
+failure your hook hadn't answered when the connection dropped is sent again.
+This needs an agent that supports failure events.
 
 ```python
 from cortex_axon import AxonClient, FailureAction, FailureSource
@@ -155,9 +158,10 @@ client.run()
 `caller_rejected` is true when the sender was told the message wasn't
 accepted (a webhook got a 503), so the sender may also retry it.
 
-Returning `FailureAction.RETRY` asks the agent to queue the invocation
-again, with `attempt` incremented. The agent stops after 5 attempts.
-Returning nothing ignores the failure.
+Returning `FailureAction.RETRY` has the agent queue the invocation again,
+with `attempt` incremented; it stops after 5 attempts. Returning
+`FailureAction.DROP`, or nothing, drops it. If the hook raises, the
+invocation is dropped.
 
 The hook runs for every handler type, not only webhooks. Python can't stop a
 handler that overruns its timeout: at the deadline the SDK reports the

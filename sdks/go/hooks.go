@@ -57,18 +57,37 @@ func failureFromProto(f *pb.InvocationFailure) *Failure {
 	}
 }
 
-// FailureAction is what a FailureHook wants done with a failed invocation.
+func (f *Failure) toProto() *pb.InvocationFailure {
+	return &pb.InvocationFailure{
+		Reason:         f.Reason,
+		Source:         f.Source,
+		Message:        f.Message,
+		CallerRejected: f.CallerRejected,
+	}
+}
+
+// FailureAction is what a FailureHook wants the agent to do with a failed
+// invocation.
 type FailureAction int
 
 const (
-	// FailureActionIgnore leaves the failure as it is.
-	FailureActionIgnore FailureAction = iota
-	// FailureActionRetry queues the invocation again as its next attempt.
+	// FailureActionDrop does nothing more with the invocation.
+	FailureActionDrop FailureAction = iota
+	// FailureActionRetry has the agent queue the invocation again as its
+	// next attempt.
 	FailureActionRetry
 )
 
-// FailureHook runs for every failed invocation, including failures the agent
-// detects on its own, such as an invocation that never reached this process.
+func (a FailureAction) toProto() pb.FailureAction {
+	if a == FailureActionRetry {
+		return pb.FailureAction_FAILURE_ACTION_RETRY
+	}
+	return pb.FailureAction_FAILURE_ACTION_DROP
+}
+
+// FailureHook runs for every failed invocation, wherever it failed: in this
+// process, or in the agent, such as an invocation that never reached this
+// process. The agent sends each failure here and applies the answer.
 type FailureHook func(ctx context.Context, info InvocationInfo, failure *Failure) FailureAction
 
 // WithFailureHook sets a hook that runs for every failed invocation.
@@ -78,53 +97,15 @@ func WithFailureHook(hook FailureHook) Option {
 	}
 }
 
-func (a *Agent) runFailureHook(info InvocationInfo, failure *Failure) {
-	if a.onFailure == nil {
-		return
-	}
-	if a.callFailureHook(info, failure) == FailureActionRetry {
-		a.retryInvocation(info)
-	}
-}
-
-func (a *Agent) callFailureHook(info InvocationInfo, failure *Failure) (action FailureAction) {
+func (a *Agent) runFailureHook(info InvocationInfo, failure *Failure) (action FailureAction) {
 	defer func() {
 		if r := recover(); r != nil {
-			a.logger.Error("panic in failure hook", zap.Any("panic", r))
-			action = FailureActionIgnore
+			a.logger.Error("panic in failure hook, dropping the invocation",
+				zap.String("invocation-id", info.InvocationID), zap.Any("panic", r))
+			action = FailureActionDrop
 		}
 	}()
 	return a.onFailure(context.Background(), info, failure)
-}
-
-func (a *Agent) retryInvocation(info InvocationInfo) {
-	stub := a.client.agent()
-	if stub == nil {
-		a.logger.Error("cannot retry invocation, no agent connection",
-			zap.String("invocation-id", info.InvocationID))
-		return
-	}
-	resp, err := stub.RetryInvocation(context.Background(), &pb.RetryInvocationRequest{Invoke: info.invoke})
-	if status.Code(err) == codes.Unimplemented {
-		a.logger.Warn("agent does not support retries, upgrade the agent",
-			zap.String("invocation-id", info.InvocationID))
-		return
-	}
-	if err != nil {
-		a.logger.Error("failed to retry invocation",
-			zap.String("invocation-id", info.InvocationID), zap.Error(err))
-		return
-	}
-	if resp.GetError() != nil {
-		a.logger.Warn("agent rejected retry",
-			zap.String("invocation-id", info.InvocationID),
-			zap.String("error", resp.GetError().GetMessage()))
-		return
-	}
-	a.logger.Info("retrying invocation",
-		zap.String("invocation-id", info.InvocationID),
-		zap.String("retry-invocation-id", resp.GetInvocationId()),
-		zap.Int("attempt", info.Attempt+1))
 }
 
 var errEventsUnsupported = errors.New("agent does not support failure events")
@@ -135,7 +116,7 @@ func (a *Agent) runFailureEvents(ctx context.Context) {
 	for ctx.Err() == nil {
 		err := a.readFailureEvents(ctx)
 		if errors.Is(err, errEventsUnsupported) {
-			a.logger.Warn("agent does not send failure events, upgrade the agent to receive them")
+			a.logger.Warn("agent does not send failure events, upgrade the agent to use a failure hook")
 			return
 		}
 		if ctx.Err() != nil {
@@ -149,15 +130,20 @@ func (a *Agent) runFailureEvents(ctx context.Context) {
 	}
 }
 
+// readFailureEvents runs the hook for each failure the agent sends and
+// answers with what it returned.
 func (a *Agent) readFailureEvents(ctx context.Context) error {
 	stub := a.client.agent()
 	if stub == nil {
 		return fmt.Errorf("failed to create agent connection")
 	}
-	stream, err := stub.DispatchEvents(ctx, &pb.DispatchRequest{
+	stream, err := stub.DispatchEvents(ctx)
+	if err != nil {
+		return err
+	}
+	err = stream.Send(&pb.DispatchEventsRequest{
 		DispatchId:    a.DispatchId,
 		ClientVersion: version.Client,
-		FailureEvents: true,
 	})
 	if err != nil {
 		return err
@@ -173,6 +159,15 @@ func (a *Agent) readFailureEvents(ctx context.Context) error {
 		if ev.GetInvoke() == nil {
 			continue
 		}
-		a.runFailureHook(newInvocationInfo(ev.GetInvoke()), failureFromProto(ev.GetFailure()))
+		action := a.runFailureHook(newInvocationInfo(ev.GetInvoke()), failureFromProto(ev.GetFailure()))
+		err = stream.Send(&pb.DispatchEventsRequest{
+			Resolution: &pb.FailureResolution{
+				InvocationId: ev.GetInvoke().GetInvocationId(),
+				Action:       action.toProto(),
+			},
+		})
+		if err != nil {
+			return err
+		}
 	}
 }

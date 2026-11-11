@@ -26,7 +26,6 @@ const (
 	AxonAgent_Dispatch_FullMethodName          = "/cortex.axon.AxonAgent/Dispatch"
 	AxonAgent_ReportInvocation_FullMethodName  = "/cortex.axon.AxonAgent/ReportInvocation"
 	AxonAgent_DispatchEvents_FullMethodName    = "/cortex.axon.AxonAgent/DispatchEvents"
-	AxonAgent_RetryInvocation_FullMethodName   = "/cortex.axon.AxonAgent/RetryInvocation"
 )
 
 // AxonAgentClient is the client API for AxonAgent service.
@@ -39,13 +38,12 @@ type AxonAgentClient interface {
 	GetHandlerHistory(ctx context.Context, in *GetHandlerHistoryRequest, opts ...grpc.CallOption) (*GetHandlerHistoryResponse, error)
 	Dispatch(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[DispatchRequest, DispatchMessage], error)
 	ReportInvocation(ctx context.Context, in *ReportInvocationRequest, opts ...grpc.CallOption) (*ReportInvocationResponse, error)
-	// DispatchEvents streams failures the agent detected on its own: invocations
-	// that never reached the client, or that the client never reported. They use
-	// their own stream so a client that has stopped reading Dispatch because
-	// every handler is busy still hears about them.
-	DispatchEvents(ctx context.Context, in *DispatchRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[DispatchEvent], error)
-	// RetryInvocation queues a failed invocation again as a new attempt.
-	RetryInvocation(ctx context.Context, in *RetryInvocationRequest, opts ...grpc.CallOption) (*RetryInvocationResponse, error)
+	// DispatchEvents sends the client every failed invocation, and the client
+	// answers each with what to do about it. It is its own stream so a client
+	// that has stopped reading Dispatch because every handler is busy still
+	// hears about failures. An event the client has not answered when the
+	// stream ends is sent again on the next one.
+	DispatchEvents(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[DispatchEventsRequest, DispatchEvent], error)
 }
 
 type axonAgentClient struct {
@@ -119,34 +117,18 @@ func (c *axonAgentClient) ReportInvocation(ctx context.Context, in *ReportInvoca
 	return out, nil
 }
 
-func (c *axonAgentClient) DispatchEvents(ctx context.Context, in *DispatchRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[DispatchEvent], error) {
+func (c *axonAgentClient) DispatchEvents(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[DispatchEventsRequest, DispatchEvent], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	stream, err := c.cc.NewStream(ctx, &AxonAgent_ServiceDesc.Streams[1], AxonAgent_DispatchEvents_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
-	x := &grpc.GenericClientStream[DispatchRequest, DispatchEvent]{ClientStream: stream}
-	if err := x.ClientStream.SendMsg(in); err != nil {
-		return nil, err
-	}
-	if err := x.ClientStream.CloseSend(); err != nil {
-		return nil, err
-	}
+	x := &grpc.GenericClientStream[DispatchEventsRequest, DispatchEvent]{ClientStream: stream}
 	return x, nil
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type AxonAgent_DispatchEventsClient = grpc.ServerStreamingClient[DispatchEvent]
-
-func (c *axonAgentClient) RetryInvocation(ctx context.Context, in *RetryInvocationRequest, opts ...grpc.CallOption) (*RetryInvocationResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(RetryInvocationResponse)
-	err := c.cc.Invoke(ctx, AxonAgent_RetryInvocation_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
+type AxonAgent_DispatchEventsClient = grpc.BidiStreamingClient[DispatchEventsRequest, DispatchEvent]
 
 // AxonAgentServer is the server API for AxonAgent service.
 // All implementations must embed UnimplementedAxonAgentServer
@@ -158,13 +140,12 @@ type AxonAgentServer interface {
 	GetHandlerHistory(context.Context, *GetHandlerHistoryRequest) (*GetHandlerHistoryResponse, error)
 	Dispatch(grpc.BidiStreamingServer[DispatchRequest, DispatchMessage]) error
 	ReportInvocation(context.Context, *ReportInvocationRequest) (*ReportInvocationResponse, error)
-	// DispatchEvents streams failures the agent detected on its own: invocations
-	// that never reached the client, or that the client never reported. They use
-	// their own stream so a client that has stopped reading Dispatch because
-	// every handler is busy still hears about them.
-	DispatchEvents(*DispatchRequest, grpc.ServerStreamingServer[DispatchEvent]) error
-	// RetryInvocation queues a failed invocation again as a new attempt.
-	RetryInvocation(context.Context, *RetryInvocationRequest) (*RetryInvocationResponse, error)
+	// DispatchEvents sends the client every failed invocation, and the client
+	// answers each with what to do about it. It is its own stream so a client
+	// that has stopped reading Dispatch because every handler is busy still
+	// hears about failures. An event the client has not answered when the
+	// stream ends is sent again on the next one.
+	DispatchEvents(grpc.BidiStreamingServer[DispatchEventsRequest, DispatchEvent]) error
 	mustEmbedUnimplementedAxonAgentServer()
 }
 
@@ -193,11 +174,8 @@ func (UnimplementedAxonAgentServer) Dispatch(grpc.BidiStreamingServer[DispatchRe
 func (UnimplementedAxonAgentServer) ReportInvocation(context.Context, *ReportInvocationRequest) (*ReportInvocationResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ReportInvocation not implemented")
 }
-func (UnimplementedAxonAgentServer) DispatchEvents(*DispatchRequest, grpc.ServerStreamingServer[DispatchEvent]) error {
+func (UnimplementedAxonAgentServer) DispatchEvents(grpc.BidiStreamingServer[DispatchEventsRequest, DispatchEvent]) error {
 	return status.Errorf(codes.Unimplemented, "method DispatchEvents not implemented")
-}
-func (UnimplementedAxonAgentServer) RetryInvocation(context.Context, *RetryInvocationRequest) (*RetryInvocationResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method RetryInvocation not implemented")
 }
 func (UnimplementedAxonAgentServer) mustEmbedUnimplementedAxonAgentServer() {}
 func (UnimplementedAxonAgentServer) testEmbeddedByValue()                   {}
@@ -318,33 +296,11 @@ func _AxonAgent_ReportInvocation_Handler(srv interface{}, ctx context.Context, d
 }
 
 func _AxonAgent_DispatchEvents_Handler(srv interface{}, stream grpc.ServerStream) error {
-	m := new(DispatchRequest)
-	if err := stream.RecvMsg(m); err != nil {
-		return err
-	}
-	return srv.(AxonAgentServer).DispatchEvents(m, &grpc.GenericServerStream[DispatchRequest, DispatchEvent]{ServerStream: stream})
+	return srv.(AxonAgentServer).DispatchEvents(&grpc.GenericServerStream[DispatchEventsRequest, DispatchEvent]{ServerStream: stream})
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type AxonAgent_DispatchEventsServer = grpc.ServerStreamingServer[DispatchEvent]
-
-func _AxonAgent_RetryInvocation_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(RetryInvocationRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(AxonAgentServer).RetryInvocation(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: AxonAgent_RetryInvocation_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(AxonAgentServer).RetryInvocation(ctx, req.(*RetryInvocationRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
+type AxonAgent_DispatchEventsServer = grpc.BidiStreamingServer[DispatchEventsRequest, DispatchEvent]
 
 // AxonAgent_ServiceDesc is the grpc.ServiceDesc for AxonAgent service.
 // It's only intended for direct use with grpc.RegisterService,
@@ -373,10 +329,6 @@ var AxonAgent_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "ReportInvocation",
 			Handler:    _AxonAgent_ReportInvocation_Handler,
 		},
-		{
-			MethodName: "RetryInvocation",
-			Handler:    _AxonAgent_RetryInvocation_Handler,
-		},
 	},
 	Streams: []grpc.StreamDesc{
 		{
@@ -389,6 +341,7 @@ var AxonAgent_ServiceDesc = grpc.ServiceDesc{
 			StreamName:    "DispatchEvents",
 			Handler:       _AxonAgent_DispatchEvents_Handler,
 			ServerStreams: true,
+			ClientStreams: true,
 		},
 	},
 	Metadata: "cortex-axon-agent.proto",

@@ -100,7 +100,7 @@ func TestTriggerAndDequeue(t *testing.T) {
 	invoke := NewScheduledHandlerInvoke(entry, pb.HandlerInvokeType_RUN_NOW)
 	err = mgr.Trigger(invoke)
 	require.NoError(t, err)
-	h, err := mgr.Dequeue(context.Background(), "1", 500*time.Millisecond)
+	h, err := mgr.Next(context.Background(), "1", 500*time.Millisecond)
 	require.NoError(t, err)
 	require.NotNil(t, h)
 	require.Equal(t, "handler1", h.GetEntry().Name())
@@ -110,10 +110,9 @@ func TestTriggerAndDequeue(t *testing.T) {
 	time.Sleep(time.Millisecond * 10)
 	metrics, err := registry.Gather()
 	require.NoError(t, err)
-	require.Equal(t, 4, len(metrics))
+	require.Equal(t, 3, len(metrics))
 
 	expected := []string{
-		"axon_handler_failure_events_pending",
 		"axon_handler_invokes",
 		"axon_handler_latency",
 		"axon_handler_queue_depth",
@@ -166,7 +165,7 @@ func TestTriggerAndDequeueCustomTimeout(t *testing.T) {
 
 	err = mgr.Trigger(invoke)
 	require.NoError(t, err)
-	h, err := mgr.Dequeue(context.Background(), "1", 500*time.Millisecond)
+	h, err := mgr.Next(context.Background(), "1", 500*time.Millisecond)
 	require.NoError(t, err)
 	require.NotNil(t, h)
 	require.Equal(t, "handler1", h.GetEntry().Name())
@@ -181,7 +180,7 @@ func TestTriggerAndDequeueTimeout(t *testing.T) {
 	_, err := mgr.RegisterHandler("1", "handler1", defaultTimeout, FixtureHandlerOption())
 	require.NoError(t, err)
 
-	h, err := mgr.Dequeue(context.Background(), "1", time.Millisecond)
+	h, err := mgr.Next(context.Background(), "1", time.Millisecond)
 	require.NoError(t, err)
 	require.Nil(t, h)
 }
@@ -196,7 +195,7 @@ func TestTriggerAndDequeueTimeoutContext(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
 	defer cancel()
-	h, err := mgr.Dequeue(ctx, "1", time.Hour)
+	h, err := mgr.Next(ctx, "1", time.Hour)
 	require.NoError(t, err)
 	require.Nil(t, h)
 }

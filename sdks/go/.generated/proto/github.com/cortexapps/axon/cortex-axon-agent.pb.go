@@ -233,6 +233,58 @@ func (FailureSource) EnumDescriptor() ([]byte, []int) {
 	return file_cortex_axon_agent_proto_rawDescGZIP(), []int{3}
 }
 
+type FailureAction int32
+
+const (
+	// Treated as DROP.
+	FailureAction_FAILURE_ACTION_UNSPECIFIED FailureAction = 0
+	// Do nothing more with the invocation.
+	FailureAction_FAILURE_ACTION_DROP FailureAction = 1
+	// Queue the invocation again as its next attempt.
+	FailureAction_FAILURE_ACTION_RETRY FailureAction = 2
+)
+
+// Enum value maps for FailureAction.
+var (
+	FailureAction_name = map[int32]string{
+		0: "FAILURE_ACTION_UNSPECIFIED",
+		1: "FAILURE_ACTION_DROP",
+		2: "FAILURE_ACTION_RETRY",
+	}
+	FailureAction_value = map[string]int32{
+		"FAILURE_ACTION_UNSPECIFIED": 0,
+		"FAILURE_ACTION_DROP":        1,
+		"FAILURE_ACTION_RETRY":       2,
+	}
+)
+
+func (x FailureAction) Enum() *FailureAction {
+	p := new(FailureAction)
+	*p = x
+	return p
+}
+
+func (x FailureAction) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (FailureAction) Descriptor() protoreflect.EnumDescriptor {
+	return file_cortex_axon_agent_proto_enumTypes[4].Descriptor()
+}
+
+func (FailureAction) Type() protoreflect.EnumType {
+	return &file_cortex_axon_agent_proto_enumTypes[4]
+}
+
+func (x FailureAction) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use FailureAction.Descriptor instead.
+func (FailureAction) EnumDescriptor() ([]byte, []int) {
+	return file_cortex_axon_agent_proto_rawDescGZIP(), []int{4}
+}
+
 type RegisterHandlerRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	DispatchId    string                 `protobuf:"bytes,1,opt,name=dispatch_id,json=dispatchId,proto3" json:"dispatch_id,omitempty"`
@@ -1101,27 +1153,28 @@ func (x *DispatchEvent) GetFailure() *InvocationFailure {
 	return nil
 }
 
-type RetryInvocationRequest struct {
+type FailureResolution struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Invoke        *DispatchHandlerInvoke `protobuf:"bytes,1,opt,name=invoke,proto3" json:"invoke,omitempty"`
+	InvocationId  string                 `protobuf:"bytes,1,opt,name=invocation_id,json=invocationId,proto3" json:"invocation_id,omitempty"`
+	Action        FailureAction          `protobuf:"varint,2,opt,name=action,proto3,enum=cortex.axon.FailureAction" json:"action,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *RetryInvocationRequest) Reset() {
-	*x = RetryInvocationRequest{}
+func (x *FailureResolution) Reset() {
+	*x = FailureResolution{}
 	mi := &file_cortex_axon_agent_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *RetryInvocationRequest) String() string {
+func (x *FailureResolution) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*RetryInvocationRequest) ProtoMessage() {}
+func (*FailureResolution) ProtoMessage() {}
 
-func (x *RetryInvocationRequest) ProtoReflect() protoreflect.Message {
+func (x *FailureResolution) ProtoReflect() protoreflect.Message {
 	mi := &file_cortex_axon_agent_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -1133,68 +1186,85 @@ func (x *RetryInvocationRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use RetryInvocationRequest.ProtoReflect.Descriptor instead.
-func (*RetryInvocationRequest) Descriptor() ([]byte, []int) {
+// Deprecated: Use FailureResolution.ProtoReflect.Descriptor instead.
+func (*FailureResolution) Descriptor() ([]byte, []int) {
 	return file_cortex_axon_agent_proto_rawDescGZIP(), []int{14}
 }
 
-func (x *RetryInvocationRequest) GetInvoke() *DispatchHandlerInvoke {
-	if x != nil {
-		return x.Invoke
-	}
-	return nil
-}
-
-type RetryInvocationResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Error         *Error                 `protobuf:"bytes,1,opt,name=error,proto3" json:"error,omitempty"`
-	InvocationId  string                 `protobuf:"bytes,2,opt,name=invocation_id,json=invocationId,proto3" json:"invocation_id,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *RetryInvocationResponse) Reset() {
-	*x = RetryInvocationResponse{}
-	mi := &file_cortex_axon_agent_proto_msgTypes[15]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *RetryInvocationResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*RetryInvocationResponse) ProtoMessage() {}
-
-func (x *RetryInvocationResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_cortex_axon_agent_proto_msgTypes[15]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use RetryInvocationResponse.ProtoReflect.Descriptor instead.
-func (*RetryInvocationResponse) Descriptor() ([]byte, []int) {
-	return file_cortex_axon_agent_proto_rawDescGZIP(), []int{15}
-}
-
-func (x *RetryInvocationResponse) GetError() *Error {
-	if x != nil {
-		return x.Error
-	}
-	return nil
-}
-
-func (x *RetryInvocationResponse) GetInvocationId() string {
+func (x *FailureResolution) GetInvocationId() string {
 	if x != nil {
 		return x.InvocationId
 	}
 	return ""
+}
+
+func (x *FailureResolution) GetAction() FailureAction {
+	if x != nil {
+		return x.Action
+	}
+	return FailureAction_FAILURE_ACTION_UNSPECIFIED
+}
+
+type DispatchEventsRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Identifies the client on the first message of the stream.
+	DispatchId    string `protobuf:"bytes,1,opt,name=dispatch_id,json=dispatchId,proto3" json:"dispatch_id,omitempty"`
+	ClientVersion string `protobuf:"bytes,2,opt,name=client_version,json=clientVersion,proto3" json:"client_version,omitempty"`
+	// The client's answer to a DispatchEvent; unset on the first message.
+	Resolution    *FailureResolution `protobuf:"bytes,3,opt,name=resolution,proto3" json:"resolution,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DispatchEventsRequest) Reset() {
+	*x = DispatchEventsRequest{}
+	mi := &file_cortex_axon_agent_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DispatchEventsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DispatchEventsRequest) ProtoMessage() {}
+
+func (x *DispatchEventsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_cortex_axon_agent_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DispatchEventsRequest.ProtoReflect.Descriptor instead.
+func (*DispatchEventsRequest) Descriptor() ([]byte, []int) {
+	return file_cortex_axon_agent_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *DispatchEventsRequest) GetDispatchId() string {
+	if x != nil {
+		return x.DispatchId
+	}
+	return ""
+}
+
+func (x *DispatchEventsRequest) GetClientVersion() string {
+	if x != nil {
+		return x.ClientVersion
+	}
+	return ""
+}
+
+func (x *DispatchEventsRequest) GetResolution() *FailureResolution {
+	if x != nil {
+		return x.Resolution
+	}
+	return nil
 }
 
 type Log struct {
@@ -1266,8 +1336,12 @@ type ReportInvocationRequest struct {
 	//
 	//	*ReportInvocationRequest_Result
 	//	*ReportInvocationRequest_Error
-	Message       isReportInvocationRequest_Message `protobuf_oneof:"message"`
-	Logs          []*Log                            `protobuf:"bytes,300,rep,name=logs,proto3" json:"logs,omitempty"`
+	Message isReportInvocationRequest_Message `protobuf_oneof:"message"`
+	// Why the invocation failed, from a client that classifies its failures.
+	// The agent passes it on as a failure event; an error without it is only
+	// recorded.
+	Failure       *InvocationFailure `protobuf:"bytes,202,opt,name=failure,proto3" json:"failure,omitempty"`
+	Logs          []*Log             `protobuf:"bytes,300,rep,name=logs,proto3" json:"logs,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1344,6 +1418,13 @@ func (x *ReportInvocationRequest) GetError() *Error {
 		if x, ok := x.Message.(*ReportInvocationRequest_Error); ok {
 			return x.Error
 		}
+	}
+	return nil
+}
+
+func (x *ReportInvocationRequest) GetFailure() *InvocationFailure {
+	if x != nil {
+		return x.Failure
 	}
 	return nil
 }
@@ -1774,23 +1855,29 @@ const file_cortex_axon_agent_proto_rawDesc = "" +
 	"\x0fcaller_rejected\x18\x04 \x01(\bR\x0ecallerRejected\"\x85\x01\n" +
 	"\rDispatchEvent\x12:\n" +
 	"\x06invoke\x18\x01 \x01(\v2\".cortex.axon.DispatchHandlerInvokeR\x06invoke\x128\n" +
-	"\afailure\x18\x02 \x01(\v2\x1e.cortex.axon.InvocationFailureR\afailure\"T\n" +
-	"\x16RetryInvocationRequest\x12:\n" +
-	"\x06invoke\x18\x01 \x01(\v2\".cortex.axon.DispatchHandlerInvokeR\x06invoke\"h\n" +
-	"\x17RetryInvocationResponse\x12(\n" +
-	"\x05error\x18\x01 \x01(\v2\x12.cortex.axon.ErrorR\x05error\x12#\n" +
-	"\rinvocation_id\x18\x02 \x01(\tR\finvocationId\"o\n" +
+	"\afailure\x18\x02 \x01(\v2\x1e.cortex.axon.InvocationFailureR\afailure\"l\n" +
+	"\x11FailureResolution\x12#\n" +
+	"\rinvocation_id\x18\x01 \x01(\tR\finvocationId\x122\n" +
+	"\x06action\x18\x02 \x01(\x0e2\x1a.cortex.axon.FailureActionR\x06action\"\x9f\x01\n" +
+	"\x15DispatchEventsRequest\x12\x1f\n" +
+	"\vdispatch_id\x18\x01 \x01(\tR\n" +
+	"dispatchId\x12%\n" +
+	"\x0eclient_version\x18\x02 \x01(\tR\rclientVersion\x12>\n" +
+	"\n" +
+	"resolution\x18\x03 \x01(\v2\x1e.cortex.axon.FailureResolutionR\n" +
+	"resolution\"o\n" +
 	"\x03Log\x12\x14\n" +
 	"\x05level\x18\x01 \x01(\tR\x05level\x128\n" +
 	"\ttimestamp\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\ttimestamp\x12\x18\n" +
-	"\amessage\x18\x03 \x01(\tR\amessage\"\xec\x02\n" +
+	"\amessage\x18\x03 \x01(\tR\amessage\"\xa7\x03\n" +
 	"\x17ReportInvocationRequest\x12I\n" +
 	"\x0ehandler_invoke\x18\x01 \x01(\v2\".cortex.axon.DispatchHandlerInvokeR\rhandlerInvoke\x12P\n" +
 	"\x16start_client_timestamp\x18d \x01(\v2\x1a.google.protobuf.TimestampR\x14startClientTimestamp\x12\x1f\n" +
 	"\vduration_ms\x18e \x01(\x05R\n" +
 	"durationMs\x124\n" +
 	"\x06result\x18\xc8\x01 \x01(\v2\x19.cortex.axon.InvokeResultH\x00R\x06result\x12+\n" +
-	"\x05error\x18\xc9\x01 \x01(\v2\x12.cortex.axon.ErrorH\x00R\x05error\x12%\n" +
+	"\x05error\x18\xc9\x01 \x01(\v2\x12.cortex.axon.ErrorH\x00R\x05error\x129\n" +
+	"\afailure\x18\xca\x01 \x01(\v2\x1e.cortex.axon.InvocationFailureR\afailure\x12%\n" +
 	"\x04logs\x18\xac\x02 \x03(\v2\x10.cortex.axon.LogR\x04logsB\t\n" +
 	"\amessage\"D\n" +
 	"\x18ReportInvocationResponse\x12(\n" +
@@ -1842,16 +1929,19 @@ const file_cortex_axon_agent_proto_rawDesc = "" +
 	"\rFailureSource\x12\x1e\n" +
 	"\x1aFAILURE_SOURCE_UNSPECIFIED\x10\x00\x12\x0f\n" +
 	"\vAPPLICATION\x10\x01\x12\v\n" +
-	"\aRUNTIME\x10\x022\xdf\x05\n" +
+	"\aRUNTIME\x10\x02*b\n" +
+	"\rFailureAction\x12\x1e\n" +
+	"\x1aFAILURE_ACTION_UNSPECIFIED\x10\x00\x12\x17\n" +
+	"\x13FAILURE_ACTION_DROP\x10\x01\x12\x18\n" +
+	"\x14FAILURE_ACTION_RETRY\x10\x022\x89\x05\n" +
 	"\tAxonAgent\x12\\\n" +
 	"\x0fRegisterHandler\x12#.cortex.axon.RegisterHandlerRequest\x1a$.cortex.axon.RegisterHandlerResponse\x12b\n" +
 	"\x11UnregisterHandler\x12%.cortex.axon.UnregisterHandlerRequest\x1a&.cortex.axon.UnregisterHandlerResponse\x12S\n" +
 	"\fListHandlers\x12 .cortex.axon.ListHandlersRequest\x1a!.cortex.axon.ListHandlersResponse\x12b\n" +
 	"\x11GetHandlerHistory\x12%.cortex.axon.GetHandlerHistoryRequest\x1a&.cortex.axon.GetHandlerHistoryResponse\x12J\n" +
 	"\bDispatch\x12\x1c.cortex.axon.DispatchRequest\x1a\x1c.cortex.axon.DispatchMessage(\x010\x01\x12_\n" +
-	"\x10ReportInvocation\x12$.cortex.axon.ReportInvocationRequest\x1a%.cortex.axon.ReportInvocationResponse\x12L\n" +
-	"\x0eDispatchEvents\x12\x1c.cortex.axon.DispatchRequest\x1a\x1a.cortex.axon.DispatchEvent0\x01\x12\\\n" +
-	"\x0fRetryInvocation\x12#.cortex.axon.RetryInvocationRequest\x1a$.cortex.axon.RetryInvocationResponseB\x1cZ\x1agithub.com/cortexapps/axonb\x06proto3"
+	"\x10ReportInvocation\x12$.cortex.axon.ReportInvocationRequest\x1a%.cortex.axon.ReportInvocationResponse\x12T\n" +
+	"\x0eDispatchEvents\x12\".cortex.axon.DispatchEventsRequest\x1a\x1a.cortex.axon.DispatchEvent(\x010\x01B\x1cZ\x1agithub.com/cortexapps/axonb\x06proto3"
 
 var (
 	file_cortex_axon_agent_proto_rawDescOnce sync.Once
@@ -1865,98 +1955,98 @@ func file_cortex_axon_agent_proto_rawDescGZIP() []byte {
 	return file_cortex_axon_agent_proto_rawDescData
 }
 
-var file_cortex_axon_agent_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
+var file_cortex_axon_agent_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
 var file_cortex_axon_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 24)
 var file_cortex_axon_agent_proto_goTypes = []any{
 	(HandlerInvokeType)(0),            // 0: cortex.axon.HandlerInvokeType
 	(DispatchMessageType)(0),          // 1: cortex.axon.DispatchMessageType
 	(FailureReason)(0),                // 2: cortex.axon.FailureReason
 	(FailureSource)(0),                // 3: cortex.axon.FailureSource
-	(*RegisterHandlerRequest)(nil),    // 4: cortex.axon.RegisterHandlerRequest
-	(*HandlerInvokeOption)(nil),       // 5: cortex.axon.HandlerInvokeOption
-	(*HandlerOption)(nil),             // 6: cortex.axon.HandlerOption
-	(*RegisterHandlerResponse)(nil),   // 7: cortex.axon.RegisterHandlerResponse
-	(*UnregisterHandlerRequest)(nil),  // 8: cortex.axon.UnregisterHandlerRequest
-	(*UnregisterHandlerResponse)(nil), // 9: cortex.axon.UnregisterHandlerResponse
-	(*ListHandlersRequest)(nil),       // 10: cortex.axon.ListHandlersRequest
-	(*HandlerInfo)(nil),               // 11: cortex.axon.HandlerInfo
-	(*ListHandlersResponse)(nil),      // 12: cortex.axon.ListHandlersResponse
-	(*DispatchRequest)(nil),           // 13: cortex.axon.DispatchRequest
-	(*DispatchMessage)(nil),           // 14: cortex.axon.DispatchMessage
-	(*DispatchHandlerInvoke)(nil),     // 15: cortex.axon.DispatchHandlerInvoke
-	(*InvocationFailure)(nil),         // 16: cortex.axon.InvocationFailure
-	(*DispatchEvent)(nil),             // 17: cortex.axon.DispatchEvent
-	(*RetryInvocationRequest)(nil),    // 18: cortex.axon.RetryInvocationRequest
-	(*RetryInvocationResponse)(nil),   // 19: cortex.axon.RetryInvocationResponse
-	(*Log)(nil),                       // 20: cortex.axon.Log
-	(*ReportInvocationRequest)(nil),   // 21: cortex.axon.ReportInvocationRequest
-	(*ReportInvocationResponse)(nil),  // 22: cortex.axon.ReportInvocationResponse
-	(*InvokeResult)(nil),              // 23: cortex.axon.InvokeResult
-	(*GetHandlerHistoryRequest)(nil),  // 24: cortex.axon.GetHandlerHistoryRequest
-	(*HandlerExecution)(nil),          // 25: cortex.axon.HandlerExecution
-	(*GetHandlerHistoryResponse)(nil), // 26: cortex.axon.GetHandlerHistoryResponse
-	nil,                               // 27: cortex.axon.DispatchHandlerInvoke.ArgsEntry
-	(*Error)(nil),                     // 28: cortex.axon.Error
-	(*timestamppb.Timestamp)(nil),     // 29: google.protobuf.Timestamp
+	(FailureAction)(0),                // 4: cortex.axon.FailureAction
+	(*RegisterHandlerRequest)(nil),    // 5: cortex.axon.RegisterHandlerRequest
+	(*HandlerInvokeOption)(nil),       // 6: cortex.axon.HandlerInvokeOption
+	(*HandlerOption)(nil),             // 7: cortex.axon.HandlerOption
+	(*RegisterHandlerResponse)(nil),   // 8: cortex.axon.RegisterHandlerResponse
+	(*UnregisterHandlerRequest)(nil),  // 9: cortex.axon.UnregisterHandlerRequest
+	(*UnregisterHandlerResponse)(nil), // 10: cortex.axon.UnregisterHandlerResponse
+	(*ListHandlersRequest)(nil),       // 11: cortex.axon.ListHandlersRequest
+	(*HandlerInfo)(nil),               // 12: cortex.axon.HandlerInfo
+	(*ListHandlersResponse)(nil),      // 13: cortex.axon.ListHandlersResponse
+	(*DispatchRequest)(nil),           // 14: cortex.axon.DispatchRequest
+	(*DispatchMessage)(nil),           // 15: cortex.axon.DispatchMessage
+	(*DispatchHandlerInvoke)(nil),     // 16: cortex.axon.DispatchHandlerInvoke
+	(*InvocationFailure)(nil),         // 17: cortex.axon.InvocationFailure
+	(*DispatchEvent)(nil),             // 18: cortex.axon.DispatchEvent
+	(*FailureResolution)(nil),         // 19: cortex.axon.FailureResolution
+	(*DispatchEventsRequest)(nil),     // 20: cortex.axon.DispatchEventsRequest
+	(*Log)(nil),                       // 21: cortex.axon.Log
+	(*ReportInvocationRequest)(nil),   // 22: cortex.axon.ReportInvocationRequest
+	(*ReportInvocationResponse)(nil),  // 23: cortex.axon.ReportInvocationResponse
+	(*InvokeResult)(nil),              // 24: cortex.axon.InvokeResult
+	(*GetHandlerHistoryRequest)(nil),  // 25: cortex.axon.GetHandlerHistoryRequest
+	(*HandlerExecution)(nil),          // 26: cortex.axon.HandlerExecution
+	(*GetHandlerHistoryResponse)(nil), // 27: cortex.axon.GetHandlerHistoryResponse
+	nil,                               // 28: cortex.axon.DispatchHandlerInvoke.ArgsEntry
+	(*Error)(nil),                     // 29: cortex.axon.Error
+	(*timestamppb.Timestamp)(nil),     // 30: google.protobuf.Timestamp
 }
 var file_cortex_axon_agent_proto_depIdxs = []int32{
-	6,  // 0: cortex.axon.RegisterHandlerRequest.options:type_name -> cortex.axon.HandlerOption
+	7,  // 0: cortex.axon.RegisterHandlerRequest.options:type_name -> cortex.axon.HandlerOption
 	0,  // 1: cortex.axon.HandlerInvokeOption.type:type_name -> cortex.axon.HandlerInvokeType
-	5,  // 2: cortex.axon.HandlerOption.invoke:type_name -> cortex.axon.HandlerInvokeOption
-	28, // 3: cortex.axon.RegisterHandlerResponse.error:type_name -> cortex.axon.Error
-	28, // 4: cortex.axon.UnregisterHandlerResponse.error:type_name -> cortex.axon.Error
-	6,  // 5: cortex.axon.HandlerInfo.options:type_name -> cortex.axon.HandlerOption
-	29, // 6: cortex.axon.HandlerInfo.last_invoked_client_timestamp:type_name -> google.protobuf.Timestamp
-	28, // 7: cortex.axon.ListHandlersResponse.error:type_name -> cortex.axon.Error
-	11, // 8: cortex.axon.ListHandlersResponse.handlers:type_name -> cortex.axon.HandlerInfo
+	6,  // 2: cortex.axon.HandlerOption.invoke:type_name -> cortex.axon.HandlerInvokeOption
+	29, // 3: cortex.axon.RegisterHandlerResponse.error:type_name -> cortex.axon.Error
+	29, // 4: cortex.axon.UnregisterHandlerResponse.error:type_name -> cortex.axon.Error
+	7,  // 5: cortex.axon.HandlerInfo.options:type_name -> cortex.axon.HandlerOption
+	30, // 6: cortex.axon.HandlerInfo.last_invoked_client_timestamp:type_name -> google.protobuf.Timestamp
+	29, // 7: cortex.axon.ListHandlersResponse.error:type_name -> cortex.axon.Error
+	12, // 8: cortex.axon.ListHandlersResponse.handlers:type_name -> cortex.axon.HandlerInfo
 	1,  // 9: cortex.axon.DispatchMessage.type:type_name -> cortex.axon.DispatchMessageType
-	15, // 10: cortex.axon.DispatchMessage.invoke:type_name -> cortex.axon.DispatchHandlerInvoke
+	16, // 10: cortex.axon.DispatchMessage.invoke:type_name -> cortex.axon.DispatchHandlerInvoke
 	0,  // 11: cortex.axon.DispatchHandlerInvoke.reason:type_name -> cortex.axon.HandlerInvokeType
-	27, // 12: cortex.axon.DispatchHandlerInvoke.args:type_name -> cortex.axon.DispatchHandlerInvoke.ArgsEntry
-	29, // 13: cortex.axon.DispatchHandlerInvoke.deadline:type_name -> google.protobuf.Timestamp
+	28, // 12: cortex.axon.DispatchHandlerInvoke.args:type_name -> cortex.axon.DispatchHandlerInvoke.ArgsEntry
+	30, // 13: cortex.axon.DispatchHandlerInvoke.deadline:type_name -> google.protobuf.Timestamp
 	2,  // 14: cortex.axon.InvocationFailure.reason:type_name -> cortex.axon.FailureReason
 	3,  // 15: cortex.axon.InvocationFailure.source:type_name -> cortex.axon.FailureSource
-	15, // 16: cortex.axon.DispatchEvent.invoke:type_name -> cortex.axon.DispatchHandlerInvoke
-	16, // 17: cortex.axon.DispatchEvent.failure:type_name -> cortex.axon.InvocationFailure
-	15, // 18: cortex.axon.RetryInvocationRequest.invoke:type_name -> cortex.axon.DispatchHandlerInvoke
-	28, // 19: cortex.axon.RetryInvocationResponse.error:type_name -> cortex.axon.Error
-	29, // 20: cortex.axon.Log.timestamp:type_name -> google.protobuf.Timestamp
-	15, // 21: cortex.axon.ReportInvocationRequest.handler_invoke:type_name -> cortex.axon.DispatchHandlerInvoke
-	29, // 22: cortex.axon.ReportInvocationRequest.start_client_timestamp:type_name -> google.protobuf.Timestamp
-	23, // 23: cortex.axon.ReportInvocationRequest.result:type_name -> cortex.axon.InvokeResult
-	28, // 24: cortex.axon.ReportInvocationRequest.error:type_name -> cortex.axon.Error
-	20, // 25: cortex.axon.ReportInvocationRequest.logs:type_name -> cortex.axon.Log
-	28, // 26: cortex.axon.ReportInvocationResponse.error:type_name -> cortex.axon.Error
-	29, // 27: cortex.axon.GetHandlerHistoryRequest.start_time:type_name -> google.protobuf.Timestamp
-	29, // 28: cortex.axon.GetHandlerHistoryRequest.end_time:type_name -> google.protobuf.Timestamp
-	29, // 29: cortex.axon.HandlerExecution.publish_server_timestamp:type_name -> google.protobuf.Timestamp
-	29, // 30: cortex.axon.HandlerExecution.receive_server_timestamp:type_name -> google.protobuf.Timestamp
-	29, // 31: cortex.axon.HandlerExecution.start_client_timestamp:type_name -> google.protobuf.Timestamp
-	28, // 32: cortex.axon.HandlerExecution.error:type_name -> cortex.axon.Error
-	20, // 33: cortex.axon.HandlerExecution.logs:type_name -> cortex.axon.Log
-	28, // 34: cortex.axon.GetHandlerHistoryResponse.error:type_name -> cortex.axon.Error
-	25, // 35: cortex.axon.GetHandlerHistoryResponse.history:type_name -> cortex.axon.HandlerExecution
-	4,  // 36: cortex.axon.AxonAgent.RegisterHandler:input_type -> cortex.axon.RegisterHandlerRequest
-	8,  // 37: cortex.axon.AxonAgent.UnregisterHandler:input_type -> cortex.axon.UnregisterHandlerRequest
-	10, // 38: cortex.axon.AxonAgent.ListHandlers:input_type -> cortex.axon.ListHandlersRequest
-	24, // 39: cortex.axon.AxonAgent.GetHandlerHistory:input_type -> cortex.axon.GetHandlerHistoryRequest
-	13, // 40: cortex.axon.AxonAgent.Dispatch:input_type -> cortex.axon.DispatchRequest
-	21, // 41: cortex.axon.AxonAgent.ReportInvocation:input_type -> cortex.axon.ReportInvocationRequest
-	13, // 42: cortex.axon.AxonAgent.DispatchEvents:input_type -> cortex.axon.DispatchRequest
-	18, // 43: cortex.axon.AxonAgent.RetryInvocation:input_type -> cortex.axon.RetryInvocationRequest
-	7,  // 44: cortex.axon.AxonAgent.RegisterHandler:output_type -> cortex.axon.RegisterHandlerResponse
-	9,  // 45: cortex.axon.AxonAgent.UnregisterHandler:output_type -> cortex.axon.UnregisterHandlerResponse
-	12, // 46: cortex.axon.AxonAgent.ListHandlers:output_type -> cortex.axon.ListHandlersResponse
-	26, // 47: cortex.axon.AxonAgent.GetHandlerHistory:output_type -> cortex.axon.GetHandlerHistoryResponse
-	14, // 48: cortex.axon.AxonAgent.Dispatch:output_type -> cortex.axon.DispatchMessage
-	22, // 49: cortex.axon.AxonAgent.ReportInvocation:output_type -> cortex.axon.ReportInvocationResponse
-	17, // 50: cortex.axon.AxonAgent.DispatchEvents:output_type -> cortex.axon.DispatchEvent
-	19, // 51: cortex.axon.AxonAgent.RetryInvocation:output_type -> cortex.axon.RetryInvocationResponse
-	44, // [44:52] is the sub-list for method output_type
-	36, // [36:44] is the sub-list for method input_type
-	36, // [36:36] is the sub-list for extension type_name
-	36, // [36:36] is the sub-list for extension extendee
-	0,  // [0:36] is the sub-list for field type_name
+	16, // 16: cortex.axon.DispatchEvent.invoke:type_name -> cortex.axon.DispatchHandlerInvoke
+	17, // 17: cortex.axon.DispatchEvent.failure:type_name -> cortex.axon.InvocationFailure
+	4,  // 18: cortex.axon.FailureResolution.action:type_name -> cortex.axon.FailureAction
+	19, // 19: cortex.axon.DispatchEventsRequest.resolution:type_name -> cortex.axon.FailureResolution
+	30, // 20: cortex.axon.Log.timestamp:type_name -> google.protobuf.Timestamp
+	16, // 21: cortex.axon.ReportInvocationRequest.handler_invoke:type_name -> cortex.axon.DispatchHandlerInvoke
+	30, // 22: cortex.axon.ReportInvocationRequest.start_client_timestamp:type_name -> google.protobuf.Timestamp
+	24, // 23: cortex.axon.ReportInvocationRequest.result:type_name -> cortex.axon.InvokeResult
+	29, // 24: cortex.axon.ReportInvocationRequest.error:type_name -> cortex.axon.Error
+	17, // 25: cortex.axon.ReportInvocationRequest.failure:type_name -> cortex.axon.InvocationFailure
+	21, // 26: cortex.axon.ReportInvocationRequest.logs:type_name -> cortex.axon.Log
+	29, // 27: cortex.axon.ReportInvocationResponse.error:type_name -> cortex.axon.Error
+	30, // 28: cortex.axon.GetHandlerHistoryRequest.start_time:type_name -> google.protobuf.Timestamp
+	30, // 29: cortex.axon.GetHandlerHistoryRequest.end_time:type_name -> google.protobuf.Timestamp
+	30, // 30: cortex.axon.HandlerExecution.publish_server_timestamp:type_name -> google.protobuf.Timestamp
+	30, // 31: cortex.axon.HandlerExecution.receive_server_timestamp:type_name -> google.protobuf.Timestamp
+	30, // 32: cortex.axon.HandlerExecution.start_client_timestamp:type_name -> google.protobuf.Timestamp
+	29, // 33: cortex.axon.HandlerExecution.error:type_name -> cortex.axon.Error
+	21, // 34: cortex.axon.HandlerExecution.logs:type_name -> cortex.axon.Log
+	29, // 35: cortex.axon.GetHandlerHistoryResponse.error:type_name -> cortex.axon.Error
+	26, // 36: cortex.axon.GetHandlerHistoryResponse.history:type_name -> cortex.axon.HandlerExecution
+	5,  // 37: cortex.axon.AxonAgent.RegisterHandler:input_type -> cortex.axon.RegisterHandlerRequest
+	9,  // 38: cortex.axon.AxonAgent.UnregisterHandler:input_type -> cortex.axon.UnregisterHandlerRequest
+	11, // 39: cortex.axon.AxonAgent.ListHandlers:input_type -> cortex.axon.ListHandlersRequest
+	25, // 40: cortex.axon.AxonAgent.GetHandlerHistory:input_type -> cortex.axon.GetHandlerHistoryRequest
+	14, // 41: cortex.axon.AxonAgent.Dispatch:input_type -> cortex.axon.DispatchRequest
+	22, // 42: cortex.axon.AxonAgent.ReportInvocation:input_type -> cortex.axon.ReportInvocationRequest
+	20, // 43: cortex.axon.AxonAgent.DispatchEvents:input_type -> cortex.axon.DispatchEventsRequest
+	8,  // 44: cortex.axon.AxonAgent.RegisterHandler:output_type -> cortex.axon.RegisterHandlerResponse
+	10, // 45: cortex.axon.AxonAgent.UnregisterHandler:output_type -> cortex.axon.UnregisterHandlerResponse
+	13, // 46: cortex.axon.AxonAgent.ListHandlers:output_type -> cortex.axon.ListHandlersResponse
+	27, // 47: cortex.axon.AxonAgent.GetHandlerHistory:output_type -> cortex.axon.GetHandlerHistoryResponse
+	15, // 48: cortex.axon.AxonAgent.Dispatch:output_type -> cortex.axon.DispatchMessage
+	23, // 49: cortex.axon.AxonAgent.ReportInvocation:output_type -> cortex.axon.ReportInvocationResponse
+	18, // 50: cortex.axon.AxonAgent.DispatchEvents:output_type -> cortex.axon.DispatchEvent
+	44, // [44:51] is the sub-list for method output_type
+	37, // [37:44] is the sub-list for method input_type
+	37, // [37:37] is the sub-list for extension type_name
+	37, // [37:37] is the sub-list for extension extendee
+	0,  // [0:37] is the sub-list for field type_name
 }
 
 func init() { file_cortex_axon_agent_proto_init() }
@@ -1980,7 +2070,7 @@ func file_cortex_axon_agent_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_cortex_axon_agent_proto_rawDesc), len(file_cortex_axon_agent_proto_rawDesc)),
-			NumEnums:      4,
+			NumEnums:      5,
 			NumMessages:   24,
 			NumExtensions: 0,
 			NumServices:   1,

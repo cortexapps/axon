@@ -32,7 +32,7 @@ func TestHandleWebhook(t *testing.T) {
 		},
 	}
 
-	_, err := manager.RegisterHandler("1", "test", 1, option)
+	_, err := manager.RegisterHandler("1", "test", time.Minute, option)
 	require.NoError(t, err)
 
 	err = manager.Start("1")
@@ -61,7 +61,7 @@ func TestHandleWebhook(t *testing.T) {
 	Ensure that the handler was invoked
 	*/
 	assert.NotNil(t, manager.GetByTag("my-webhook-id").LastInvoked())
-	handlerInvocation, err := manager.Dequeue(context.Background(), "1", 500*time.Millisecond)
+	handlerInvocation, err := manager.Next(context.Background(), "1", 500*time.Millisecond)
 	require.NoError(t, err)
 	require.Equal(t, "test", handlerInvocation.GetEntry().Name())
 
@@ -89,7 +89,8 @@ func TestHandleWebhookRejectsWhenQueueIsFull(t *testing.T) {
 	_, err := manager.RegisterHandler("1", "test", time.Minute, option)
 	require.NoError(t, err)
 	require.NoError(t, manager.Start("1"))
-	manager.SubscribeFailures("1")
+	failures := handler.NewFailureManager(logger, nil, manager)
+	failures.Subscribe("1")
 
 	webhookHandler := NewWebhookHandler(config.AgentConfig{}, logger, manager, nil)
 	router := mux.NewRouter()
@@ -125,10 +126,9 @@ func TestHandleWebhookRejectsWhenQueueIsFull(t *testing.T) {
 
 	// The refused webhook still reaches the client's failure hook, flagged so
 	// it can tell the sender was asked to retry.
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	ev, err := manager.NextFailure(ctx, "1")
+	ev, err := failures.Next(context.Background(), "1", 5*time.Second)
 	require.NoError(t, err)
+	require.NotNil(t, ev)
 	require.Equal(t, pb.FailureReason_NO_RESOURCES, ev.Failure.Reason)
 	require.True(t, ev.Failure.CallerRejected)
 	require.Equal(t, "payload", ev.Invoke.Args["body"])
