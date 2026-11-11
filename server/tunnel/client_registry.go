@@ -76,6 +76,11 @@ type ClientIdentity struct {
 	Alias         string
 	InstanceID    string
 	ClientVersion string
+	// RelayMode and ImageVariant come from ClientHello.metadata
+	// ("relay_mode", "image_variant"); agents before they were added send
+	// neither, and they are omitted from logs.
+	RelayMode    string
+	ImageVariant string
 }
 
 // LogFields renders the client's attribution for a log line.
@@ -91,7 +96,7 @@ type ClientIdentity struct {
 // Emitting "" there would attribute every such line to one non-existent
 // tenant and make a blank column indistinguishable from a real empty id.
 func (i ClientIdentity) LogFields(token broker.Token) []zap.Field {
-	fields := make([]zap.Field, 0, 6)
+	fields := make([]zap.Field, 0, 8)
 	fields = append(fields, zap.String("tokenHash", token.Hashed()))
 	for _, opt := range []struct{ key, value string }{
 		{"tenantId", i.TenantID},
@@ -99,6 +104,8 @@ func (i ClientIdentity) LogFields(token broker.Token) []zap.Field {
 		{"alias", i.Alias},
 		{"instanceId", i.InstanceID},
 		{"clientVersion", i.ClientVersion},
+		{"relayMode", i.RelayMode},
+		{"imageVariant", i.ImageVariant},
 	} {
 		if opt.value != "" {
 			fields = append(fields, zap.String(opt.key, opt.value))

@@ -1521,11 +1521,16 @@ func (tc *tunnelClient) openSlot(id int, recovering bool) (*streamCtx, error) {
 				CortexApiToken: tc.config.CortexApiToken,
 				// Everything below is informational (logs/metrics on the
 				// server); the broker token alone is the credential today.
-				ClientVersion: common.ClientVersion,
+				//
+				// ClientVersion carries the build version: the protocol
+				// version (common.ClientVersion) has been "0.0.1" since the
+				// start and told the server nothing about which agent it had.
+				ClientVersion: config.BuildVersion(),
 				TenantId:      os.Getenv("CORTEX_TENANT_ID"),
 				Integration:   tc.integrationInfo.Integration.String(),
 				Alias:         tc.integrationInfo.Alias,
 				InstanceId:    tc.config.InstanceId,
+				Metadata:      helloMetadata(tc.config),
 			},
 		},
 	}
@@ -1861,4 +1866,20 @@ var jittered = func(d time.Duration) time.Duration {
 	}
 	j := rand.Int64N(2*n+1) - n
 	return d + time.Duration(j)
+}
+
+// Keys this agent sets in ClientHello.metadata. The server logs them with the
+// agent's identity; a server that does not know a key ignores it.
+const (
+	helloMetaRelayMode    = "relay_mode"
+	helloMetaImageVariant = "image_variant"
+)
+
+// helloMetadata describes how this agent runs: its relay mode and the image
+// variant it was built for (full, or the go-only grpc image).
+func helloMetadata(cfg config.AgentConfig) map[string]string {
+	return map[string]string{
+		helloMetaRelayMode:    string(cfg.EffectiveRelayMode()),
+		helloMetaImageVariant: config.ImageVariant(),
+	}
 }

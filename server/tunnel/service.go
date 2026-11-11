@@ -153,6 +153,8 @@ func (s *Service) Tunnel(stream pb.TunnelService_TunnelServer) error {
 		Alias:         hello.Alias,
 		InstanceID:    hello.InstanceId,
 		ClientVersion: hello.ClientVersion,
+		RelayMode:     hello.Metadata["relay_mode"],
+		ImageVariant:  hello.Metadata["image_variant"],
 	}
 
 	// Debug, not Info: a stream opens whenever a call needs one, so at Info
