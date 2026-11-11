@@ -90,12 +90,7 @@ func (h *axonHandler) returnJson(obj interface{}, w http.ResponseWriter) {
 	w.Write(json)
 }
 
-func getBuildVersion() string {
-	if v := os.Getenv("AXON_BUILD_VERSION"); v != "" {
-		return v
-	}
-	return "dev"
-}
+func getBuildVersion() string { return config.BuildVersion() }
 
 // relayMode reports the transport this agent relays over. It answers with the
 // effective transport rather than echoing the configured string: an unset mode
@@ -104,10 +99,7 @@ func getBuildVersion() string {
 // running snyk-broker and is reported as such. Deciding this through the same
 // predicate the relay itself switches on keeps the two from drifting.
 func (h *axonHandler) relayMode() string {
-	if h.config.IsGRPCTunnel() {
-		return string(config.RelayModeGrpcTunnel)
-	}
-	return string(config.RelayModeSnykBroker)
+	return string(h.config.EffectiveRelayMode())
 }
 
 func (h *axonHandler) healthcheck(w http.ResponseWriter, r *http.Request) {

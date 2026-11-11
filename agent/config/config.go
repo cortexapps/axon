@@ -165,6 +165,34 @@ func applyForcedRelayMode(mode, requested string) string {
 	return ForcedRelayMode
 }
 
+// EffectiveRelayMode is the transport this agent actually relays over. An
+// unset mode means the snyk-broker default, and only an exact "grpc-tunnel"
+// selects the tunnel, so anything else, a typo included, is snyk-broker.
+func (ac AgentConfig) EffectiveRelayMode() RelayMode {
+	if ac.IsGRPCTunnel() {
+		return RelayModeGrpcTunnel
+	}
+	return RelayModeSnykBroker
+}
+
+// BuildVersion is the agent's software version: AXON_BUILD_VERSION, which the
+// image stamps at build time, or "dev" for anything built without it.
+func BuildVersion() string {
+	if v := os.Getenv("AXON_BUILD_VERSION"); v != "" {
+		return v
+	}
+	return "dev"
+}
+
+// ImageVariant names the image this binary was built for: "grpc" for the
+// go-only image, which pins ForcedRelayMode, and "full" otherwise.
+func ImageVariant() string {
+	if ForcedRelayMode != "" {
+		return "grpc"
+	}
+	return "full"
+}
+
 // IsGRPCTunnel returns true if the relay mode is grpc-tunnel.
 func (ac AgentConfig) IsGRPCTunnel() bool {
 	return ac.RelayMode == "grpc-tunnel"

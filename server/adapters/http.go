@@ -136,12 +136,7 @@ func writeBrokerJSON(w http.ResponseWriter, status int, body string) {
 func (h *HttpAdapter) getConnectionStatus(w http.ResponseWriter, r *http.Request) {
 	tokenOrHash := r.PathValue("token")
 
-	// Try raw token first, then as already-hashed (mirrors handleBrokerDispatch).
-	token := broker.NewToken(tokenOrHash)
-	if h.registry.GetIdentity(token) == nil {
-		token = broker.TokenFromHash(tokenOrHash)
-	}
-	connected := h.registry.GetIdentity(token) != nil
+	connected := h.registry.GetIdentity(h.resolveToken(tokenOrHash)) != nil
 
 	if connected {
 		writeBrokerJSON(w, http.StatusOK, brokerOKTrue)
@@ -149,6 +144,20 @@ func (h *HttpAdapter) getConnectionStatus(w http.ResponseWriter, r *http.Request
 	}
 	w.Header().Set("x-broker-failure", "no-connection")
 	writeBrokerJSON(w, http.StatusNotFound, brokerOKFalse)
+}
+
+// resolveToken reads the token segment of a broker URL, which callers send
+// either raw or already hashed. The raw reading wins when this server has a
+// tunnel for it; otherwise the value is taken as a hash only if it has a
+// hash's shape. Falling back to a hash for any unknown value made an
+// unregistered raw token log as its own "tokenHash", which wrote live broker
+// tokens to the logs every time a token had no tunnel here.
+func (h *HttpAdapter) resolveToken(tokenOrHash string) broker.Token {
+	token := broker.NewToken(tokenOrHash)
+	if h.registry.GetIdentity(token) == nil && broker.LooksHashed(tokenOrHash) {
+		return broker.TokenFromHash(tokenOrHash)
+	}
+	return token
 }
 
 // handleBrokerDispatch handles HTTP requests at /broker/<token>/<path>,
@@ -171,21 +180,21 @@ func (h *HttpAdapter) handleBrokerDispatch(w http.ResponseWriter, r *http.Reques
 		dispatchPath += "?" + r.URL.RawQuery
 	}
 
-	// Try as raw token first, then as already-hashed.
-	token := broker.NewToken(tokenOrHash)
+	token := h.resolveToken(tokenOrHash)
 	identity := h.registry.GetIdentity(token)
-	if identity == nil {
-		token = broker.TokenFromHash(tokenOrHash)
-		identity = h.registry.GetIdentity(token)
-	}
 
 	// The fields every failure line for this request carries. The path is
-	// logged without its query string, which can carry credentials.
-	reqFields := []zap.Field{
-		zap.String("tokenHash", token.Hashed()),
+	// logged without its query string, which can carry credentials. A caller
+	// that sent the raw token also gets it masked, so a token someone has in
+	// hand can be searched for without hashing it first.
+	reqFields := []zap.Field{zap.String("tokenHash", token.Hashed())}
+	if masked := token.Masked(); masked != "" {
+		reqFields = append(reqFields, zap.String("tokenMasked", masked))
+	}
+	reqFields = append(reqFields,
 		zap.String("method", r.Method),
 		zap.String("path", trimmed[slashIdx:]),
-	}
+	)
 
 	// Determine dispatch timeout from request context deadline, falling back
 	// to the configured default. Bail early if the deadline has already passed.
@@ -280,11 +289,12 @@ func (h *HttpAdapter) handleBrokerDispatch(w http.ResponseWriter, r *http.Reques
 	if copyErr != nil {
 		// Response already committed; nothing to send but log it. A failed
 		// write is the caller going away; anything else is the tunnel side.
-		side := "tunnel"
+		// A caller going away is routine, as in failureLevel.
+		side, level := "tunnel", zapcore.WarnLevel
 		if errors.Is(copyErr, errCallerWrite) {
-			side = "caller"
+			side, level = "caller", zapcore.InfoLevel
 		}
-		h.logger.Warn("Response body aborted mid-stream",
+		h.logger.Log(level, "Response body aborted mid-stream",
 			append(respFields,
 				zap.Int("status", statusCode),
 				zap.String("side", side),
@@ -318,6 +328,8 @@ func agentFields(id tunnel.ClientIdentity) []zap.Field {
 		{"alias", id.Alias},
 		{"integration", id.Integration},
 		{"clientVersion", id.ClientVersion},
+		{"relayMode", id.RelayMode},
+		{"imageVariant", id.ImageVariant},
 	} {
 		if opt.value != "" {
 			fields = append(fields, zap.String(opt.key, opt.value))
@@ -387,9 +399,9 @@ func (h *HttpAdapter) writeDispatchError(w http.ResponseWriter, err error, token
 		// on, even with a healthy instance one entry further down the list.
 		//
 		// Routine rather than exceptional: it is how a caller gets moved off
-		// an instance that has lost its streams, so it is logged at Info
-		// rather than Warn. No failure headers: the dispatcher matches this
-		// response byte for byte.
+		// an instance that holds no streams for the token, so it is logged at
+		// Debug. No failure headers: the dispatcher matches this response
+		// byte for byte.
 		status = http.StatusNotFound
 		writeBrokerJSON(w, http.StatusNotFound, brokerOKFalse)
 
@@ -452,7 +464,9 @@ func failureCause(err error, d *dispatch.DispatchError, report *dispatch.CancelE
 func failureLevel(err error, cause dispatch.FailureCause) zapcore.Level {
 	switch {
 	case errors.Is(err, dispatch.ErrNoTunnel):
-		return zapcore.InfoLevel
+		// A server with no stream for the token answers so the dispatcher
+		// tries the next one; that is the normal routing path, not a failure.
+		return zapcore.DebugLevel
 	case errors.Is(err, context.Canceled) && !cause.MadeCallerWait():
 		return zapcore.InfoLevel
 	}

@@ -76,6 +76,11 @@ type ClientIdentity struct {
 	Alias         string
 	InstanceID    string
 	ClientVersion string
+	// RelayMode and ImageVariant come from ClientHello.metadata
+	// ("relay_mode", "image_variant"); agents before they were added send
+	// neither, and they are omitted from logs.
+	RelayMode    string
+	ImageVariant string
 }
 
 // LogFields renders the client's attribution for a log line.
@@ -91,7 +96,7 @@ type ClientIdentity struct {
 // Emitting "" there would attribute every such line to one non-existent
 // tenant and make a blank column indistinguishable from a real empty id.
 func (i ClientIdentity) LogFields(token broker.Token) []zap.Field {
-	fields := make([]zap.Field, 0, 6)
+	fields := make([]zap.Field, 0, 8)
 	fields = append(fields, zap.String("tokenHash", token.Hashed()))
 	for _, opt := range []struct{ key, value string }{
 		{"tenantId", i.TenantID},
@@ -99,6 +104,8 @@ func (i ClientIdentity) LogFields(token broker.Token) []zap.Field {
 		{"alias", i.Alias},
 		{"instanceId", i.InstanceID},
 		{"clientVersion", i.ClientVersion},
+		{"relayMode", i.RelayMode},
+		{"imageVariant", i.ImageVariant},
 	} {
 		if opt.value != "" {
 			fields = append(fields, zap.String(opt.key, opt.value))
@@ -254,8 +261,7 @@ func (r *ClientRegistry) RegisterStream(token broker.Token, identity ClientIdent
 		stream.onRelease = r.makeOnRelease(key, stream)
 		existing.pushIdle(stream)
 		// Debug: the entry already existed, so the token's reachability here
-		// has not changed — only its stream count. Registered new client
-		// below is the transition, and stays at Info.
+		// has not changed — only its stream count.
 		r.logger.Debug("Added stream to existing client entry",
 			append(identity.LogFields(token),
 				zap.String("streamId", stream.StreamID),
@@ -281,7 +287,9 @@ func (r *ClientRegistry) RegisterStream(token broker.Token, identity ClientIdent
 	entry.pushIdle(stream)
 	r.entries[key] = entry
 
-	r.logger.Info("Registered new client",
+	// Debug: the service logs "Agent instance connected" at Info for the
+	// same event, with the stream counts and peer address.
+	r.logger.Debug("Registered new client",
 		append(identity.LogFields(token), zap.String("streamId", stream.StreamID))...,
 	)
 	return RegisterResult{
@@ -364,14 +372,15 @@ func (r *ClientRegistry) UnregisterStream(token broker.Token, streamID string) U
 	if len(entry.Streams) == 0 {
 		delete(r.entries, key)
 		res.TokenRemoved = true
-		r.logger.Info("Removed client entry (last stream closed)",
+		// Debug: the service logs "Agent instance disconnected" at Info for
+		// the same event, with the close reason.
+		r.logger.Debug("Removed client entry (last stream closed)",
 			append(stream.Identity.LogFields(token), zap.String("streamId", streamID))...,
 		)
 		return res
 	}
 
-	// Debug: streams remain, so the token is still reachable here. Losing the
-	// last one is the event that matters, and it is logged at Info above.
+	// Debug: streams remain, so the token is still reachable here.
 	r.logger.Debug("Removed stream from client entry",
 		append(stream.Identity.LogFields(token),
 			zap.String("streamId", streamID),

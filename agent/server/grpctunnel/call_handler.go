@@ -258,14 +258,7 @@ func (tc *tunnelClient) runCall(ctx context.Context, sc *streamCtx, c *agentCall
 		bodyR.CloseWithError(err)
 		tc.requestsTotal.WithLabelValues(method, "502").Inc()
 		cause := tc.stopCause(ctx, c)
-		// Only an upstream that failed is an error of ours to chase; a call
-		// the server gave up on, or that ran out its own deadline, is the
-		// upstream being slow, and the server logs the failure as well.
-		level := zapcore.WarnLevel
-		if cause == pb.CallCancel_UPSTREAM_ERROR {
-			level = zapcore.ErrorLevel
-		}
-		tc.logger.Log(level, "Call execution failed", append([]zap.Field{
+		tc.logger.Log(callFailureLevel(cause), "Call execution failed", append([]zap.Field{
 			zap.String("callId", callID),
 			zap.String("method", method),
 			zap.String("targetURL", breq.URL.String()),
@@ -284,14 +277,26 @@ func (tc *tunnelClient) runCall(ctx context.Context, sc *streamCtx, c *agentCall
 	// anyone asks for when a call is slow or comes back wrong. Deferred so
 	// it is still written when the response body or a send fails partway
 	// through, with the latency that had elapsed by then.
+	//
+	// A response that did not reach CallEnd -- the upstream body or a send
+	// to the server failed partway -- is still logged here, but at Warn and
+	// marked aborted: its status is what the upstream started with, not what
+	// the caller got.
+	completed := false
 	defer func() {
-		tc.logger.Info("Request completed",
+		level := zapcore.InfoLevel
+		fields := []zap.Field{
 			zap.String("callId", callID),
 			zap.String("method", method),
 			zap.String("targetURL", breq.URL.String()),
 			zap.Int("status", resp.StatusCode),
 			zap.Int64("durationMs", time.Since(startTime).Milliseconds()),
-		)
+		}
+		if !completed {
+			level = zapcore.WarnLevel
+			fields = append(fields, zap.Bool("aborted", true))
+		}
+		tc.logger.Log(level, "Request completed", fields...)
 	}()
 
 	// Response start.
@@ -340,7 +345,7 @@ func (tc *tunnelClient) runCall(ctx context.Context, sc *streamCtx, c *agentCall
 		}
 		if readErr != nil {
 			cause := tc.stopCause(ctx, c)
-			tc.logger.Warn("Response body read failed mid-stream", append([]zap.Field{
+			tc.logger.Log(callFailureLevel(cause), "Response body read failed mid-stream", append([]zap.Field{
 				zap.String("callId", callID), zap.Error(readErr),
 			}, c.progress.fields(cause)...)...)
 			tc.sendCallCancel(sc.sendFn, callID, c.progress.report(0, fmt.Sprintf("upstream read failed: %v", readErr), cause))
@@ -362,8 +367,24 @@ func (tc *tunnelClient) runCall(ctx context.Context, sc *streamCtx, c *agentCall
 	}}}); err != nil {
 		return
 	}
+	completed = true
 
 	tc.requestDuration.WithLabelValues(method).Observe(float64(time.Since(startTime).Milliseconds()))
+}
+
+// callFailureLevel is the level for a call that failed with cause. Only an
+// upstream that failed is an error of ours to chase. A call the server gave
+// up on, or that ran out its own deadline, is the upstream being slow, and
+// the server logs the failure as well. A call cut off by the agent shutting
+// down is expected.
+func callFailureLevel(cause pb.CallCancel_Cause) zapcore.Level {
+	switch cause {
+	case pb.CallCancel_UPSTREAM_ERROR:
+		return zapcore.ErrorLevel
+	case pb.CallCancel_AGENT_SHUTDOWN:
+		return zapcore.InfoLevel
+	}
+	return zapcore.WarnLevel
 }
 
 // sendCancel sends a CallCancel with an HTTP status hint, for a call that
