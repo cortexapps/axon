@@ -1,7 +1,6 @@
 package http
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -53,7 +52,7 @@ func TestInvokeEndpoint(t *testing.T) {
 	response := `{"status":"ok"}`
 
 	go func() {
-		handlerInvocation, err := manager.Next(context.Background(), "1", 500*time.Millisecond)
+		handlerInvocation, err := dequeueWithin(manager, 500*time.Millisecond)
 		require.NoError(t, err)
 		require.NotNil(t, handlerInvocation)
 		require.Equal(t, "test-handler", handlerInvocation.GetEntry().Name())
@@ -111,7 +110,7 @@ func TestInvokeEndpointErr(t *testing.T) {
 	payload := `{"body":"payload"}`
 
 	go func() {
-		handlerInvocation, err := manager.Next(context.Background(), "1", 500*time.Millisecond)
+		handlerInvocation, err := dequeueWithin(manager, 500*time.Millisecond)
 		require.NoError(t, err)
 		require.Equal(t, "test-handler", handlerInvocation.GetEntry().Name())
 		require.Equal(t, payload, handlerInvocation.ToDispatchInvoke().Args["body"])

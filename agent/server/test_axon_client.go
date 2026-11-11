@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -33,7 +34,7 @@ type testAxonClient struct {
 	conn       *grpc.ClientConn
 	dispatchId string
 	callback   clientCallback
-	finished   bool
+	finished   atomic.Bool
 	t          *testing.T
 
 	failureEvents bool
@@ -94,7 +95,7 @@ func (c *testAxonClient) Run(ctx context.Context) error {
 		return err
 	}
 
-	for !c.finished {
+	for !c.finished.Load() {
 		m, err := stream.Recv()
 
 		if err != nil {
@@ -146,7 +147,7 @@ func (c *testAxonClient) Run(ctx context.Context) error {
 }
 
 func (c *testAxonClient) Close() {
-	c.finished = true
+	c.finished.Store(true)
 	c.conn.Close()
 }
 

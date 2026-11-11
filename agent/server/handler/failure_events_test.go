@@ -32,17 +32,27 @@ func startWebhookHandler(t *testing.T, timeout time.Duration) (Manager, FailureM
 	return mgr, failures, mgr.ListHandlers()[0]
 }
 
-func nextFailure(t *testing.T, failures FailureManager) *pb.DispatchEvent {
-	ev, err := failures.Next(context.Background(), "1", 5*time.Second)
-	require.NoError(t, err)
-	require.NotNil(t, ev, "expected a failure event")
+// dequeueWithin waits up to wait for src's next item.
+func dequeueWithin[T any](src InvocationSource[T], wait time.Duration) (T, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), wait)
+	defer cancel()
+	return src.Dequeue(ctx, "1")
+}
+
+func nextFailure(t *testing.T, failures FailureManager) *FailureEvent {
+	ev, err := dequeueWithin(failures, 5*time.Second)
+	require.NoError(t, err, "expected a failure event")
 	return ev
 }
 
 func requireNoFailure(t *testing.T, failures FailureManager) {
-	ev, err := failures.Next(context.Background(), "1", 200*time.Millisecond)
-	require.NoError(t, err)
-	require.Nil(t, ev, "unexpected failure event")
+	ev, err := dequeueWithin(failures, 200*time.Millisecond)
+	require.ErrorIs(t, err, context.DeadlineExceeded, "unexpected failure event %v", ev)
+}
+
+func requireNoInvoke(t *testing.T, mgr Manager) {
+	h, err := dequeueWithin(mgr, 200*time.Millisecond)
+	require.ErrorIs(t, err, context.DeadlineExceeded, "unexpected invocation %v", h)
 }
 
 func TestInvokeStateTransitions(t *testing.T) {
@@ -91,9 +101,7 @@ func TestExpiredInQueueIsAFailure(t *testing.T) {
 	require.False(t, ev.Failure.CallerRejected)
 
 	// And it is never handed out afterwards.
-	h, err := mgr.Next(context.Background(), "1", 200*time.Millisecond)
-	require.NoError(t, err)
-	require.Nil(t, h)
+	requireNoInvoke(t, mgr)
 }
 
 func TestDispatchedInvocationDoesNotExpire(t *testing.T) {
@@ -102,7 +110,7 @@ func TestDispatchedInvocationDoesNotExpire(t *testing.T) {
 
 	invoke := NewHandlerInvoke(entry, pb.HandlerInvokeType_WEBHOOK, nil)
 	require.NoError(t, mgr.Trigger(invoke))
-	h, err := mgr.Next(context.Background(), "1", time.Second)
+	h, err := dequeueWithin(mgr, time.Second)
 	require.NoError(t, err)
 	require.Equal(t, InvokeDispatched, h.State())
 
@@ -122,7 +130,7 @@ func TestReportedFailureIsAFailure(t *testing.T) {
 
 	invoke := NewHandlerInvoke(entry, pb.HandlerInvokeType_WEBHOOK, nil)
 	require.NoError(t, mgr.Trigger(invoke))
-	_, err := mgr.Next(context.Background(), "1", time.Second)
+	_, err := dequeueWithin(mgr, time.Second)
 	require.NoError(t, err)
 
 	invoke.Complete("", NewFailureError(pb.FailureReason_HANDLER_ERROR, pb.FailureSource_APPLICATION, "boom"))
@@ -137,7 +145,7 @@ func TestPlainErrorIsNotAFailure(t *testing.T) {
 
 	invoke := NewHandlerInvoke(entry, pb.HandlerInvokeType_WEBHOOK, nil)
 	require.NoError(t, mgr.Trigger(invoke))
-	_, err := mgr.Next(context.Background(), "1", time.Second)
+	_, err := dequeueWithin(mgr, time.Second)
 	require.NoError(t, err)
 
 	// An older client reports errors without a failure; that is only recorded.
@@ -183,14 +191,10 @@ func TestUnresolvedFailureIsRequeuedFirst(t *testing.T) {
 
 	first := nextFailure(t, failures)
 	require.Equal(t, "a", first.Invoke.Args["n"])
-	failures.Requeue("1", first.Invoke.InvocationId)
+	first.Requeue()
 
 	require.Equal(t, "a", nextFailure(t, failures).Invoke.Args["n"])
 	require.Equal(t, "b", nextFailure(t, failures).Invoke.Args["n"])
-}
-
-func resolve(t *testing.T, failures FailureManager, ev *pb.DispatchEvent, action pb.FailureAction) error {
-	return failures.Resolve("1", &pb.FailureResolution{InvocationId: ev.Invoke.InvocationId, Action: action})
 }
 
 func notifyFailure(failures FailureManager, invoke *pb.DispatchHandlerInvoke) {
@@ -203,9 +207,9 @@ func TestResolveRetryQueuesNextAttempt(t *testing.T) {
 
 	original := NewHandlerInvoke(entry, pb.HandlerInvokeType_WEBHOOK, map[string]string{"body": "payload"})
 	notifyFailure(failures, original.ToDispatchInvoke())
-	require.NoError(t, resolve(t, failures, nextFailure(t, failures), pb.FailureAction_FAILURE_ACTION_RETRY))
+	require.NoError(t, nextFailure(t, failures).Resolve(pb.FailureAction_FAILURE_ACTION_RETRY))
 
-	h, err := mgr.Next(context.Background(), "1", time.Second)
+	h, err := dequeueWithin(mgr, time.Second)
 	require.NoError(t, err)
 	retried := h.ToDispatchInvoke()
 	require.NotEqual(t, original.Id, retried.InvocationId)
@@ -220,13 +224,11 @@ func TestResolveDropQueuesNothing(t *testing.T) {
 
 	notifyFailure(failures, NewHandlerInvoke(entry, pb.HandlerInvokeType_WEBHOOK, nil).ToDispatchInvoke())
 	ev := nextFailure(t, failures)
-	require.NoError(t, resolve(t, failures, ev, pb.FailureAction_FAILURE_ACTION_DROP))
+	require.NoError(t, ev.Resolve(pb.FailureAction_FAILURE_ACTION_DROP))
 
-	h, err := mgr.Next(context.Background(), "1", 200*time.Millisecond)
-	require.NoError(t, err)
-	require.Nil(t, h)
-	// Resolved once; a second answer finds nothing pending.
-	require.Error(t, resolve(t, failures, ev, pb.FailureAction_FAILURE_ACTION_RETRY))
+	requireNoInvoke(t, mgr)
+	// Resolved once; a second answer is refused.
+	require.Error(t, ev.Resolve(pb.FailureAction_FAILURE_ACTION_RETRY))
 }
 
 func TestRetryFindsReregisteredHandler(t *testing.T) {
@@ -237,7 +239,7 @@ func TestRetryFindsReregisteredHandler(t *testing.T) {
 	stale.HandlerId = "gone"
 	notifyFailure(failures, stale)
 
-	require.NoError(t, resolve(t, failures, nextFailure(t, failures), pb.FailureAction_FAILURE_ACTION_RETRY))
+	require.NoError(t, nextFailure(t, failures).Resolve(pb.FailureAction_FAILURE_ACTION_RETRY))
 }
 
 func TestRetryStopsAtLimit(t *testing.T) {
@@ -248,7 +250,7 @@ func TestRetryStopsAtLimit(t *testing.T) {
 	last.Attempt = maxRetryAttempts
 	notifyFailure(failures, last)
 
-	require.ErrorIs(t, resolve(t, failures, nextFailure(t, failures), pb.FailureAction_FAILURE_ACTION_RETRY), ErrRetryLimit)
+	require.ErrorIs(t, nextFailure(t, failures).Resolve(pb.FailureAction_FAILURE_ACTION_RETRY), ErrRetryLimit)
 }
 
 func TestRetryTreatsMissingAttemptAsFirst(t *testing.T) {
@@ -259,8 +261,57 @@ func TestRetryTreatsMissingAttemptAsFirst(t *testing.T) {
 	fromOlderAgent.Attempt = 0
 	notifyFailure(failures, fromOlderAgent)
 
-	require.NoError(t, resolve(t, failures, nextFailure(t, failures), pb.FailureAction_FAILURE_ACTION_RETRY))
-	h, err := mgr.Next(context.Background(), "1", time.Second)
+	require.NoError(t, nextFailure(t, failures).Resolve(pb.FailureAction_FAILURE_ACTION_RETRY))
+	h, err := dequeueWithin(mgr, time.Second)
 	require.NoError(t, err)
 	require.Equal(t, int32(2), h.ToDispatchInvoke().Attempt)
+}
+
+func TestConcurrentWaitersEachGetDistinctFailures(t *testing.T) {
+	_, failures, entry := startWebhookHandler(t, defaultTimeout)
+	failures.Subscribe("1")
+
+	const waiters, count = 4, 200
+	got := make(chan string, count)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	for i := 0; i < waiters; i++ {
+		go func() {
+			for {
+				ev, err := failures.Dequeue(ctx, "1")
+				if err != nil {
+					return
+				}
+				got <- ev.Invoke.InvocationId
+			}
+		}()
+	}
+
+	for i := 0; i < count; i++ {
+		notifyFailure(failures, NewHandlerInvoke(entry, pb.HandlerInvokeType_WEBHOOK, nil).ToDispatchInvoke())
+	}
+
+	seen := map[string]bool{}
+	for i := 0; i < count; i++ {
+		select {
+		case id := <-got:
+			require.False(t, seen[id], "failure %s handed out twice", id)
+			seen[id] = true
+		case <-time.After(5 * time.Second):
+			require.FailNow(t, "waiters stalled", "%d of %d delivered", len(seen), count)
+		}
+	}
+}
+
+func TestFailureEventIsHandledOnce(t *testing.T) {
+	_, failures, entry := startWebhookHandler(t, defaultTimeout)
+	failures.Subscribe("1")
+
+	notifyFailure(failures, NewHandlerInvoke(entry, pb.HandlerInvokeType_WEBHOOK, nil).ToDispatchInvoke())
+	ev := nextFailure(t, failures)
+	require.NoError(t, ev.Resolve(pb.FailureAction_FAILURE_ACTION_DROP))
+
+	// A requeue after the answer, as when the stream ends, must not resend it.
+	ev.Requeue()
+	requireNoFailure(t, failures)
 }

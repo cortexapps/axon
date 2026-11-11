@@ -46,11 +46,17 @@ func buildAgent(t *testing.T) string {
 	return agentBin
 }
 
-func freePort(t *testing.T) int {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	defer ln.Close()
-	return ln.Addr().(*net.TCPAddr).Port
+// freePorts returns n distinct free ports. It holds each one open until all
+// are picked, so the OS can't hand the same port out twice.
+func freePorts(t *testing.T, n int) []int {
+	ports := make([]int, n)
+	for i := range ports {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		require.NoError(t, err)
+		defer ln.Close()
+		ports[i] = ln.Addr().(*net.TCPAddr).Port
+	}
+	return ports
 }
 
 type realAgent struct {
@@ -63,13 +69,14 @@ func startRealAgent(t *testing.T) *realAgent {
 		t.Skip("starts a real agent")
 	}
 	bin := buildAgent(t)
-	a := &realAgent{grpcPort: freePort(t), webhookPort: freePort(t)}
+	ports := freePorts(t, 3)
+	a := &realAgent{grpcPort: ports[0], webhookPort: ports[1]}
 
 	cmd := exec.Command(bin, "serve")
 	cmd.Env = append(os.Environ(),
 		"DRYRUN=true",
 		fmt.Sprintf("PORT=%d", a.grpcPort),
-		fmt.Sprintf("HTTP_PORT=%d", freePort(t)),
+		fmt.Sprintf("HTTP_PORT=%d", ports[2]),
 		fmt.Sprintf("WEBHOOK_PORT=%d", a.webhookPort),
 		"HANDLER_HISTORY_PATH="+t.TempDir(),
 	)

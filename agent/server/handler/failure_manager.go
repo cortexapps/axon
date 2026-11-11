@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
-	"time"
+	"sync/atomic"
 
 	pb "github.com/cortexapps/axon/.generated/proto/github.com/cortexapps/axon"
 	"github.com/prometheus/client_golang/prometheus"
@@ -30,17 +30,37 @@ type FailureNotifier interface {
 // says what to do with them: drop them, or retry them through the Manager.
 type FailureManager interface {
 	FailureNotifier
-	// Next hands out the next failure for a client. It stays pending until
-	// Resolve or Requeue.
-	InvocationSource[*pb.DispatchEvent]
+	// Dequeue hands out the next failure for a client. It is out of the queue
+	// until the caller resolves or requeues it.
+	InvocationSource[*FailureEvent]
 
 	// Subscribe starts keeping failures for a dispatch id. Failures for a
 	// dispatch id nobody subscribed are logged and discarded.
 	Subscribe(dispatchId string)
-	// Resolve applies the client's answer to a pending failure.
-	Resolve(dispatchId string, resolution *pb.FailureResolution) error
-	// Requeue puts a pending failure back to be sent again, first.
-	Requeue(dispatchId string, invocationId string)
+}
+
+// FailureEvent is a failure handed to a client. Exactly one of Resolve or
+// Requeue takes effect; later calls do nothing.
+type FailureEvent struct {
+	*pb.DispatchEvent
+	fm   *failureManager
+	q    *failureQueue
+	done atomic.Bool
+}
+
+// Resolve applies the client's answer.
+func (e *FailureEvent) Resolve(action pb.FailureAction) error {
+	if !e.done.CompareAndSwap(false, true) {
+		return fmt.Errorf("failure for invocation %s already handled", e.Invoke.InvocationId)
+	}
+	return e.fm.resolve(e.DispatchEvent, action)
+}
+
+// Requeue puts the failure back to be handed out again, ahead of the rest.
+func (e *FailureEvent) Requeue() {
+	if e.done.CompareAndSwap(false, true) {
+		e.q.push(e.DispatchEvent, true)
+	}
 }
 
 type failureManager struct {
@@ -101,32 +121,28 @@ func (f *failureManager) Notify(invoke *pb.DispatchHandlerInvoke, failure *pb.In
 		return
 	}
 	logger.Warn("Invocation failed, queueing failure event")
-	q.push(&pb.DispatchEvent{Invoke: invoke, Failure: failure})
+	q.push(&pb.DispatchEvent{Invoke: invoke, Failure: failure}, false)
 	f.pending.Inc()
 }
 
-func (f *failureManager) Next(ctx context.Context, dispatchId string, wait time.Duration) (*pb.DispatchEvent, error) {
-	return f.queue(dispatchId, true).next(ctx, wait), nil
-}
-
-func (f *failureManager) Requeue(dispatchId string, invocationId string) {
-	f.queue(dispatchId, true).requeue(invocationId)
-}
-
-func (f *failureManager) Resolve(dispatchId string, resolution *pb.FailureResolution) error {
-	ev := f.queue(dispatchId, true).take(resolution.GetInvocationId())
-	if ev == nil {
-		return fmt.Errorf("no pending failure for invocation %s", resolution.GetInvocationId())
+func (f *failureManager) Dequeue(ctx context.Context, dispatchId string) (*FailureEvent, error) {
+	q := f.queue(dispatchId, true)
+	ev, err := q.pop(ctx)
+	if err != nil {
+		return nil, err
 	}
-	f.pending.Dec()
+	return &FailureEvent{DispatchEvent: ev, fm: f, q: q}, nil
+}
 
+func (f *failureManager) resolve(ev *pb.DispatchEvent, action pb.FailureAction) error {
+	f.pending.Dec()
 	logger := f.logger.With(
 		zap.String("handler", ev.Invoke.HandlerName),
 		zap.String("invocation-id", ev.Invoke.InvocationId),
-		zap.String("action", resolution.GetAction().String()),
+		zap.String("action", action.String()),
 	)
-	if resolution.GetAction() != pb.FailureAction_FAILURE_ACTION_RETRY {
-		logger.Info("Dropping failed invocation")
+	if action != pb.FailureAction_FAILURE_ACTION_RETRY {
+		logger.Debug("Dropping failed invocation")
 		return nil
 	}
 	id, err := f.retry(ev.Invoke)
@@ -170,89 +186,56 @@ func (f *failureManager) retry(invoke *pb.DispatchHandlerInvoke) (string, error)
 	return next.Id, nil
 }
 
-// failureQueue holds one dispatch id's failures until its client resolves
-// them. It is unbounded on purpose: invocations are throttled, but a dropped
-// failure is a message lost without a trace, which is what failure events
-// exist to prevent.
+// failureQueue holds one dispatch id's failures until they are handed to its
+// client. It is unbounded on purpose: invocations are throttled, but a
+// dropped failure is a message lost without a trace, which is what failure
+// events exist to prevent.
 type failureQueue struct {
-	mu      sync.Mutex
-	events  []*pb.DispatchEvent
-	pending map[string]*pb.DispatchEvent
-	// notify has room for one wakeup, so push never blocks and a waiting
-	// next never misses an event that arrives between checks.
-	notify chan struct{}
+	mu     sync.Mutex
+	events []*pb.DispatchEvent
+	// ready is closed while events is non-empty. Every waiter wakes, and the
+	// first to take the lock gets the event; the rest wait again.
+	ready chan struct{}
 }
 
 func newFailureQueue() *failureQueue {
-	return &failureQueue{
-		pending: make(map[string]*pb.DispatchEvent),
-		notify:  make(chan struct{}, 1),
-	}
+	return &failureQueue{ready: make(chan struct{})}
 }
 
-func (q *failureQueue) push(ev *pb.DispatchEvent) {
+func (q *failureQueue) push(ev *pb.DispatchEvent, front bool) {
 	q.mu.Lock()
-	q.events = append(q.events, ev)
-	q.mu.Unlock()
-	q.wake()
-}
-
-func (q *failureQueue) wake() {
-	select {
-	case q.notify <- struct{}{}:
-	default:
+	defer q.mu.Unlock()
+	if front {
+		q.events = append([]*pb.DispatchEvent{ev}, q.events...)
+	} else {
+		q.events = append(q.events, ev)
+	}
+	if len(q.events) == 1 {
+		close(q.ready)
 	}
 }
 
-// next moves the oldest event to pending and returns it, waiting up to wait
-// for one. It returns nil if none arrived.
-func (q *failureQueue) next(ctx context.Context, wait time.Duration) *pb.DispatchEvent {
-	timer := time.NewTimer(wait)
-	defer timer.Stop()
+// pop takes the oldest event, waiting until there is one or ctx ends.
+func (q *failureQueue) pop(ctx context.Context) (*pb.DispatchEvent, error) {
 	for {
 		q.mu.Lock()
 		if len(q.events) > 0 {
 			ev := q.events[0]
 			q.events[0] = nil
 			q.events = q.events[1:]
-			q.pending[ev.Invoke.InvocationId] = ev
-			remaining := len(q.events)
-			q.mu.Unlock()
-			if remaining > 0 {
-				// Another stream may be waiting on the same queue.
-				q.wake()
+			if len(q.events) == 0 {
+				q.ready = make(chan struct{})
 			}
-			return ev
+			q.mu.Unlock()
+			return ev, nil
 		}
+		ready := q.ready
 		q.mu.Unlock()
 
 		select {
-		case <-q.notify:
-		case <-timer.C:
-			return nil
+		case <-ready:
 		case <-ctx.Done():
-			return nil
+			return nil, ctx.Err()
 		}
-	}
-}
-
-func (q *failureQueue) take(invocationId string) *pb.DispatchEvent {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	ev := q.pending[invocationId]
-	delete(q.pending, invocationId)
-	return ev
-}
-
-func (q *failureQueue) requeue(invocationId string) {
-	q.mu.Lock()
-	ev, ok := q.pending[invocationId]
-	if ok {
-		delete(q.pending, invocationId)
-		q.events = append([]*pb.DispatchEvent{ev}, q.events...)
-	}
-	q.mu.Unlock()
-	if ok {
-		q.wake()
 	}
 }

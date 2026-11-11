@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -163,25 +164,36 @@ func (s *AxonAgent) sendComplete(stream pb.AxonAgent_DispatchServer) error {
 }
 
 // drain sends whatever src hands out for a dispatch id until ctx ends or a
-// send fails. idle runs whenever src has nothing; returning true ends it.
-func drain[T comparable](ctx context.Context, src handler.InvocationSource[T], dispatchId string, wait time.Duration, send func(T) error, idle func() bool) error {
-	var none T
-	for ctx.Err() == nil {
-		item, err := src.Next(ctx, dispatchId, wait)
-		if err != nil {
-			return err
-		}
-		if item == none {
+// send fails. With a wait, idle runs whenever src has had nothing for that
+// long; returning true ends the drain.
+func drain[T any](ctx context.Context, src handler.InvocationSource[T], dispatchId string, send func(T) error, wait time.Duration, idle func() bool) error {
+	for {
+		item, err := dequeue(ctx, src, dispatchId, wait)
+		switch {
+		case err == nil:
+			if err := send(item); err != nil {
+				return err
+			}
+		case ctx.Err() != nil:
+			return nil
+		case errors.Is(err, context.DeadlineExceeded):
 			if idle != nil && idle() {
 				return nil
 			}
-			continue
-		}
-		if err := send(item); err != nil {
+		default:
 			return err
 		}
 	}
-	return nil
+}
+
+// dequeue waits for src's next item, for at most wait if it is set.
+func dequeue[T any](ctx context.Context, src handler.InvocationSource[T], dispatchId string, wait time.Duration) (T, error) {
+	if wait > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, wait)
+		defer cancel()
+	}
+	return src.Dequeue(ctx, dispatchId)
 }
 
 func (s *AxonAgent) sendInvocations(dispatchId string, stream pb.AxonAgent_DispatchServer) error {
@@ -212,7 +224,7 @@ func (s *AxonAgent) sendInvocations(dispatchId string, stream pb.AxonAgent_Dispa
 			}
 			return false
 		}
-		err := drain(stream.Context(), s.Manager, dispatchId, s.config.DequeueWaitTime, send, idle)
+		err := drain(stream.Context(), s.Manager, dispatchId, send, s.config.DequeueWaitTime, idle)
 		if err != nil {
 			s.logger.Error("failed to send dispatch message to client", zap.Error(err))
 		}
@@ -343,12 +355,12 @@ func (s *AxonAgent) DispatchEvents(stream pb.AxonAgent_DispatchEventsServer) err
 	s.Failures.Subscribe(dispatchId)
 
 	var mu sync.Mutex
-	unanswered := map[string]bool{}
+	unanswered := map[string]*handler.FailureEvent{}
 	defer func() {
 		mu.Lock()
 		defer mu.Unlock()
-		for id := range unanswered {
-			s.Failures.Requeue(dispatchId, id)
+		for _, ev := range unanswered {
+			ev.Requeue()
 		}
 	}()
 
@@ -366,21 +378,25 @@ func (s *AxonAgent) DispatchEvents(stream pb.AxonAgent_DispatchEventsServer) err
 				continue
 			}
 			mu.Lock()
+			ev := unanswered[res.GetInvocationId()]
 			delete(unanswered, res.GetInvocationId())
 			mu.Unlock()
-			if err := s.Failures.Resolve(dispatchId, res); err != nil {
-				logger.Warn("failed to apply failure resolution", zap.Error(err))
+			if ev == nil {
+				logger.Warn("resolution for a failure that is not pending", zap.String("invocation-id", res.GetInvocationId()))
+				continue
 			}
+			// Resolve logs its own outcome.
+			_ = ev.Resolve(res.GetAction())
 		}
 	}()
 
-	send := func(ev *pb.DispatchEvent) error {
+	send := func(ev *handler.FailureEvent) error {
 		mu.Lock()
-		unanswered[ev.Invoke.InvocationId] = true
+		unanswered[ev.Invoke.InvocationId] = ev
 		mu.Unlock()
-		return stream.Send(ev)
+		return stream.Send(ev.DispatchEvent)
 	}
-	if err := drain(ctx, s.Failures, dispatchId, s.config.DequeueWaitTime, send, nil); err != nil {
+	if err := drain(ctx, s.Failures, dispatchId, send, 0, nil); err != nil {
 		logger.Warn("failure event stream ended", zap.Error(err))
 		return err
 	}

@@ -253,7 +253,7 @@ func (fhm *fakeManager) Trigger(handler Invocable) error {
 	return os.ErrNotExist
 }
 
-func (fhm *fakeManager) Next(ctx context.Context, id string, waitTime time.Duration) (Invocable, error) {
+func (fhm *fakeManager) Dequeue(ctx context.Context, id string) (Invocable, error) {
 	panic("not implemented") // TODO: Implement
 }
 

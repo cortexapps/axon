@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	pb "github.com/cortexapps/axon/.generated/proto/github.com/cortexapps/axon"
@@ -31,7 +32,7 @@ type Manager interface {
 	Stop(id string) error
 	Trigger(handler Invocable) error
 	GetByTag(tag string) HandlerEntry
-	// Next hands out the next queued invocation, already moved to
+	// Dequeue hands out the next queued invocation, already moved to
 	// InvokeDispatched; ones that expired while queued are skipped.
 	InvocationSource[Invocable]
 	Close() error
@@ -44,6 +45,7 @@ type Manager interface {
 
 type handlerManager struct {
 	logger              *zap.Logger
+	queuesMu            sync.Mutex
 	dispatchQueues      map[string]chan Invocable
 	outstandingRequests map[string]Invocable
 	handlers            map[string]HandlerEntry
@@ -214,15 +216,10 @@ func (s *handlerManager) SetFailureNotifier(notifier FailureNotifier) {
 	s.failures = notifier
 }
 
-func (s *handlerManager) Next(ctx context.Context, dispatchId string, waitTime time.Duration) (Invocable, error) {
+func (s *handlerManager) Dequeue(ctx context.Context, dispatchId string) (Invocable, error) {
 	queue := s.getDispatchQueue(dispatchId)
-	timer := time.NewTimer(waitTime)
-	defer timer.Stop()
 	for {
 		select {
-		case <-timer.C:
-			s.checkFinished()
-			return nil, nil
 		case invoke := <-queue:
 			if invoke.SetState(InvokeDispatched) {
 				return invoke, nil
@@ -230,7 +227,7 @@ func (s *handlerManager) Next(ctx context.Context, dispatchId string, waitTime t
 			// It expired while queued, and that failure has been reported;
 			// handing it out now would run stale work.
 		case <-ctx.Done():
-			return nil, nil
+			return nil, ctx.Err()
 		}
 	}
 }
@@ -320,7 +317,9 @@ func (s *handlerManager) watch(invoke Invocable, logger *zap.Logger, cancel cont
 }
 
 func (s *handlerManager) getDispatchQueue(DispatchId string) chan Invocable {
-
+	// Webhook goroutines trigger while client streams dequeue.
+	s.queuesMu.Lock()
+	defer s.queuesMu.Unlock()
 	queue, ok := s.dispatchQueues[DispatchId]
 	if !ok {
 		queue = make(chan Invocable, dispatchQueueDepth)

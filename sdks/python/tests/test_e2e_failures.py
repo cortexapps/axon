@@ -37,21 +37,26 @@ def agent_bin(tmp_path_factory):
     return str(out)
 
 
-def free_port():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+def free_ports(n):
+    """Return n distinct free ports, holding each open until all are picked."""
+    socks = [socket.socket() for _ in range(n)]
+    try:
+        for s in socks:
+            s.bind(("127.0.0.1", 0))
+        return [s.getsockname()[1] for s in socks]
+    finally:
+        for s in socks:
+            s.close()
 
 
 class RealAgent:
     def __init__(self, agent_bin, tmp_path):
-        self.grpc_port = free_port()
-        self.webhook_port = free_port()
+        self.grpc_port, self.webhook_port, http_port = free_ports(3)
         env = dict(
             os.environ,
             DRYRUN="true",
             PORT=str(self.grpc_port),
-            HTTP_PORT=str(free_port()),
+            HTTP_PORT=str(http_port),
             WEBHOOK_PORT=str(self.webhook_port),
             HANDLER_HISTORY_PATH=str(tmp_path / "history"),
         )

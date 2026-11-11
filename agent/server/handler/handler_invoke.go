@@ -101,14 +101,14 @@ func NewHandlerInvoke(
 	}
 }
 
-func (h HandlerInvoke) GetEntry() HandlerEntry {
+func (h *HandlerInvoke) GetEntry() HandlerEntry {
 	return h.Entry
 }
-func (h HandlerInvoke) GetName() string {
+func (h *HandlerInvoke) GetName() string {
 	return h.Entry.Name()
 }
 
-func (h HandlerInvoke) GetReason() pb.HandlerInvokeType {
+func (h *HandlerInvoke) GetReason() pb.HandlerInvokeType {
 	return h.Reason
 }
 
@@ -149,18 +149,18 @@ func (h *HandlerInvoke) Complete(result string, err error) error {
 	return fmt.Errorf("handler already finished")
 }
 
-func (h HandlerInvoke) GetResult() (string, error) {
+func (h *HandlerInvoke) GetResult() (string, error) {
 	if h.finished.Load() {
 		return h.result, h.err
 	}
 	return "", fmt.Errorf("handler not finished")
 }
 
-func (h HandlerInvoke) Done() <-chan struct{} {
+func (h *HandlerInvoke) Done() <-chan struct{} {
 	return h.done
 }
 
-func (h HandlerInvoke) SetState(to InvokeState) bool {
+func (h *HandlerInvoke) SetState(to InvokeState) bool {
 	for {
 		from := InvokeState(h.state.Load())
 		if !slices.Contains(invokeTransitions[from], to) {
@@ -172,11 +172,11 @@ func (h HandlerInvoke) SetState(to InvokeState) bool {
 	}
 }
 
-func (h HandlerInvoke) State() InvokeState {
+func (h *HandlerInvoke) State() InvokeState {
 	return InvokeState(h.state.Load())
 }
 
-func (h HandlerInvoke) ToDispatchInvoke() *pb.DispatchHandlerInvoke {
+func (h *HandlerInvoke) ToDispatchInvoke() *pb.DispatchHandlerInvoke {
 	return &pb.DispatchHandlerInvoke{
 		InvocationId: h.Id,
 		DispatchId:   h.Entry.DispatchId(),

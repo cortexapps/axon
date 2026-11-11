@@ -100,7 +100,7 @@ func TestTriggerAndDequeue(t *testing.T) {
 	invoke := NewScheduledHandlerInvoke(entry, pb.HandlerInvokeType_RUN_NOW)
 	err = mgr.Trigger(invoke)
 	require.NoError(t, err)
-	h, err := mgr.Next(context.Background(), "1", 500*time.Millisecond)
+	h, err := dequeueWithin(mgr, 500*time.Millisecond)
 	require.NoError(t, err)
 	require.NotNil(t, h)
 	require.Equal(t, "handler1", h.GetEntry().Name())
@@ -165,7 +165,7 @@ func TestTriggerAndDequeueCustomTimeout(t *testing.T) {
 
 	err = mgr.Trigger(invoke)
 	require.NoError(t, err)
-	h, err := mgr.Next(context.Background(), "1", 500*time.Millisecond)
+	h, err := dequeueWithin(mgr, 500*time.Millisecond)
 	require.NoError(t, err)
 	require.NotNil(t, h)
 	require.Equal(t, "handler1", h.GetEntry().Name())
@@ -180,8 +180,8 @@ func TestTriggerAndDequeueTimeout(t *testing.T) {
 	_, err := mgr.RegisterHandler("1", "handler1", defaultTimeout, FixtureHandlerOption())
 	require.NoError(t, err)
 
-	h, err := mgr.Next(context.Background(), "1", time.Millisecond)
-	require.NoError(t, err)
+	h, err := dequeueWithin(mgr, time.Millisecond)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
 	require.Nil(t, h)
 }
 
@@ -195,8 +195,8 @@ func TestTriggerAndDequeueTimeoutContext(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
 	defer cancel()
-	h, err := mgr.Next(ctx, "1", time.Hour)
-	require.NoError(t, err)
+	h, err := mgr.Dequeue(ctx, "1")
+	require.ErrorIs(t, err, context.DeadlineExceeded)
 	require.Nil(t, h)
 }
 
