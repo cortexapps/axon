@@ -1084,7 +1084,7 @@ func TestManageStream_BackoffResetsAfterEstablishedStream(t *testing.T) {
 	defer stop()
 
 	tc, _ := newTestClient(t, config.AgentConfig{}, &countingRegistration{})
-	core, logs := observer.New(zapcore.WarnLevel)
+	core, logs := observer.New(zapcore.InfoLevel)
 	tc.logger = zap.New(core)
 	tc.mu.Lock()
 	tc.currentToken, tc.currentServerAddr = "tok", addr
@@ -1095,11 +1095,27 @@ func TestManageStream_BackoffResetsAfterEstablishedStream(t *testing.T) {
 	waitFor(t, 5*time.Second, func() bool { return logs.FilterMessage(msg).Len() >= 4 })
 
 	var got []time.Duration
+	var levels []zapcore.Level
 	for _, e := range logs.FilterMessage(msg).All() {
 		got = append(got, e.ContextMap()["nextBackoff"].(time.Duration))
+		levels = append(levels, e.Level)
 	}
 	require.Equal(t, []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, minBackoff}, got[:4],
 		"three failed opens must back off exponentially, and the drop of the stream that then opened must not")
+	require.Equal(t,
+		[]zapcore.Level{zapcore.WarnLevel, zapcore.WarnLevel, zapcore.WarnLevel, zapcore.InfoLevel}, levels[:4],
+		"a failed open is a warning; the drop of a stream that had been established is routine")
+}
+
+func TestCallFailureLevel(t *testing.T) {
+	for cause, want := range map[pb.CallCancel_Cause]zapcore.Level{
+		pb.CallCancel_UPSTREAM_ERROR:     zapcore.ErrorLevel,
+		pb.CallCancel_CANCELED_BY_SERVER: zapcore.WarnLevel,
+		pb.CallCancel_AGENT_TIMEOUT:      zapcore.WarnLevel,
+		pb.CallCancel_AGENT_SHUTDOWN:     zapcore.InfoLevel,
+	} {
+		require.Equal(t, want, callFailureLevel(cause), cause.String())
+	}
 }
 
 // All workers failing at once cross the threshold together; that is one

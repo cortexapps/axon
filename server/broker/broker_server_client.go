@@ -282,7 +282,9 @@ func (c *Client) doRequest(ctx context.Context, method, path string, params url.
 		if !isRetryable(lastErr) {
 			return lastErr
 		}
-		c.logger.Warn("BROKER_SERVER request failed; will retry",
+		// Info: each caller logs a warning if every attempt fails, so a
+		// warning per attempt only repeats it.
+		c.logger.Info("BROKER_SERVER request failed; will retry",
 			zap.String("method", method),
 			zap.String("path", path),
 			zap.Int("attempt", attempt),

@@ -280,11 +280,12 @@ func (h *HttpAdapter) handleBrokerDispatch(w http.ResponseWriter, r *http.Reques
 	if copyErr != nil {
 		// Response already committed; nothing to send but log it. A failed
 		// write is the caller going away; anything else is the tunnel side.
-		side := "tunnel"
+		// A caller going away is routine, as in failureLevel.
+		side, level := "tunnel", zapcore.WarnLevel
 		if errors.Is(copyErr, errCallerWrite) {
-			side = "caller"
+			side, level = "caller", zapcore.InfoLevel
 		}
-		h.logger.Warn("Response body aborted mid-stream",
+		h.logger.Log(level, "Response body aborted mid-stream",
 			append(respFields,
 				zap.Int("status", statusCode),
 				zap.String("side", side),

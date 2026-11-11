@@ -28,6 +28,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/fx"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
@@ -538,7 +539,9 @@ func (tc *tunnelClient) startAsync() {
 	}
 
 	if err := tc.initialRegister(); err != nil {
-		tc.logger.Warn("Initial registration aborted", zap.Error(err))
+		// initialRegister retries until it succeeds, so it only returns an
+		// error when the client is shutting down.
+		tc.logger.Info("Initial registration aborted", zap.Error(err))
 		return
 	}
 
@@ -617,7 +620,6 @@ func (tc *tunnelClient) resolveRegistration() (token, serverAddr string, fromEnv
 	if envServerURL != "" {
 		serverAddr = envServerURL
 	}
-	tc.logger.Info("Registered with Cortex API", zap.String("serverUri", serverAddr))
 	return regInfo.Token, serverAddr, false, nil
 }
 
@@ -662,6 +664,8 @@ func (tc *tunnelClient) initialRegister() error {
 		if fromEnv {
 			tc.logger.Info("Using direct connection config (skipping registration)",
 				zap.String("serverUrl", serverAddr))
+		} else {
+			tc.logger.Info("Registered with Cortex API", zap.String("serverUri", serverAddr))
 		}
 		tc.storeRegistration(token, serverAddr)
 		return nil
@@ -711,6 +715,10 @@ func (tc *tunnelClient) reregister(reason string, force bool) {
 		// Direct-config mode — nothing to refresh.
 		return
 	}
+	// Debug: a refresh that changes nothing is routine. A rotation is the
+	// event worth seeing, and it is logged at Info below.
+	tc.logger.Debug("Registered with Cortex API",
+		zap.String("serverUri", serverAddr), zap.String("reason", reason))
 
 	if tc.storeRegistration(token, serverAddr) {
 		tc.tokenRotationsTotal.Inc()
@@ -1403,8 +1411,18 @@ func (tc *tunnelClient) manageStream(id int) {
 		}
 
 		recovering = true
-		tc.logger.Warn("Tunnel slot stream ended; will retry",
-			zap.Int("slot", id), zap.Error(err), zap.Duration("nextBackoff", backoff))
+		// A stream that got through the handshake and later dropped is
+		// routine -- a server restart, a load balancer reset, the 24h
+		// connection limit -- and they come in batches of every stream on
+		// the connection, so they are Info. A stream that could not be
+		// opened at all is the failure to chase, and stays a warning.
+		level := zapcore.WarnLevel
+		if established {
+			level = zapcore.InfoLevel
+		}
+		tc.logger.Log(level, "Tunnel slot stream ended; will retry",
+			zap.Int("slot", id), zap.Bool("established", established),
+			zap.Error(err), zap.Duration("nextBackoff", backoff))
 	}
 	tc.workerExited()
 }

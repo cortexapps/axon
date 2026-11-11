@@ -15,6 +15,7 @@ import (
 	"github.com/cortexapps/axon-server/metrics"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
@@ -437,11 +438,14 @@ func (s *Service) cleanupStream(token broker.Token, streamID string, stopwatch i
 			fields = append(fields, zap.String("grpcCode", code.String()))
 		}
 	}
+	// A transport error is Info, not Warn: a load balancer reset or an
+	// agent restart ends every stream on the connection at once, and the
+	// agent reconnects. A heartbeat timeout has its own warning.
 	switch {
 	case unreg.InstanceRemoved:
 		s.logger.Info("Agent instance disconnected", fields...)
 	case reason == closeTransportError:
-		s.logger.Warn("Tunnel stream closed", fields...)
+		s.logger.Info("Tunnel stream closed", fields...)
 	default:
 		s.logger.Debug("Tunnel stream closed", fields...)
 	}
@@ -484,15 +488,23 @@ func (s *Service) notifyClientConnected(token broker.Token, clientID, clientVers
 		if err == nil {
 			s.registry.SetBrokerServerRegistered(token)
 			// One per connection edge now rather than per stream, but still
-			// Debug: the operator-visible transition is "Registered new
-			// client" at Info. A failure is logged loudly below.
+			// Debug: the operator-visible transition is "Agent instance
+			// connected" at Info. A failure is logged loudly below.
 			s.logger.Debug("BROKER_SERVER client-connected succeeded",
 				zap.String("clientId", clientID),
 			)
 			return
 		}
 
-		s.logger.Warn("BROKER_SERVER client-connected exhausted retries, will try again",
+		// Warn while backing off; once the backoff is at its ceiling this
+		// has been failing for minutes and BROKER_SERVER still believes the
+		// token is offline, so it becomes an error.
+		level := zapcore.WarnLevel
+		if backoff >= s.notifyMaxBackoff {
+			level = zapcore.ErrorLevel
+		}
+		s.logger.Log(level, "BROKER_SERVER client-connected exhausted retries, will try again",
+			zap.String("tokenHash", token.Hashed()),
 			zap.Error(err),
 			zap.Duration("backoff", backoff),
 		)
