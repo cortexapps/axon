@@ -258,6 +258,15 @@ func NewAgentEnvConfig() AgentConfig {
 		httpPort = p
 	}
 
+	webhookPort := WebhookServerPort
+	if webhookPortStr := os.Getenv("WEBHOOK_PORT"); webhookPortStr != "" {
+		p, err := strconv.Atoi(webhookPortStr)
+		if err != nil {
+			panic(err)
+		}
+		webhookPort = p
+	}
+
 	snykBrokerPort := 0
 	if snykBrokerPortStr := os.Getenv("SNYK_BROKER_PORT"); snykBrokerPortStr != "" {
 		p, err := strconv.Atoi(snykBrokerPortStr)
@@ -337,7 +346,7 @@ func NewAgentEnvConfig() AgentConfig {
 		InstanceId:                 getInstanceId(),
 		IntegrationAlias:           identifier,
 		HttpServerPort:             httpPort,
-		WebhookServerPort:          WebhookServerPort,
+		WebhookServerPort:          webhookPort,
 		SnykBrokerPort:             snykBrokerPort,
 		EnableApiProxy:             true,
 		EnablePprof:                enablePprof,

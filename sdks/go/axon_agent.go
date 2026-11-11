@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	pb "github.com/cortexapps/axon-go/.generated/proto/github.com/cortexapps/axon"
@@ -234,12 +235,12 @@ const sleepErrorWait = 5 * time.Second
 
 // Run starts the agent and begins dispatching invocations to the registered handlers.
 func (a *Agent) Run(ctx context.Context) error {
-	exit := false
+	var exit atomic.Bool
 	reregister := false
 	sleepOnError := func(err error) {
 
 		if a.sleepOnError == 0 {
-			exit = true
+			exit.Store(true)
 			return
 		}
 
@@ -270,13 +271,13 @@ func (a *Agent) Run(ctx context.Context) error {
 	go func() {
 		select {
 		case <-ctx.Done():
-			exit = true
+			exit.Store(true)
 		case <-a.done:
-			exit = true
+			exit.Store(true)
 		}
 	}()
 
-	for !exit {
+	for !exit.Load() {
 
 		// aquire an agent and register handlers if needed
 		// this allows agent crash/restart to recover
@@ -297,7 +298,7 @@ func (a *Agent) Run(ctx context.Context) error {
 
 		reregister = false
 
-		stream, err := stub.Dispatch(context.Background())
+		stream, err := stub.Dispatch(ctx)
 		if err != nil {
 			sleepOnError(err)
 			continue
@@ -371,7 +372,7 @@ func (a *Agent) processDispatchStream(ctx context.Context, stream grpc.BidiStrea
 		req, err := stream.Recv()
 		if err != nil {
 			status, _ := status.FromError(err)
-			if err == io.EOF || status.Code() == codes.Unavailable {
+			if err == io.EOF || status.Code() == codes.Unavailable || ctx.Err() != nil {
 				return nil
 			}
 
