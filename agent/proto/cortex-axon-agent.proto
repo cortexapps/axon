@@ -12,6 +12,13 @@ service AxonAgent {
   rpc GetHandlerHistory(GetHandlerHistoryRequest) returns (GetHandlerHistoryResponse);
   rpc Dispatch (stream DispatchRequest) returns (stream DispatchMessage);  
   rpc ReportInvocation(ReportInvocationRequest) returns (ReportInvocationResponse);
+
+  // DispatchEvents sends the client every failed invocation, and the client
+  // answers each with what to do about it. It is its own stream so a client
+  // that has stopped reading Dispatch because every handler is busy still
+  // hears about failures. An event the client has not answered when the
+  // stream ends is sent again on the next one.
+  rpc DispatchEvents(stream DispatchEventsRequest) returns (stream DispatchEvent);
 }
 
 
@@ -86,6 +93,9 @@ message ListHandlersResponse {
 message DispatchRequest {
   string dispatch_id = 1;
   string client_version = 2;
+  // The client handles failure events. The agent only keeps them for clients
+  // that ask, so an older client never has events pile up for it.
+  bool failure_events = 3;
 }
 
 message DispatchMessage {
@@ -111,6 +121,71 @@ message DispatchHandlerInvoke{
   int32  timeout_ms = 10;
   HandlerInvokeType reason = 11;
   map<string, string> args = 20;
+  // 1 for the first attempt; 0 means the agent didn't say, so treat it as 1.
+  int32  attempt = 30;
+  // When the agent stops waiting for this invocation's result and reports
+  // the failure itself. A client must not start a handler after it, since
+  // the failure has already been reported. Unset from older agents.
+  google.protobuf.Timestamp deadline = 31;
+}
+
+//
+// Failure events
+//
+
+enum FailureReason {
+  FAILURE_REASON_UNSPECIFIED = 0;
+  // The handler returned an error or raised.
+  HANDLER_ERROR = 1;
+  // The invocation did not finish within its timeout.
+  TIMEOUT = 2;
+  // The invocation could not be dispatched: the queue was full, or it expired
+  // while waiting for a free handler.
+  NO_RESOURCES = 3;
+}
+
+enum FailureSource {
+  FAILURE_SOURCE_UNSPECIFIED = 0;
+  // The failure came from handler code.
+  APPLICATION = 1;
+  // The failure came from Axon: the agent, the SDK, or a Cortex API call.
+  RUNTIME = 2;
+}
+
+message InvocationFailure {
+  FailureReason reason = 1;
+  FailureSource source = 2;
+  string message = 3;
+  // Whoever submitted the invocation was told it was not accepted (e.g. a
+  // webhook sender got a 503), so it may be sent again.
+  bool caller_rejected = 4;
+}
+
+message DispatchEvent {
+  DispatchHandlerInvoke invoke = 1;
+  InvocationFailure failure = 2;
+}
+
+enum FailureAction {
+  // Treated as DROP.
+  FAILURE_ACTION_UNSPECIFIED = 0;
+  // Do nothing more with the invocation.
+  FAILURE_ACTION_DROP = 1;
+  // Queue the invocation again as its next attempt.
+  FAILURE_ACTION_RETRY = 2;
+}
+
+message FailureResolution {
+  string invocation_id = 1;
+  FailureAction action = 2;
+}
+
+message DispatchEventsRequest {
+  // Identifies the client on the first message of the stream.
+  string dispatch_id = 1;
+  string client_version = 2;
+  // The client's answer to a DispatchEvent; unset on the first message.
+  FailureResolution resolution = 3;
 }
 
 //
@@ -131,6 +206,10 @@ message ReportInvocationRequest {
     InvokeResult result = 200;
     Error error = 201;
   }
+  // Why the invocation failed, from a client that classifies its failures.
+  // The agent passes it on as a failure event; an error without it is only
+  // recorded.
+  InvocationFailure failure = 202;
   repeated Log logs = 300;
 }
 

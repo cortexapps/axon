@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -21,6 +22,11 @@ type clientResult struct {
 	done   bool
 	err    error
 	result string
+	// noReport skips ReportInvocation, like a client that hung.
+	noReport bool
+	// failure is reported with an error, as a client that classifies its
+	// failures does.
+	failure *pb.InvocationFailure
 }
 
 type testAxonClient struct {
@@ -28,8 +34,10 @@ type testAxonClient struct {
 	conn       *grpc.ClientConn
 	dispatchId string
 	callback   clientCallback
-	finished   bool
+	finished   atomic.Bool
 	t          *testing.T
+
+	failureEvents bool
 }
 
 func NewTestAxonClient(t *testing.T, port int32, callback clientCallback) *testAxonClient {
@@ -76,7 +84,8 @@ func (c *testAxonClient) Run(ctx context.Context) error {
 	}
 
 	dispatchReq := &pb.DispatchRequest{
-		DispatchId: c.dispatchId,
+		DispatchId:    c.dispatchId,
+		FailureEvents: c.failureEvents,
 	}
 
 	logger.Info("sending dispatch request")
@@ -86,7 +95,7 @@ func (c *testAxonClient) Run(ctx context.Context) error {
 		return err
 	}
 
-	for !c.finished {
+	for !c.finished.Load() {
 		m, err := stream.Recv()
 
 		if err != nil {
@@ -103,7 +112,7 @@ func (c *testAxonClient) Run(ctx context.Context) error {
 
 		end := time.Now()
 		invoke := m.GetInvoke()
-		if invoke != nil {
+		if invoke != nil && !result.noReport {
 
 			report := &pb.ReportInvocationRequest{
 				HandlerInvoke:        invoke,
@@ -117,6 +126,7 @@ func (c *testAxonClient) Run(ctx context.Context) error {
 						Message: err.Error(),
 					},
 				}
+				report.Failure = result.failure
 			} else {
 				report.Message = &pb.ReportInvocationRequest_Result{
 					Result: &pb.InvokeResult{
@@ -126,6 +136,10 @@ func (c *testAxonClient) Run(ctx context.Context) error {
 			}
 
 			_, err = c.client.ReportInvocation(ctx, report)
+			if ctx.Err() != nil {
+				// The test finished while this report was in flight.
+				return nil
+			}
 			require.NoError(c.t, err)
 		}
 	}
@@ -133,7 +147,7 @@ func (c *testAxonClient) Run(ctx context.Context) error {
 }
 
 func (c *testAxonClient) Close() {
-	c.finished = true
+	c.finished.Store(true)
 	c.conn.Close()
 }
 
@@ -151,4 +165,16 @@ func (c *testAxonClient) GetHandlerHistory(ctx context.Context, name string) ([]
 		return nil, err
 	}
 	return resp.History, nil
+}
+
+// DispatchEvents opens the failure event stream and sends the first message.
+func (c *testAxonClient) DispatchEvents(ctx context.Context) (grpc.BidiStreamingClient[pb.DispatchEventsRequest, pb.DispatchEvent], error) {
+	stream, err := c.client.DispatchEvents(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := stream.Send(&pb.DispatchEventsRequest{DispatchId: c.dispatchId}); err != nil {
+		return nil, err
+	}
+	return stream, nil
 }

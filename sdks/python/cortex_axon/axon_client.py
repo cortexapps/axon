@@ -5,7 +5,7 @@ import threading
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
-from time import monotonic, sleep
+from time import monotonic, sleep, time
 from typing import Any, Optional
 from urllib.parse import quote_plus
 
@@ -24,8 +24,36 @@ from .handler import (
     CortexAnnotation,
     find_annotated_methods,
 )
+from .hooks import (
+    Failure,
+    FailureAction,
+    FailureHook,
+    FailureReason,
+    FailureSource,
+    InvocationInfo,
+)
 
 DEFAULT_MAX_CONCURRENT_HANDLERS = 8
+RECONNECT_WAIT_SECONDS = 5
+# How far ahead of the agent's deadline a handler must finish, so its report
+# reaches the agent before the agent gives up on it.
+DEADLINE_MARGIN_SECONDS = 1.0
+
+
+def _invoke_timeout(invoke, now: float):
+    """How long a handler may run, in seconds (None for no limit): its own
+    timeout, but no later than the agent's deadline. capped means the agent's
+    deadline is the tighter one, i.e. the invocation waited before it got
+    here. expired means it is already too late to start."""
+    timeout = invoke.timeout_ms / 1000 if invoke.timeout_ms > 0 else None
+    if not invoke.HasField("deadline"):
+        return timeout, False, False
+    remaining = invoke.deadline.ToMicroseconds() / 1e6 - now - DEADLINE_MARGIN_SECONDS
+    if remaining <= 0:
+        return None, False, True
+    if timeout is None or remaining < timeout:
+        return remaining, True, False
+    return timeout, False, False
 
 
 # TODO Add docstrings
@@ -152,6 +180,7 @@ class AxonClient:
         scope=None,
         max_receive_message_size: Optional[int] = None,
         max_concurrent_handlers: int = DEFAULT_MAX_CONCURRENT_HANDLERS,
+        on_failure: Optional[FailureHook] = None,
     ):
         if max_concurrent_handlers < 1:
             raise ValueError("max_concurrent_handlers must be at least 1")
@@ -196,6 +225,19 @@ class AxonClient:
         )
         self._handler_slots = threading.BoundedSemaphore(max_concurrent_handlers)
 
+        self.on_failure = on_failure
+        # Failure events have their own thread and pool, apart from the
+        # handler slots: they arrive exactly when every handler is busy, and
+        # must never wait for one to free up.
+        self._hook_executor = None
+        self._events_thread = None
+        self._events_stop = threading.Event()
+        self._events_call = None
+        if on_failure:
+            self._hook_executor = ThreadPoolExecutor(
+                max_workers=2, thread_name_prefix="axon-hook"
+            )
+
     def _get_stub(self):
         if not self.agent_stub:
             self.agent_channel = grpc.insecure_channel(
@@ -231,7 +273,79 @@ class AxonClient:
                 return h
         return None
 
-    def _handler_context(self, args, timeout_ms: int = 0):
+    def _run_failure_hook(self, info: InvocationInfo, failure: Failure) -> FailureAction:
+        try:
+            action = self.on_failure(info, failure)
+        except Exception:
+            print(f"Error in on_failure hook for {info.handler_name} (id={info.invocation_id}), dropping it")
+            traceback.print_exc()
+            return FailureAction.DROP
+        return action or FailureAction.DROP
+
+    def _answer_failure(self, event, answers: queue.Queue):
+        info = InvocationInfo.from_proto(event.invoke)
+        action = self._run_failure_hook(info, Failure.from_proto(event.failure))
+        answers.put(cortex_axon_agent_pb2.DispatchEventsRequest(
+            resolution=cortex_axon_agent_pb2.FailureResolution(
+                invocation_id=info.invocation_id,
+                action=action.to_proto(),
+            )
+        ))
+
+    def _start_failure_events(self):
+        if not self.on_failure or self._events_thread:
+            return
+        self._events_thread = threading.Thread(
+            target=self._run_failure_events, name="axon-failure-events", daemon=True
+        )
+        self._events_thread.start()
+
+    def _stop_failure_events(self):
+        self._events_stop.set()
+        call = self._events_call
+        if call:
+            call.cancel()
+
+    def _run_failure_events(self):
+        # A channel of its own, so the dispatch loop resetting its channel
+        # after an error doesn't cut this stream too.
+        channel = grpc.insecure_channel(
+            self.agent_hostport, options=self.grpc_channel_options
+        )
+        stub = cortex_axon_agent_pb2_grpc.AxonAgentStub(channel)
+        try:
+            while not self._events_stop.is_set():
+                # Answers for this stream only: one the agent never got is
+                # sent again on the next stream, and answered there.
+                answers = queue.Queue()
+
+                def requests(answers=answers):
+                    yield cortex_axon_agent_pb2.DispatchEventsRequest(
+                        dispatch_id=self.id, client_version=AGENT_VERSION
+                    )
+                    while (answer := answers.get()) is not None:
+                        yield answer
+
+                try:
+                    self._events_call = stub.DispatchEvents(requests())
+                    for event in self._events_call:
+                        if not event.HasField("invoke"):
+                            continue
+                        self._hook_executor.submit(self._answer_failure, event, answers)
+                except grpc.RpcError as e:
+                    if self._events_stop.is_set():
+                        return
+                    if e.code() == grpc.StatusCode.UNIMPLEMENTED:
+                        print("Agent does not send failure events, upgrade the agent to use on_failure")
+                        return
+                    print(f"Failure event stream ended ({e.code()}), reconnecting in {RECONNECT_WAIT_SECONDS} seconds...")
+                finally:
+                    answers.put(None)
+                self._events_stop.wait(RECONNECT_WAIT_SECONDS)
+        finally:
+            channel.close()
+
+    def _handler_context(self, args, timeout_ms: float = 0):
         return HandlerContext(self.cortex_stub, args, timeout_ms)
 
     def _submit_handler(self, handler_to_invoke, invoke):
@@ -239,6 +353,16 @@ class AxonClient:
         # sees its own queue fill rather than this process growing without
         # bound, and the dispatch stream stays readable up to that point.
         self._handler_slots.acquire()
+        _, _, expired = _invoke_timeout(invoke, time())
+        if expired:
+            # The agent has already reported this one as failed; running it
+            # now would duplicate work a failure hook may be replaying.
+            self._handler_slots.release()
+            print(
+                f"Dispatch handler SKIPPED {invoke.handler_name} (id={invoke.invocation_id}): "
+                "expired while waiting for a free handler"
+            )
+            return
         stub = self.agent_stub
         try:
             future = self._executor.submit(
@@ -255,10 +379,53 @@ class AxonClient:
         )
         handler_err = None
         handler_result = None
+        failure = None
         result = None
         now = datetime.now()
-        ctx = self._handler_context(invoke.args, invoke.timeout_ms)
+        timeout, capped, _ = _invoke_timeout(invoke, time())
+        ctx = self._handler_context(invoke.args, timeout * 1000 if timeout else 0)
         duration_ms = 0
+
+        # A Python thread can't be stopped, so at the deadline the timer
+        # reports the timeout itself and the handler's eventual result is
+        # dropped. Whichever finishes first claims the invocation.
+        finish_lock = threading.Lock()
+        finished = False
+
+        def claim():
+            nonlocal finished
+            with finish_lock:
+                if finished:
+                    return False
+                finished = True
+                return True
+
+        def on_timeout():
+            if not claim():
+                return
+            source = FailureSource.APPLICATION
+            message = f"handler did not finish within {invoke.timeout_ms}ms"
+            if ctx.blocked_on_api():
+                source = FailureSource.RUNTIME
+                message += " while waiting on a Cortex API call"
+            elif capped:
+                source = FailureSource.RUNTIME
+                message = "invocation waited for a free handler and ran out of time"
+            print(f"Dispatch handler TIMEOUT {invoke.handler_name} (id={invoke.invocation_id}): {message}")
+            self._report(stub, cortex_axon_agent_pb2.ReportInvocationRequest(
+                handler_invoke=invoke,
+                start_client_timestamp=now,
+                duration_ms=invoke.timeout_ms,
+                error=common_pb2.Error(code="timeout", message=message),
+                failure=Failure(reason=FailureReason.TIMEOUT, source=source, message=message).to_proto(),
+                logs=list(ctx.logs),
+            ))
+
+        timer = None
+        if timeout:
+            timer = threading.Timer(timeout, on_timeout)
+            timer.daemon = True
+            timer.start()
 
         try:
             result = handler_to_invoke(ctx)
@@ -276,6 +443,24 @@ class AxonClient:
             handler_err = common_pb2.Error(
                 code="unexpected", message="Error calling handler: " + str(e)
             )
+            if ctx.blocked_on_api():
+                failure = Failure(
+                    reason=FailureReason.TIMEOUT,
+                    source=FailureSource.RUNTIME,
+                    message=f"Cortex API call did not finish within the {invoke.timeout_ms}ms timeout: {e}",
+                )
+            else:
+                failure = Failure(
+                    reason=FailureReason.HANDLER_ERROR,
+                    source=FailureSource.APPLICATION,
+                    message=str(e),
+                )
+
+        if timer:
+            timer.cancel()
+        if not claim():
+            print(f"Dispatch handler {invoke.handler_name} (id={invoke.invocation_id}) finished after its timeout, result dropped")
+            return
 
         invoke_info = cortex_axon_agent_pb2.ReportInvocationRequest(
             handler_invoke=invoke,
@@ -283,27 +468,38 @@ class AxonClient:
             duration_ms=duration_ms,
             result=handler_result,
             error=handler_err,
+            # The agent sends the failure back to on_failure, so it is
+            # handled the same way as failures only the agent can see.
+            failure=failure.to_proto() if failure else None,
             logs=ctx.logs,
         )
 
+        self._report(stub, invoke_info)
+
+    def _report(self, stub, invoke_info):
         # A failure here must not escape the worker: the dispatch loop is no
         # longer in the call path, so an exception would be swallowed by the
         # future and the invocation would look like it vanished.
         try:
             report_response = stub.ReportInvocation(invoke_info)
+            if report_response.error and report_response.error.code:
+                print(
+                    f"Error reporting invocation: {report_response.error}"
+                )
         except Exception as e:
             print(
-                f"Error reporting invocation {invoke.invocation_id}: {e}"
+                f"Error reporting invocation {invoke_info.handler_invoke.invocation_id}: {e}"
             )
             traceback.print_exc()
-            return
-
-        if report_response.error and report_response.error.code:
-            print(
-                f"Error reporting invocation: {report_response.error}"
-            )
 
     def run(self):
+        self._start_failure_events()
+        try:
+            self._run_dispatch()
+        finally:
+            self._stop_failure_events()
+
+    def _run_dispatch(self):
         registered = False
         while True:
             stub = self._get_stub()
@@ -314,7 +510,8 @@ class AxonClient:
 
                 initial_message = cortex_axon_agent_pb2.DispatchRequest(
                     dispatch_id=self.id,
-                    client_version=AGENT_VERSION
+                    client_version=AGENT_VERSION,
+                    failure_events=self.on_failure is not None,
                 )
                 for response in stub.Dispatch(
                     _client_message_iterator(initial_message)
@@ -364,6 +561,14 @@ class HandlerContext:
         # worker after the agent has given up on the invocation, and once
         # every worker is held the client stops taking new invocations.
         self.deadline = monotonic() + timeout_ms / 1000 if timeout_ms > 0 else None
+        # Whether a Cortex API call was running, or ran out of time, when the
+        # deadline hit, which makes the timeout Axon's fault rather than the
+        # handler's.
+        self._api_in_flight = 0
+        self._api_timed_out = False
+
+    def blocked_on_api(self) -> bool:
+        return self._api_in_flight > 0 or self._api_timed_out
 
     def log(self, message: str, level="INFO"):
         """
@@ -395,5 +600,15 @@ class HandlerContext:
         timeout = None
         if self.deadline is not None:
             timeout = max(self.deadline - monotonic(), 0)
-        response = self.api.Call(request, timeout=timeout)
+        self._api_in_flight += 1
+        try:
+            response = self.api.Call(request, timeout=timeout)
+        except grpc.RpcError as e:
+            if e.code() == grpc.StatusCode.DEADLINE_EXCEEDED:
+                # Set before _api_in_flight drops, so a timeout check never
+                # sees neither.
+                self._api_timed_out = True
+            raise
+        finally:
+            self._api_in_flight -= 1
         return CortexResponse(response.status_code, response.body, response.headers)

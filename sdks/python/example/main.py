@@ -1,5 +1,6 @@
 import json
 
+from cortex_axon import FailureAction
 from cortex_axon.axon_client import AxonClient, HandlerContext
 from cortex_axon.handler import cortex_handler, cortex_scheduled
 
@@ -50,10 +51,23 @@ def my_invoke_handler(context: HandlerContext) -> str:
     return json.dumps(result)
 
 
+def on_failure(info, failure):
+    # Runs for every failed invocation, including ones only the agent sees.
+    print(
+        f"FAILED {info.handler_name} (id={info.invocation_id}, attempt={info.attempt}) "
+        f"reason={failure.reason.name} source={failure.source.name}: {failure.message}"
+    )
+    # A real hook would save info.args somewhere it can be replayed from.
+    if info.attempt < 3:
+        return FailureAction.RETRY
+    return FailureAction.DROP
+
+
 def run():
     # Connect to the gRPC server
     client = AxonClient(
         scope=globals(),
+        on_failure=on_failure,
     )
     client.run()
 
