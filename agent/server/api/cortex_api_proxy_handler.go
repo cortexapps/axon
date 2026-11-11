@@ -25,6 +25,11 @@ import (
 const cortexApiRoot = "cortex-api"
 const cortexApiPathRoot = "/cortex-api/"
 
+// apiProxyReadTimeout bounds reading a proxied request body. The main server
+// keeps a short read timeout for its own fast endpoints, and a large body for
+// the Cortex API can take longer to arrive.
+const apiProxyReadTimeout = 30 * time.Second
+
 func NewApiProxyHandler(config config.AgentConfig, logger *zap.Logger, httpTransport *http.Transport) cortex_http.RegisterableHandler {
 	targetURL, err := url.Parse(config.CortexApiBaseUrl)
 	if err != nil {
@@ -67,6 +72,7 @@ func (a *apiProxyHandler) RegisterRoutes(mux *mux.Router) error {
 }
 
 func (a *apiProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(apiProxyReadTimeout))
 
 	if strings.HasPrefix(r.URL.Path, cortexApiPathRoot) {
 		r.URL.Path = r.URL.Path[len(cortexApiPathRoot):]

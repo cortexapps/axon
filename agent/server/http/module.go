@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"time"
 
 	"github.com/cortexapps/axon/config"
 	"github.com/cortexapps/axon/server/cron"
@@ -17,6 +18,10 @@ var Module = fx.Module("handler",
 	fx.Invoke(createWebhookHttpServer),
 )
 
+// webhookReadTimeout bounds reading a webhook delivery. Senders are outside
+// the agent's network and may upload large payloads slowly.
+const webhookReadTimeout = 30 * time.Second
+
 func createWebhookHttpServer(lifecycle fx.Lifecycle, config config.AgentConfig, logger *zap.Logger, handlerManager handler.Manager, registry *prometheus.Registry) Server {
 
 	params := HttpServerParams{
@@ -27,7 +32,7 @@ func createWebhookHttpServer(lifecycle fx.Lifecycle, config config.AgentConfig, 
 		},
 		Config: config,
 	}
-	httpServer := NewHttpServer(params, WithName("webhook"), WithPort(config.WebhookServerPort))
+	httpServer := NewHttpServer(params, WithName("webhook"), WithPort(config.WebhookServerPort), WithReadTimeout(webhookReadTimeout))
 
 	lifecycle.Append(fx.Hook{
 		OnStart: func(ctx context.Context) error {

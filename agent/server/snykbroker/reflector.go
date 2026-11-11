@@ -46,6 +46,12 @@ type RegistrationReflectorParams struct {
 	Config    config.AgentConfig
 }
 
+// reflectorReadTimeout bounds reading a request from the broker. The broker
+// opens a connection and writes its request only when its event loop gets to
+// it, and that loop stalls for two to three seconds while it sends a large
+// response. It stays under the relay dispatcher's 60-second request timeout.
+const reflectorReadTimeout = 30 * time.Second
+
 func NewRegistrationReflector(p RegistrationReflectorParams) *RegistrationReflector {
 
 	httpParams := cortexHttp.HttpServerParams{
@@ -62,6 +68,7 @@ func NewRegistrationReflector(p RegistrationReflectorParams) *RegistrationReflec
 	server := cortexHttp.NewHttpServer(httpParams,
 		cortexHttp.WithName("relay-reflector"),
 		cortexHttp.WithLoopbackOnly(),
+		cortexHttp.WithReadTimeout(reflectorReadTimeout),
 	)
 
 	rr := &RegistrationReflector{
