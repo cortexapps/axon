@@ -22,9 +22,10 @@ type fakeNotifier struct {
 	attempts  int
 	failFirst int
 	onAttempt func()
+	tenantID  string
 }
 
-func (f *fakeNotifier) ClientConnected(ctx context.Context, token broker.Token, clientID string, metadata map[string]string) error {
+func (f *fakeNotifier) ClientConnected(ctx context.Context, token broker.Token, clientID string, metadata map[string]string) (string, error) {
 	f.mu.Lock()
 	f.attempts++
 	n := f.attempts
@@ -33,9 +34,9 @@ func (f *fakeNotifier) ClientConnected(ctx context.Context, token broker.Token, 
 		f.onAttempt()
 	}
 	if n <= f.failFirst {
-		return errors.New("broker server unavailable")
+		return "", errors.New("broker server unavailable")
 	}
-	return nil
+	return f.tenantID, nil
 }
 
 func (f *fakeNotifier) ClientDisconnected(ctx context.Context, token broker.Token, clientID string) error {
@@ -74,6 +75,21 @@ func TestNotifyClientConnected_LoopsUntilDelivered(t *testing.T) {
 
 	require.Equal(t, 3, notifier.count(), "should retry until the delivery succeeds")
 	require.True(t, registry.IsBrokerServerRegistered(token))
+}
+
+// The agent does not know its tenant. BROKER_SERVER returns it on
+// client-connected, and logs and metrics read it from the entry.
+func TestNotifyClientConnected_StoresTenantFromBrokerServer(t *testing.T) {
+	notifier := &fakeNotifier{tenantID: "1783"}
+	svc, registry := newNotifyService(t, notifier)
+	token := broker.NewToken("token-abc")
+
+	_, err := registry.Register(token, testIdentity(""), testStream("s1"))
+	require.NoError(t, err)
+
+	svc.notifyClientConnected(token, "agent-7", "v1.2.3")
+
+	require.Equal(t, "1783", registry.GetIdentity(token).TenantID)
 }
 
 // "Registration already complete" is an exit condition, so a redundant call

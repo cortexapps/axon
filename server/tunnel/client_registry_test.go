@@ -8,7 +8,10 @@ import (
 	"github.com/cortexapps/axon-server/broker"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 func testIdentity(tenantID string) ClientIdentity {
@@ -89,6 +92,26 @@ func TestRegisterTenantMismatchIsInformational(t *testing.T) {
 	got := registry.GetIdentity(token)
 	require.NotNil(t, got)
 	assert.Equal(t, "tenant-1", got.TenantID)
+}
+
+// A stream that arrives without a tenant takes the tenant that BROKER_SERVER
+// gave the token, and is not a tenant mismatch.
+func TestRegisterInheritsTenantFromBrokerServer(t *testing.T) {
+	core, logs := observer.New(zapcore.WarnLevel)
+	registry := NewClientRegistry(zap.New(core))
+	token := broker.NewToken("token-abc")
+
+	_, err := registry.Register(token, testIdentity(""), testStream("stream-1"))
+	require.NoError(t, err)
+	registry.SetTenantID(token, "1783")
+
+	second := testStream("stream-2")
+	_, err = registry.Register(token, testIdentity(""), second)
+	require.NoError(t, err)
+
+	assert.Equal(t, "1783", registry.GetIdentity(token).TenantID)
+	assert.Equal(t, "1783", second.Identity.TenantID)
+	assert.Zero(t, logs.Len(), "an empty claimed tenant is not a mismatch")
 }
 
 func TestUnregisterStream(t *testing.T) {

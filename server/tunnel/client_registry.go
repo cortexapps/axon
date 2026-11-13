@@ -238,7 +238,12 @@ func (r *ClientRegistry) RegisterStream(token broker.Token, identity ClientIdent
 
 	key := token.Hashed()
 	if existing, ok := r.entries[key]; ok {
-		if existing.Identity.TenantID != identity.TenantID {
+		// An agent that sends no tenant takes the entry's tenant, which
+		// BROKER_SERVER may have supplied through SetTenantID.
+		if identity.TenantID == "" {
+			identity.TenantID = existing.Identity.TenantID
+		}
+		if existing.Identity.TenantID != "" && existing.Identity.TenantID != identity.TenantID {
 			r.logger.Warn("Streams on the same token claim different tenant_ids; likely agent misconfiguration (identity is informational only)",
 				zap.String("existingTenantId", existing.Identity.TenantID),
 				zap.String("newTenantId", identity.TenantID),
@@ -290,6 +295,18 @@ func (r *ClientRegistry) RegisterStream(token broker.Token, identity ClientIdent
 		TokenStreams:     1,
 		InstanceStreams:  1,
 	}, nil
+}
+
+// SetTenantID records the tenant that BROKER_SERVER returned for a token. It
+// updates the entry's identity, which GetIdentity serves to logs and metrics,
+// and streams that register later inherit it. Streams already registered keep
+// their identity: the dispatcher reads it without the registry lock.
+func (r *ClientRegistry) SetTenantID(token broker.Token, tenantID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if entry, ok := r.entries[token.Hashed()]; ok {
+		entry.Identity.TenantID = tenantID
+	}
 }
 
 // IsBrokerServerRegistered reports whether the client-connected notification

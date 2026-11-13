@@ -51,8 +51,9 @@ func TestClientConnected(t *testing.T) {
 	client := NewClient(server.URL, "server-42", logger)
 
 	token := NewToken("raw-token")
-	err := client.ClientConnected(context.Background(), token, "client-123", map[string]string{"broker_client_version": "1.0"})
+	tenantID, err := client.ClientConnected(context.Background(), token, "client-123", map[string]string{"broker_client_version": "1.0"})
 	require.NoError(t, err)
+	assert.Empty(t, tenantID, "no tenant header, so no tenant")
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -122,6 +123,20 @@ func TestServerStopping(t *testing.T) {
 	assert.Equal(t, "/internal/brokerservers/server-42", reqPath)
 }
 
+func TestClientConnected_ReturnsTenantHeader(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(TenantIDHeader, "1783")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "server-42", zaptest.NewLogger(t))
+	tenantID, err := client.ClientConnected(context.Background(), NewToken("raw-token"), "client-123", nil)
+
+	require.NoError(t, err)
+	assert.Equal(t, "1783", tenantID)
+}
+
 func TestNotConfigured(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	client := NewClient("", "server-42", logger)
@@ -129,7 +144,8 @@ func TestNotConfigured(t *testing.T) {
 	assert.False(t, client.IsConfigured())
 
 	// All operations should be no-ops.
-	assert.NoError(t, client.ClientConnected(context.Background(), NewToken("t"), "c", nil))
+	_, err := client.ClientConnected(context.Background(), NewToken("t"), "c", nil)
+	assert.NoError(t, err)
 	assert.NoError(t, client.ClientDisconnected(context.Background(), NewToken("t"), "c"))
 	assert.NoError(t, client.ServerStarting(context.Background(), "host"))
 	assert.NoError(t, client.ServerStopping(context.Background()))
@@ -145,7 +161,7 @@ func TestServerError(t *testing.T) {
 	client := NewClient(server.URL, "server-42", logger)
 	client.SetRetryPolicy(2, time.Millisecond) // 500 is transient; bound the test
 
-	err := client.ClientConnected(context.Background(), NewToken("token"), "client", nil)
+	_, err := client.ClientConnected(context.Background(), NewToken("token"), "client", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "status 500")
 }

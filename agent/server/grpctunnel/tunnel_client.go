@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"os"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -168,9 +167,6 @@ type tunnelClient struct {
 	slotSeq           int                        // worker id generator (logging)
 	currentToken      string
 	currentServerAddr string
-	// registeredTenantID is the tenant from the last Cortex API
-	// registration, or "" when the API did not send one.
-	registeredTenantID string
 
 	// Stream sizing. targetSlots is the desired stream count, busySlots
 	// counts calls in flight across all streams, serverMaxStreams is the
@@ -621,24 +617,8 @@ func (tc *tunnelClient) resolveRegistration() (token, serverAddr string, fromEnv
 	if envServerURL != "" {
 		serverAddr = envServerURL
 	}
-	if regInfo.TenantId > 0 {
-		tc.mu.Lock()
-		tc.registeredTenantID = strconv.FormatInt(regInfo.TenantId, 10)
-		tc.mu.Unlock()
-	}
 	tc.logger.Info("Registered with Cortex API", zap.String("serverUri", serverAddr))
 	return regInfo.Token, serverAddr, false, nil
-}
-
-// tenantID is the tenant this agent reports in its ClientHello:
-// CORTEX_TENANT_ID when it is set, else the tenant from registration.
-func (tc *tunnelClient) tenantID() string {
-	if v := os.Getenv("CORTEX_TENANT_ID"); v != "" {
-		return v
-	}
-	tc.mu.Lock()
-	defer tc.mu.Unlock()
-	return tc.registeredTenantID
 }
 
 // storeRegistration records the resolved token/address and reports whether
@@ -1524,7 +1504,7 @@ func (tc *tunnelClient) openSlot(id int, recovering bool) (*streamCtx, error) {
 				// Everything below is informational (logs/metrics on the
 				// server); the broker token alone is the credential today.
 				ClientVersion: config.BuildVersion(),
-				TenantId:      tc.tenantID(),
+				TenantId:      os.Getenv("CORTEX_TENANT_ID"),
 				Integration:   tc.integrationInfo.Integration.String(),
 				Alias:         tc.integrationInfo.Alias,
 				InstanceId:    tc.config.InstanceId,

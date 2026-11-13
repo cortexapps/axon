@@ -20,17 +20,8 @@ import (
 // eventually authenticate the agent itself and drop the registration
 // round-trip. Neither may ever reach a log.
 
-// captureHello returns the ClientHello the agent actually sent when it was
-// handed the broker token through BROKER_TOKEN.
+// captureHello returns the ClientHello the agent actually sent.
 func captureHello(t *testing.T, cfg config.AgentConfig, token string) *pb.ClientHello {
-	t.Helper()
-	return captureHelloWith(t, cfg, &fakeRegistration{tokens: []string{token}}, true)
-}
-
-// captureHelloWith returns the ClientHello the agent sent. With viaEnv false,
-// the agent gets its token and server address from reg, as a deployed agent
-// does from the Cortex API.
-func captureHelloWith(t *testing.T, cfg config.AgentConfig, reg *fakeRegistration, viaEnv bool) *pb.ClientHello {
 	t.Helper()
 
 	var (
@@ -55,15 +46,8 @@ func captureHelloWith(t *testing.T, cfg config.AgentConfig, reg *fakeRegistratio
 	addr, stop := startFakeServer(t, svc)
 	defer stop()
 
-	reg.serverURI = addr
-	tc, _ := newTestClient(t, cfg, reg)
-	if viaEnv {
-		startClientWithEnv(t, tc, addr, reg.tokens[0])
-	} else {
-		t.Setenv("BROKER_SERVER_URL", "")
-		t.Setenv("BROKER_TOKEN", "")
-		require.NoError(t, tc.Start())
-	}
+	tc, _ := newTestClient(t, cfg, &fakeRegistration{serverURI: addr, tokens: []string{token}})
+	startClientWithEnv(t, tc, addr, token)
 	defer tc.Close()
 
 	waitFor(t, 5*time.Second, func() bool {
@@ -150,24 +134,4 @@ func TestHello_CarriesBuildVersion(t *testing.T) {
 
 	require.NotNil(t, hello)
 	assert.Equal(t, "v9.9.9-test", hello.ClientVersion)
-}
-
-// A deployed agent does not set CORTEX_TENANT_ID. It reports the tenant that
-// the Cortex API returned at registration.
-func TestHello_CarriesTenantFromRegistration(t *testing.T) {
-	t.Setenv("CORTEX_TENANT_ID", "")
-	hello := captureHelloWith(t, config.AgentConfig{InstanceId: "agent-5"},
-		&fakeRegistration{tokens: []string{"broker-token-value"}, tenantID: 1783}, false)
-
-	require.NotNil(t, hello)
-	assert.Equal(t, "1783", hello.TenantId)
-}
-
-func TestHello_TenantEnvOverridesRegistration(t *testing.T) {
-	t.Setenv("CORTEX_TENANT_ID", "42")
-	hello := captureHelloWith(t, config.AgentConfig{InstanceId: "agent-6"},
-		&fakeRegistration{tokens: []string{"broker-token-value"}, tenantID: 1783}, false)
-
-	require.NotNil(t, hello)
-	assert.Equal(t, "42", hello.TenantId)
 }
