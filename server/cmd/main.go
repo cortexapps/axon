@@ -209,13 +209,22 @@ func main() {
 				case <-ctx.Done():
 					return
 				case <-ticker.C:
+					// ForEach holds the registry lock, so tenants are stored after it.
+					tenants := map[broker.Token]string{}
 					registry.ForEach(func(token broker.Token, identity tunnel.ClientIdentity) {
-						if err := brokerClient.ClientConnected(ctx, token, identity.InstanceID, nil); err != nil {
+						tenantID, err := brokerClient.ClientConnected(ctx, token, identity.InstanceID, nil)
+						if err != nil {
 							logger.Warn("Periodic re-registration failed",
-								zap.String("tenantId", identity.TenantID),
-								zap.Error(err))
+								append(identity.LogFields(token), zap.Error(err))...)
+							return
+						}
+						if tenantID != "" {
+							tenants[token] = tenantID
 						}
 					})
+					for token, tenantID := range tenants {
+						registry.SetTenantID(token, tenantID)
+					}
 				}
 			}
 		}()

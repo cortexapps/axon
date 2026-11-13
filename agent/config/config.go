@@ -475,3 +475,13 @@ func (ac AgentConfig) ApplyFlags(flags *pflag.FlagSet) AgentConfig {
 	}
 	return ac
 }
+
+// BuildVersion is the release this agent binary runs, from
+// AXON_BUILD_VERSION, which the image build stamps (for example
+// "v0.3.14-60e6d62..."). An unstamped binary reports "dev".
+func BuildVersion() string {
+	if v := os.Getenv("AXON_BUILD_VERSION"); v != "" {
+		return v
+	}
+	return "dev"
+}

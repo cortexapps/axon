@@ -56,7 +56,7 @@ type StreamCloseHandler func(streamID string)
 // named as an interface so tests can drive delivery failures without a
 // BROKER_SERVER.
 type brokerNotifier interface {
-	ClientConnected(ctx context.Context, token broker.Token, clientID string, metadata map[string]string) error
+	ClientConnected(ctx context.Context, token broker.Token, clientID string, metadata map[string]string) (string, error)
 	ClientDisconnected(ctx context.Context, token broker.Token, clientID string) error
 }
 
@@ -228,6 +228,8 @@ func (s *Service) Tunnel(stream pb.TunnelService_TunnelServer) error {
 		)
 		return err
 	}
+	// The registry may have filled in the tenant from BROKER_SERVER.
+	identity = handle.Identity
 	s.metrics.ConnectionsActive.Update(float64(s.registry.StreamCount()))
 	s.metrics.ConnectionsTotal.Inc(1)
 
@@ -476,12 +478,15 @@ func (s *Service) notifyClientConnected(token broker.Token, clientID, clientVers
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		err := s.brokerClient.ClientConnected(ctx, token, clientID, map[string]string{
+		tenantID, err := s.brokerClient.ClientConnected(ctx, token, clientID, map[string]string{
 			"broker_client_version": clientVersion,
 		})
 		cancel()
 
 		if err == nil {
+			if tenantID != "" {
+				s.registry.SetTenantID(token, tenantID)
+			}
 			s.registry.SetBrokerServerRegistered(token)
 			// One per connection edge now rather than per stream, but still
 			// Debug: the operator-visible transition is "Registered new

@@ -1503,7 +1503,7 @@ func (tc *tunnelClient) openSlot(id int, recovering bool) (*streamCtx, error) {
 				CortexApiToken: tc.config.CortexApiToken,
 				// Everything below is informational (logs/metrics on the
 				// server); the broker token alone is the credential today.
-				ClientVersion: common.ClientVersion,
+				ClientVersion: config.BuildVersion(),
 				TenantId:      os.Getenv("CORTEX_TENANT_ID"),
 				Integration:   tc.integrationInfo.Integration.String(),
 				Alias:         tc.integrationInfo.Alias,
