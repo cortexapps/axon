@@ -144,6 +144,9 @@ func (r *registration) Register(ctx context.Context, integration common.Integrat
 type RegistrationInfoResponse struct {
 	ServerUri string `json:"serverUri"`
 	Token     string `json:"token"`
+	// TenantId is the tenant that Cortex registered this agent under. A
+	// Cortex API that predates the field leaves it 0.
+	TenantId int64 `json:"tenantId,omitempty"`
 }
 
 type registerRequest struct {

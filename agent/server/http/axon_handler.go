@@ -90,13 +90,6 @@ func (h *axonHandler) returnJson(obj interface{}, w http.ResponseWriter) {
 	w.Write(json)
 }
 
-func getBuildVersion() string {
-	if v := os.Getenv("AXON_BUILD_VERSION"); v != "" {
-		return v
-	}
-	return "dev"
-}
-
 // relayMode reports the transport this agent relays over. It answers with the
 // effective transport rather than echoing the configured string: an unset mode
 // means the snyk-broker default rather than "unknown", and only an exact
@@ -118,7 +111,7 @@ func (h *axonHandler) healthcheck(w http.ResponseWriter, r *http.Request) {
 		// The tunnel server reports build_version from its own /healthcheck,
 		// so carrying it here means "which build is this" is the same probe
 		// on both halves rather than a different path per component.
-		"build_version": getBuildVersion(),
+		"build_version": config.BuildVersion(),
 	}
 	h.returnJson(result, w)
 }
@@ -141,7 +134,7 @@ func (h *axonHandler) info(w http.ResponseWriter, r *http.Request) {
 		Integration:  h.config.Integration,
 		Alias:        h.config.IntegrationAlias,
 		Handlers:     []string{},
-		BuildVersion: getBuildVersion(),
+		BuildVersion: config.BuildVersion(),
 		RelayMode:    h.relayMode(),
 	}
 

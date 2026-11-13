@@ -20,8 +20,17 @@ import (
 // eventually authenticate the agent itself and drop the registration
 // round-trip. Neither may ever reach a log.
 
-// captureHello returns the ClientHello the agent actually sent.
+// captureHello returns the ClientHello the agent actually sent when it was
+// handed the broker token through BROKER_TOKEN.
 func captureHello(t *testing.T, cfg config.AgentConfig, token string) *pb.ClientHello {
+	t.Helper()
+	return captureHelloWith(t, cfg, &fakeRegistration{tokens: []string{token}}, true)
+}
+
+// captureHelloWith returns the ClientHello the agent sent. With viaEnv false,
+// the agent gets its token and server address from reg, as a deployed agent
+// does from the Cortex API.
+func captureHelloWith(t *testing.T, cfg config.AgentConfig, reg *fakeRegistration, viaEnv bool) *pb.ClientHello {
 	t.Helper()
 
 	var (
@@ -46,8 +55,15 @@ func captureHello(t *testing.T, cfg config.AgentConfig, token string) *pb.Client
 	addr, stop := startFakeServer(t, svc)
 	defer stop()
 
-	tc, _ := newTestClient(t, cfg, &fakeRegistration{serverURI: addr, tokens: []string{token}})
-	startClientWithEnv(t, tc, addr, token)
+	reg.serverURI = addr
+	tc, _ := newTestClient(t, cfg, reg)
+	if viaEnv {
+		startClientWithEnv(t, tc, addr, reg.tokens[0])
+	} else {
+		t.Setenv("BROKER_SERVER_URL", "")
+		t.Setenv("BROKER_TOKEN", "")
+		require.NoError(t, tc.Start())
+	}
 	defer tc.Close()
 
 	waitFor(t, 5*time.Second, func() bool {
@@ -124,4 +140,34 @@ func TestHello_CredentialsNeverReachTheLog(t *testing.T) {
 		assert.NotContains(t, line, brokerToken, "broker_token leaked into a log line")
 	}
 	assert.NotEmpty(t, logs.All(), "no log output captured, so the check proved nothing")
+}
+
+// The server logs client_version, so it must be the release the agent runs
+// rather than the fixed protocol version.
+func TestHello_CarriesBuildVersion(t *testing.T) {
+	t.Setenv("AXON_BUILD_VERSION", "v9.9.9-test")
+	hello := captureHello(t, config.AgentConfig{InstanceId: "agent-4"}, "broker-token-value")
+
+	require.NotNil(t, hello)
+	assert.Equal(t, "v9.9.9-test", hello.ClientVersion)
+}
+
+// A deployed agent does not set CORTEX_TENANT_ID. It reports the tenant that
+// the Cortex API returned at registration.
+func TestHello_CarriesTenantFromRegistration(t *testing.T) {
+	t.Setenv("CORTEX_TENANT_ID", "")
+	hello := captureHelloWith(t, config.AgentConfig{InstanceId: "agent-5"},
+		&fakeRegistration{tokens: []string{"broker-token-value"}, tenantID: 1783}, false)
+
+	require.NotNil(t, hello)
+	assert.Equal(t, "1783", hello.TenantId)
+}
+
+func TestHello_TenantEnvOverridesRegistration(t *testing.T) {
+	t.Setenv("CORTEX_TENANT_ID", "42")
+	hello := captureHelloWith(t, config.AgentConfig{InstanceId: "agent-6"},
+		&fakeRegistration{tokens: []string{"broker-token-value"}, tenantID: 1783}, false)
+
+	require.NotNil(t, hello)
+	assert.Equal(t, "42", hello.TenantId)
 }

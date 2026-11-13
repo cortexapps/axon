@@ -46,6 +46,7 @@ type fakeRegistration struct {
 	mu        sync.Mutex
 	serverURI string
 	tokens    []string
+	tenantID  int64
 	idx       int
 	calls     int32
 }
@@ -61,6 +62,7 @@ func (r *fakeRegistration) Register(_ context.Context, integration common.Integr
 	return &snykbroker.RegistrationInfoResponse{
 		ServerUri: r.serverURI,
 		Token:     tok,
+		TenantId:  r.tenantID,
 	}, nil
 }
 
