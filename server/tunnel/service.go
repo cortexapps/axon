@@ -208,8 +208,6 @@ func (s *Service) Tunnel(stream pb.TunnelService_TunnelServer) error {
 
 	// Register in client registry (now safe — handshake is done).
 	reg, err := s.registry.RegisterStream(token, identity, handle)
-	// The registry may have filled in the tenant from BROKER_SERVER.
-	identity = handle.Identity
 	if err != nil {
 		if errors.Is(err, ErrTokenStreamCap) {
 			// Every field here earns its place: without tokenHash the
@@ -230,6 +228,8 @@ func (s *Service) Tunnel(stream pb.TunnelService_TunnelServer) error {
 		)
 		return err
 	}
+	// The registry may have filled in the tenant from BROKER_SERVER.
+	identity = handle.Identity
 	s.metrics.ConnectionsActive.Update(float64(s.registry.StreamCount()))
 	s.metrics.ConnectionsTotal.Inc(1)
 
