@@ -292,6 +292,67 @@ func TestTunnel_HeartbeatTimeout_UnregistersStream(t *testing.T) {
 		"heartbeat timeout did not unregister the stream")
 }
 
+// openSilentStream completes the handshake for token and then never sends a
+// frame, as an agent behind a dead load balancer connection does.
+func openSilentStream(t *testing.T, ctx context.Context, client pb.TunnelServiceClient, token string) {
+	t.Helper()
+	stream, err := client.Tunnel(ctx)
+	require.NoError(t, err)
+	require.NoError(t, stream.Send(&pb.ClientFrame{
+		Msg: &pb.ClientFrame_Hello{Hello: &pb.ClientHello{BrokerToken: token, Integration: "github"}},
+	}))
+	msg, err := stream.Recv()
+	require.NoError(t, err)
+	require.NotNil(t, msg.GetHello())
+	go func() {
+		for {
+			if _, err := stream.Recv(); err != nil {
+				return
+			}
+		}
+	}()
+}
+
+// A call the agent never answers must not keep a dead stream alive: before
+// the agent answers, nothing blocks its recv loop, so missing heartbeats mean
+// the stream is gone.
+func TestTunnel_HeartbeatTimeout_ReapsBusyStreamTheAgentNeverAnswered(t *testing.T) {
+	client, registry := startTestServiceWithRegistry(t, func(c *config.Config) {
+		c.HeartbeatInterval = 200 * time.Millisecond
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	openSilentStream(t, ctx, client, "silent-token")
+	require.Eventually(t, func() bool { return registry.StreamCount() == 1 }, 5*time.Second, 10*time.Millisecond)
+	handle, _ := registry.AcquireIdleStream(broker.NewToken("silent-token"))
+	require.NotNil(t, handle, "a call holds the stream")
+
+	require.Eventually(t, func() bool { return registry.StreamCount() == 0 },
+		10*time.Second, 50*time.Millisecond,
+		"a busy stream the agent never answered was not reaped")
+}
+
+// Once the agent answers, its recv loop may block on the call, so the busy
+// stream keeps its relaxed enforcement.
+func TestTunnel_HeartbeatTimeout_SparesBusyStreamTheAgentAnswered(t *testing.T) {
+	client, registry := startTestServiceWithRegistry(t, func(c *config.Config) {
+		c.HeartbeatInterval = 100 * time.Millisecond
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	openSilentStream(t, ctx, client, "answered-token")
+	require.Eventually(t, func() bool { return registry.StreamCount() == 1 }, 5*time.Second, 10*time.Millisecond)
+	handle, _ := registry.AcquireIdleStream(broker.NewToken("answered-token"))
+	require.NotNil(t, handle)
+	handle.MarkAnswered()
+
+	// Several monitor ticks (every 200ms here) pass without a client frame.
+	time.Sleep(time.Second)
+	require.Equal(t, 1, registry.StreamCount(), "an answered call must keep the stream")
+}
+
 // rejectionEntry waits for the stream-cap warning and returns its fields. The
 // client's error can surface before the handler's log write lands, so poll.
 func rejectionEntry(t *testing.T, logs *observer.ObservedLogs) map[string]any {

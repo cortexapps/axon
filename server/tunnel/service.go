@@ -265,10 +265,11 @@ func (s *Service) Tunnel(stream pb.TunnelService_TunnelServer) error {
 	lastHeartbeat.Store(time.Now().UnixNano())
 
 	// Start heartbeat timeout monitor goroutine. Enforcement is relaxed
-	// while a call is in flight on this stream: the recv loop may be blocked
-	// delivering body bytes to a slow consumer, which starves heartbeat
-	// reads without the connection being dead. Transport-level gRPC
-	// keepalive covers dead TCP during calls.
+	// while a call is in flight on this stream that the agent answered or
+	// that carries a request body (see StreamHandle.HeartbeatRelaxed): a
+	// recv loop may be blocked delivering body bytes to a slow consumer,
+	// which starves heartbeat reads without the connection being dead.
+	// Transport-level gRPC keepalive covers dead TCP during calls.
 	go func() {
 		timeout := 2 * s.config.HeartbeatInterval
 		ticker := time.NewTicker(timeout)
@@ -278,7 +279,7 @@ func (s *Service) Tunnel(stream pb.TunnelService_TunnelServer) error {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if handle.Busy() {
+				if handle.HeartbeatRelaxed() {
 					// A call is active; frame traffic proves liveness.
 					lastHeartbeat.Store(time.Now().UnixNano())
 					continue

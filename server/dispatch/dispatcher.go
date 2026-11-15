@@ -692,6 +692,9 @@ func (d *Dispatcher) pumpRequestBody(c *call, body io.Reader) {
 				// return (and the fake in tests does), while buf is reused.
 				payload := append([]byte(nil), buf[:n]...)
 				frame := callFrame(c.id, &pb.CallFrame_Data{Data: &pb.CallData{Payload: payload}})
+				// Before Send: Send itself blocks under flow control while
+				// the agent is not reading.
+				c.stream.MarkRequestBodySent()
 				if err := c.stream.Send(frame); err != nil {
 					d.abortCall(c, fmt.Errorf("%w: %w", errTunnelSend, err), false)
 					return
@@ -736,6 +739,7 @@ func (d *Dispatcher) HandleFrame(streamID string, frame *pb.CallFrame) {
 			zap.String("streamId", streamID))
 		return
 	}
+	c.stream.MarkAnswered()
 
 	switch body := frame.Body.(type) {
 	case *pb.CallFrame_Start:
@@ -921,7 +925,11 @@ func (d *Dispatcher) finish(c *call, closeChans bool) {
 		c.holdTimer.Stop()
 	}
 	c.mu.Unlock()
-	c.stream.Release()
+	if c.stream.Answered() {
+		c.stream.Release()
+	} else {
+		c.stream.ReleaseUnanswered()
+	}
 	c.doneOnce.Do(func() { close(c.doneC) })
 	d.metrics.DispatchInflight.Update(float64(d.InflightCount()))
 	if closeChans {

@@ -38,25 +38,76 @@ type StreamHandle struct {
 	// backpressure: an agent that falls behind stops offering idle streams.
 	busy atomic.Bool
 
-	// onRelease returns the stream to its entry's idle stack. Set by the
-	// registry at Register time; nil for handles that were never registered.
-	onRelease func()
+	// answered is true once the agent has sent a frame for the call in
+	// flight. mayBlockAgent is true once the agent has answered or the
+	// server has sent it request body bytes: either can leave the agent's or
+	// the server's recv loop blocked on a slow consumer. TryAcquire clears
+	// both for each new call.
+	answered      atomic.Bool
+	mayBlockAgent atomic.Bool
+
+	// onRelease returns the stream to its entry's idle stack, at the bottom
+	// when bottom is true. Set by the registry at Register time; nil for
+	// handles that were never registered.
+	onRelease func(bottom bool)
 }
 
 // TryAcquire marks the stream busy. Returns false if it was already busy.
 func (s *StreamHandle) TryAcquire() bool {
-	return s.busy.CompareAndSwap(false, true)
+	if !s.busy.CompareAndSwap(false, true) {
+		return false
+	}
+	s.answered.Store(false)
+	s.mayBlockAgent.Store(false)
+	return true
+}
+
+// MarkAnswered records that the agent sent a frame for the call in flight.
+func (s *StreamHandle) MarkAnswered() {
+	s.answered.Store(true)
+	s.mayBlockAgent.Store(true)
+}
+
+// MarkRequestBodySent records that the server sent request body bytes for the
+// call in flight. The agent may block writing them to a slow upstream, and
+// it reads no heartbeats while it does.
+func (s *StreamHandle) MarkRequestBodySent() {
+	s.mayBlockAgent.Store(true)
+}
+
+// Answered reports whether the agent has sent a frame for the call in flight.
+func (s *StreamHandle) Answered() bool {
+	return s.answered.Load()
+}
+
+// HeartbeatRelaxed reports whether heartbeat enforcement is off for this
+// stream: a call is in flight that the agent answered or that carries a
+// request body. Until then nothing blocks either recv loop on the call, so a
+// live agent's heartbeats still arrive and a dead stream is still reaped.
+func (s *StreamHandle) HeartbeatRelaxed() bool {
+	return s.busy.Load() && s.mayBlockAgent.Load()
 }
 
 // Release marks the stream idle again and returns it to the idle stack. The
 // compare-and-swap makes a double Release a no-op, so a call that both fails
 // and then finishes cannot enqueue the stream twice.
 func (s *StreamHandle) Release() {
+	s.release(false)
+}
+
+// ReleaseUnanswered is Release for a call the agent never sent a frame for.
+// The stream goes to the bottom of the idle stack: it may be dead behind the
+// load balancer, and on top it would take the next call too.
+func (s *StreamHandle) ReleaseUnanswered() {
+	s.release(true)
+}
+
+func (s *StreamHandle) release(bottom bool) {
 	if !s.busy.CompareAndSwap(true, false) {
 		return
 	}
 	if s.onRelease != nil {
-		s.onRelease()
+		s.onRelease(bottom)
 	}
 }
 
@@ -131,6 +182,12 @@ type clientEntry struct {
 // pushIdle returns a stream to the idle stack. Callers hold r.mu.
 func (e *clientEntry) pushIdle(s *StreamHandle) {
 	e.idle = append(e.idle, s)
+}
+
+// pushIdleBottom returns a stream to the idle stack below every other idle
+// stream, so it is handed out last. Callers hold r.mu.
+func (e *clientEntry) pushIdleBottom(s *StreamHandle) {
+	e.idle = append([]*StreamHandle{s}, e.idle...)
 }
 
 // popIdle takes the newest idle stream, dropping entries that are stale
@@ -308,12 +365,16 @@ func (r *ClientRegistry) IsBrokerServerRegistered(token broker.Token) bool {
 // idle stack when its call finishes. It re-checks registration because a
 // stream can die mid-call: the dispatcher still releases it, and by then the
 // entry may be gone or the handle replaced.
-func (r *ClientRegistry) makeOnRelease(key string, s *StreamHandle) func() {
-	return func() {
+func (r *ClientRegistry) makeOnRelease(key string, s *StreamHandle) func(bottom bool) {
+	return func(bottom bool) {
 		r.mu.Lock()
 		defer r.mu.Unlock()
 		entry, ok := r.entries[key]
 		if !ok || entry.Streams[s.StreamID] != s {
+			return
+		}
+		if bottom {
+			entry.pushIdleBottom(s)
 			return
 		}
 		entry.pushIdle(s)

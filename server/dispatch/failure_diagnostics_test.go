@@ -246,6 +246,67 @@ func TestDispatch_SilentAgentReleasesStreamAfterGrace(t *testing.T) {
 	assert.Equal(t, 0, d.InflightCount())
 }
 
+// newTwoStreamDispatcher registers two streams on one token. The idle stack
+// is LIFO, so the second one registered is handed out first.
+func newTwoStreamDispatcher(t *testing.T, grace time.Duration) (*Dispatcher, broker.Token, *tunnel.StreamHandle, *tunnel.StreamHandle) {
+	t.Helper()
+	logger := zaptest.NewLogger(t)
+	registry := tunnel.NewClientRegistry(logger)
+	cfg := config.Config{MaxFrameBytes: 1024, AgentReportGrace: grace}
+	d := NewDispatcher(cfg, registry, metrics.New("test-server"), logger)
+	token := broker.NewToken("test-token")
+	other := &tunnel.StreamHandle{StreamID: "stream-other", Send: newFakeStream().send, Cancel: func() {}}
+	first := &tunnel.StreamHandle{StreamID: "stream-first", Send: newFakeStream().send, Cancel: func() {}}
+	mustRegister(t, registry, token, tunnel.ClientIdentity{InstanceID: "agent-a"}, other)
+	mustRegister(t, registry, token, tunnel.ClientIdentity{InstanceID: "agent-a"}, first)
+	return d, token, first, other
+}
+
+// A call the agent never answered leaves its stream at the bottom of the idle
+// stack, so a stream that is dead behind the load balancer does not take the
+// next call too.
+func TestDispatch_SilentAgentStreamIsHandedOutLast(t *testing.T) {
+	d, token, first, other := newTwoStreamDispatcher(t, 10*time.Millisecond)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	_, err := d.Dispatch(ctx, token, &Request{PseudoHeaders: map[string]string{":method": "GET", ":path": "/slow"}})
+	dispErr := asDispatchError(t, err)
+	assert.Equal(t, first.StreamID, dispErr.StreamID)
+	_, outcome := dispErr.AwaitAgentReport()
+	require.Equal(t, AgentSilent, outcome)
+
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel2()
+	_, err = d.Dispatch(ctx2, token, &Request{PseudoHeaders: map[string]string{":method": "GET", ":path": "/next"}})
+	next := asDispatchError(t, err)
+	assert.Equal(t, other.StreamID, next.StreamID,
+		"the next call must not go to the stream the agent never answered on")
+	next.AwaitAgentReport() // let the hold end before the test does
+}
+
+// A call the agent answered, even late, proves the stream: it stays on top.
+func TestDispatch_AnsweredStreamIsHandedOutFirst(t *testing.T) {
+	d, token, first, _ := newTwoStreamDispatcher(t, 200*time.Millisecond)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	_, err := d.Dispatch(ctx, token, &Request{PseudoHeaders: map[string]string{":method": "GET", ":path": "/slow"}})
+	dispErr := asDispatchError(t, err)
+	require.Equal(t, first.StreamID, dispErr.StreamID)
+
+	d.HandleFrame(first.StreamID, &pb.CallFrame{CallId: dispErr.CallID, Body: &pb.CallFrame_End{End: &pb.CallEnd{}}})
+	_, outcome := dispErr.AwaitAgentReport()
+	require.NotEqual(t, AgentSilent, outcome)
+
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel2()
+	_, err = d.Dispatch(ctx2, token, &Request{PseudoHeaders: map[string]string{":method": "GET", ":path": "/next"}})
+	next := asDispatchError(t, err)
+	assert.Equal(t, first.StreamID, next.StreamID)
+	next.AwaitAgentReport() // let the hold end before the test does
+}
+
 // An agent that finishes the call just after the server gave up: the upstream
 // answered, too late.
 func TestDispatch_AgentCompletingLateIsReportedAsSuch(t *testing.T) {
