@@ -179,3 +179,47 @@ func TestIdleStack_StreamCapStillEnforced(t *testing.T) {
 	})
 	require.ErrorIs(t, err, ErrTokenStreamCap)
 }
+
+// A stream whose call the agent never answered may be dead behind the load
+// balancer. It goes to the bottom, so the next call takes a different stream.
+func TestIdleStack_ReleaseUnansweredGoesToBottom(t *testing.T) {
+	r, token := idleTestRegistry(t)
+	registerN(t, r, token, 3)
+
+	silent, _ := r.AcquireIdleStream(token)
+	require.NotNil(t, silent)
+	silent.ReleaseUnanswered()
+
+	next, _ := r.AcquireIdleStream(token)
+	require.NotNil(t, next)
+	assert.NotEqual(t, silent.StreamID, next.StreamID, "the unanswered stream must not be handed out next")
+
+	// It is still in the stack, behind every other idle stream.
+	last, _ := r.AcquireIdleStream(token)
+	require.NotNil(t, last)
+	assert.NotEqual(t, silent.StreamID, last.StreamID)
+	final, _ := r.AcquireIdleStream(token)
+	require.NotNil(t, final)
+	assert.Equal(t, silent.StreamID, final.StreamID)
+}
+
+func TestStreamHandle_CallFlagsResetOnAcquire(t *testing.T) {
+	r, token := idleTestRegistry(t)
+	registerN(t, r, token, 1)
+
+	h, _ := r.AcquireIdleStream(token)
+	require.NotNil(t, h)
+	assert.False(t, h.HeartbeatRelaxed(), "an unanswered call does not relax heartbeats")
+	h.MarkRequestBodySent()
+	assert.True(t, h.HeartbeatRelaxed(), "the agent may block writing the request body")
+	assert.False(t, h.Answered())
+	h.MarkAnswered()
+	assert.True(t, h.Answered())
+	h.Release()
+	assert.False(t, h.HeartbeatRelaxed(), "an idle stream is never relaxed")
+
+	again, _ := r.AcquireIdleStream(token)
+	require.NotNil(t, again)
+	assert.False(t, again.Answered(), "a new call starts unanswered")
+	assert.False(t, again.HeartbeatRelaxed())
+}
