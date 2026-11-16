@@ -25,7 +25,7 @@ func (fh *failureHarness) answer(callID string, headers map[string]string) {
 
 // A response reports the token's load with the answering call's stream
 // counted as free, because it is released when the body is copied. The
-// agent cannot set x-axon-* headers for the server.
+// agent cannot set the server's headers, but its own x-axon- headers pass.
 func TestStreamsHeader_OnSuccess(t *testing.T) {
 	fh := newFailureHarness(t, time.Second)
 
@@ -36,6 +36,7 @@ func TestStreamsHeader_OnSuccess(t *testing.T) {
 		"content-type":            "application/json",
 		"x-axon-streams":          "streams=99, busy=0, waiting=0",
 		"X-Axon-Dispatch-Failure": "spoofed",
+		"x-axon-relay-instance":   "agent-7",
 	})
 	w := <-done
 
@@ -43,6 +44,7 @@ func TestStreamsHeader_OnSuccess(t *testing.T) {
 	assert.Equal(t, "application/json", w.Header().Get("Content-Type"))
 	assert.Equal(t, "streams=1, busy=0, waiting=0", w.Header().Get(StreamsHeader))
 	assert.Empty(t, w.Header().Get("X-Axon-Dispatch-Failure"))
+	assert.Equal(t, "agent-7", w.Header().Get("X-Axon-Relay-Instance"))
 }
 
 // A dispatch that gave up waiting reports the stream that is still held.

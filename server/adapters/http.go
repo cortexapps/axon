@@ -36,9 +36,14 @@ const failedDispatchDetailMax = 2048
 // dispatched response; see setStreamsHeader.
 const StreamsHeader = "X-Axon-Streams"
 
-// axonHeaderPrefix marks the response headers this server sets. Agent
-// response headers with it are dropped.
-const axonHeaderPrefix = "x-axon-"
+// serverHeaders are the response headers this server sets, in lower case.
+// The agent's own response headers with these names are dropped. Other
+// x-axon- headers from the agent, such as x-axon-relay-instance, pass through.
+var serverHeaders = map[string]bool{
+	"x-axon-streams":          true,
+	"x-axon-dispatch-failure": true,
+	"x-axon-dispatch-phase":   true,
+}
 
 // HttpAdapter translates HTTP/1.1 callers into dispatched calls.
 // It mounts at /broker/* to preserve the snyk-broker dispatcher URL shape:
@@ -274,9 +279,9 @@ func (h *HttpAdapter) handleBrokerDispatch(w http.ResponseWriter, r *http.Reques
 	h.metrics.DispatchCount(tenantID, integration, alias, r.Method, statusCode)
 
 	for k, v := range resp.Headers {
-		// x-axon-* headers are ours to set. An agent that sends one must
-		// not speak for this server.
-		if strings.HasPrefix(strings.ToLower(k), axonHeaderPrefix) {
+		// An agent that sends one of this server's headers must not speak
+		// for this server.
+		if serverHeaders[strings.ToLower(k)] {
 			continue
 		}
 		w.Header().Set(k, v)

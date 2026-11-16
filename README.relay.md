@@ -231,8 +231,10 @@ on that server in `X-Axon-Streams`, for example
 call to the server with the most free streams (`streams - busy - waiting`).
 On success, the answering call is not counted as busy, because its stream is
 released when the body is sent. The unknown-token 404 has no such header.
-The server drops `x-axon-*` headers from the agent's responses, so only the
-server sets them. BROKER_SERVER removes them before it answers its own caller.
+The server drops `X-Axon-Streams`, `X-Axon-Dispatch-Failure` and
+`X-Axon-Dispatch-Phase` from the agent's responses, so only the server sets
+them. The agent's `x-axon-relay-instance` passes through. BROKER_SERVER
+removes `X-Axon-Streams` before it answers its own caller.
 
 The design, wire protocol, and rollout plan are documented in
 [docs/design/grpc-tunnel-v2.md](docs/design/grpc-tunnel-v2.md).
