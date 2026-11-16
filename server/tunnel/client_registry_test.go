@@ -186,6 +186,34 @@ func TestAcquireIdleStreamNoEntry(t *testing.T) {
 	assert.False(t, allBusy)
 }
 
+func TestLoad(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+	registry := NewClientRegistry(logger)
+
+	token := broker.NewToken("token-abc")
+	identity := testIdentity("tenant-1")
+	registry.Register(token, identity, testStream("stream-1"))
+	registry.Register(token, identity, testStream("stream-2"))
+
+	streams, busy := registry.Load(token)
+	assert.Equal(t, 2, streams)
+	assert.Equal(t, 0, busy)
+
+	s, _ := registry.AcquireIdleStream(token)
+	require.NotNil(t, s)
+	streams, busy = registry.Load(token)
+	assert.Equal(t, 2, streams)
+	assert.Equal(t, 1, busy)
+
+	s.Release()
+	_, busy = registry.Load(token)
+	assert.Equal(t, 0, busy)
+
+	streams, busy = registry.Load(broker.TokenFromHash("no-such-hash"))
+	assert.Equal(t, 0, streams)
+	assert.Equal(t, 0, busy)
+}
+
 func TestBrokerServerRegistered(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	registry := NewClientRegistry(logger)

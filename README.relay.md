@@ -225,6 +225,15 @@ the agent has, it holds the stream for up to `AGENT_REPORT_GRACE` (default
 first, so its header can only say `awaiting_agent`; the log line carries the
 final cause.
 
+Every dispatched response, success or failure, also carries the token's load
+on that server in `X-Axon-Streams`, for example
+`streams=8, busy=5, waiting=0`. BROKER_SERVER uses it to send the token's next
+call to the server with the most free streams (`streams - busy - waiting`).
+On success, the answering call is not counted as busy, because its stream is
+released when the body is sent. The unknown-token 404 has no such header.
+The server drops `x-axon-*` headers from the agent's responses, so only the
+server sets them. BROKER_SERVER removes them before it answers its own caller.
+
 The design, wire protocol, and rollout plan are documented in
 [docs/design/grpc-tunnel-v2.md](docs/design/grpc-tunnel-v2.md).
 
