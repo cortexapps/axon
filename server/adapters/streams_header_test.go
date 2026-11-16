@@ -112,5 +112,8 @@ func TestDispatcherLoad_CountsWaiters(t *testing.T) {
 	waiter := fh.next(t, isStart)
 	fh.answer(waiter.CallId, nil)
 	<-waiterDone
-	assert.Equal(t, 1, fh.d.Load(token).Free())
+	// The stream is released when both directions of the call finish, and
+	// the request body pump can finish after the handler returns.
+	require.Eventually(t, func() bool { return fh.d.Load(token).Free() == 1 },
+		5*time.Second, 5*time.Millisecond)
 }
