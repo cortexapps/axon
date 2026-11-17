@@ -14,6 +14,7 @@ import (
 	"github.com/cortexapps/axon/common"
 	"github.com/cortexapps/axon/config"
 	cortexHttp "github.com/cortexapps/axon/server/http"
+	"github.com/cortexapps/axon/server/relay"
 	"github.com/cortexapps/axon/server/snykbroker"
 	"github.com/cortexapps/axon/util"
 	"github.com/spf13/cobra"
@@ -27,7 +28,7 @@ func buildServeStack(cmd *cobra.Command, config config.AgentConfig) fx.Option {
 		initStack(cmd, config, common.IntegrationInfo{}),
 		AgentModule,
 		cortexHttp.Module,
-		snykbroker.Module,
+		relay.Module,
 	)
 }
 
@@ -179,6 +180,30 @@ func TestBuildRelayStackGrpcTunnel_Validates(t *testing.T) {
 	cfg := config.NewAgentEnvConfig()
 	cfg.RelayMode = string(config.RelayModeGrpcTunnel)
 	require.True(t, cfg.IsGRPCTunnel())
+
+	stack := buildRelayStack(&cobra.Command{}, cfg, common.IntegrationInfo{Integration: common.IntegrationGithub})
+	require.NoError(t, fx.ValidateApp(stack))
+}
+
+// With no mode configured, the relay mode switcher selects the tunnel at
+// runtime. Validating the graph proves its dependencies resolve.
+func TestBuildRelayStackUnpinnedMode_Validates(t *testing.T) {
+	oldEnv := util.SaveEnv(false)
+	defer util.RestoreEnv(oldEnv)
+
+	common.ApplyEnv(map[string]string{
+		"DRYRUN":         "true",
+		"PORT":           "0",
+		"ACCEPTFILE_DIR": "../server/snykbroker/accept_files",
+		"GITHUB_TOKEN":   "the-token",
+		"GITHUB_API":     "api.github.com",
+		"GITHUB_GRAPHQL": "api.github.com/graphql",
+	})
+	os.Unsetenv("AXON_RELAY_TRANSPORT")
+	os.Unsetenv("RELAY_MODE")
+
+	cfg := config.NewAgentEnvConfig()
+	require.False(t, cfg.RelayModePinned())
 
 	stack := buildRelayStack(&cobra.Command{}, cfg, common.IntegrationInfo{Integration: common.IntegrationGithub})
 	require.NoError(t, fx.ValidateApp(stack))

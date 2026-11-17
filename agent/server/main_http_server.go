@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/cortexapps/axon/config"
+	"github.com/cortexapps/axon/relaymode"
 	"github.com/cortexapps/axon/server/api"
 	"github.com/cortexapps/axon/server/handler"
 	cortexHttp "github.com/cortexapps/axon/server/http"
@@ -19,7 +20,8 @@ type MainHttpServerParams struct {
 	Logger         *zap.Logger
 	Registry       *prometheus.Registry
 	Transport      *http.Transport
-	HandlerManager handler.Manager `optional:"true"`
+	HandlerManager handler.Manager   `optional:"true"`
+	RelayStatus    *relaymode.Status `optional:"true"`
 }
 
 func NewMainHttpServer(p MainHttpServerParams) cortexHttp.Server {
@@ -40,6 +42,7 @@ func NewMainHttpServer(p MainHttpServerParams) cortexHttp.Server {
 		Logger:         p.Logger,
 		Config:         p.Config,
 		HandlerManager: p.HandlerManager,
+		RelayStatus:    p.RelayStatus,
 	}
 	axonHandler := cortexHttp.NewAxonHandler(params)
 	httpServer.RegisterHandler(axonHandler)

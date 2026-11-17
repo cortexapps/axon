@@ -41,6 +41,28 @@ func TestRegister_Success(t *testing.T) {
 	require.Equal(t, "http://example.com", resp.ServerUri)
 }
 
+// Cortex sends tunnelMode only when a tenant has a preference. The field
+// decodes when present, and stays empty when the response has no field.
+func TestRegister_TunnelMode(t *testing.T) {
+	for _, tc := range []struct{ name, body, want string }{
+		{"present", `{"serverUri":"http://example.com","token":"t","tunnelMode":"grpc-tunnel"}`, "grpc-tunnel"},
+		{"absent", `{"serverUri":"http://example.com","token":"t"}`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+
+			reg := NewRegistration(config.AgentConfig{CortexApiBaseUrl: server.URL, CortexApiToken: "test_token"}, nil)
+			resp, err := reg.Register(context.Background(), common.IntegrationGithub, "alias")
+			require.NoError(t, err)
+			require.Equal(t, tc.want, resp.TunnelMode)
+		})
+	}
+}
+
 func TestRegister_Unauthorized(t *testing.T) {
 
 	cfg := &config.AgentConfig{

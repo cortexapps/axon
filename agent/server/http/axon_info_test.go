@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/cortexapps/axon/config"
+	"github.com/cortexapps/axon/relaymode"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
@@ -45,13 +46,26 @@ func TestRelayMode_UnsetReportsTheDefault(t *testing.T) {
 }
 
 // The value reported is the effective transport, not the configured string.
-// Only an exact "grpc-tunnel" selects the tunnel — config.IsGRPCTunnel compares
+// Only an exact "grpc-tunnel" selects the tunnel — relaymode.Pinned compares
 // exactly — so a near miss like "grpc_tunnel" runs snyk-broker, and reporting
 // it verbatim would put a transport nobody is running into the fleet's mix.
 func TestRelayMode_UnrecognizedReportsTheEffectiveMode(t *testing.T) {
 	assert.Equal(t, "snyk-broker", modeFor(t, config.AgentConfig{
 		RelayMode: "grpc_tunnel",
 	}))
+}
+
+// Cortex can change the mode at runtime, so the running mode wins over the
+// configuration once a tunnel runs.
+func TestRelayMode_ReportsTheRunningMode(t *testing.T) {
+	logger, _ := zap.NewDevelopment()
+	status := relaymode.NewStatus()
+	h := NewAxonHandler(AxonHandlerParams{Logger: logger, Config: config.AgentConfig{}, RelayStatus: status}).(*axonHandler)
+
+	assert.Equal(t, "snyk-broker", h.relayMode(), "before a tunnel starts, the default")
+
+	status.Set(config.RelayModeGrpcTunnel)
+	assert.Equal(t, "grpc-tunnel", h.relayMode())
 }
 
 // Always populated, so a fleet view never has a blank column. Outside a

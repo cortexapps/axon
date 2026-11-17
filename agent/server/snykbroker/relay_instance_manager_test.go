@@ -701,3 +701,25 @@ func TestRestartResetsIdleClock(t *testing.T) {
 	err = mgr.Close()
 	require.NoError(t, err)
 }
+
+// The relay mode switcher closes the broker when it moves the agent to the
+// gRPC tunnel. A restart request that comes after Close, from the idle
+// watchdog or the restart consumer, must not start the broker again.
+func TestRestartAfterCloseDoesNotStart(t *testing.T) {
+	controller := gomock.NewController(t)
+	defer controller.Finish()
+
+	mgr := createTestRelayInstanceManager(t, controller, nil, false, defaultIntegrationInfo)
+	rim := mgr.RelayInstanceManager.(*relayInstanceManager)
+
+	require.NoError(t, mgr.Close())
+	require.NoError(t, mgr.Restart())
+	require.False(t, rim.running.Load(), "Restart after Close must not start the broker")
+
+	// Start ends the Close, so Restart works again.
+	require.NoError(t, mgr.Start())
+	require.True(t, rim.running.Load())
+	require.NoError(t, mgr.Restart())
+	require.True(t, rim.running.Load())
+	require.NoError(t, mgr.Close())
+}

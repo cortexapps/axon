@@ -80,6 +80,19 @@ func TestEnvConfig_RelayModeSelectsTheTunnel(t *testing.T) {
 	require.False(t, NewAgentEnvConfig().IsGRPCTunnel())
 }
 
+// An unset mode stays empty, so that the agent can tell it from a customer
+// choice and let Cortex select the mode. The default is in relaymode.
+func TestEnvConfig_RelayModeUnsetIsNotPinned(t *testing.T) {
+	t.Setenv("AXON_RELAY_TRANSPORT", "")
+	t.Setenv("RELAY_MODE", "")
+	cfg := NewAgentEnvConfig()
+	assert.Equal(t, "", cfg.RelayMode)
+	assert.False(t, cfg.RelayModePinned())
+
+	t.Setenv("AXON_RELAY_TRANSPORT", "snyk-broker")
+	assert.True(t, NewAgentEnvConfig().RelayModePinned())
+}
+
 func TestEnvConfig_RelayModeLegacyAlias(t *testing.T) {
 	t.Setenv("RELAY_MODE", "grpc-tunnel")
 	assert.True(t, NewAgentEnvConfig().IsGRPCTunnel())

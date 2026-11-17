@@ -95,7 +95,12 @@ type AgentConfig struct {
 	ReflectorWebSocketUpgrade bool
 	RelayIdleTimeout          time.Duration
 
-	// RelayMode selects the tunnel implementation: "snyk-broker" or "grpc-tunnel".
+	// RelayMode is the tunnel implementation the customer selected with
+	// AXON_RELAY_TRANSPORT (or RELAY_MODE), or that the build forces:
+	// "snyk-broker" or "grpc-tunnel". Empty when nothing selects one. Then
+	// the tunnelMode from the Cortex registration, or else
+	// relaymode.Default, selects the tunnel, and it can change at runtime.
+	// See the relaymode package.
 	RelayMode string
 	// TunnelConns is how many gRPC connections the agent opens outbound, and
 	// the only tunnel dial there is. Each is load-balanced round-robin
@@ -152,12 +157,13 @@ func (ac AgentConfig) HttpBaseUrl() string {
 // select it.
 var ForcedRelayMode string
 
-// applyForcedRelayMode returns the mode to run. An explicit request for a
-// different mode panics rather than being silently ignored, so a deployment
-// still configured for snyk-broker fails loudly at startup.
-func applyForcedRelayMode(mode, requested string) string {
+// applyForcedRelayMode returns the mode the configuration pins, or "" when
+// nothing pins one. An explicit request for a different mode than the forced
+// one panics rather than being silently ignored, so a deployment still
+// configured for snyk-broker fails loudly at startup.
+func applyForcedRelayMode(requested string) string {
 	if ForcedRelayMode == "" {
-		return mode
+		return requested
 	}
 	if requested != "" && requested != ForcedRelayMode {
 		panic(fmt.Sprintf("this build only supports AXON_RELAY_TRANSPORT=%s, got %q", ForcedRelayMode, requested))
@@ -165,9 +171,16 @@ func applyForcedRelayMode(mode, requested string) string {
 	return ForcedRelayMode
 }
 
-// IsGRPCTunnel returns true if the relay mode is grpc-tunnel.
+// IsGRPCTunnel returns true if the configuration pins the relay mode to
+// grpc-tunnel. False does not mean snyk-broker: the mode can also be unset.
 func (ac AgentConfig) IsGRPCTunnel() bool {
 	return ac.RelayMode == "grpc-tunnel"
+}
+
+// RelayModePinned returns true if the customer or the build selected a relay
+// mode. A pinned mode never changes at runtime.
+func (ac AgentConfig) RelayModePinned() bool {
+	return ac.RelayMode != ""
 }
 
 func (ac AgentConfig) Print() {
@@ -401,13 +414,10 @@ func NewAgentEnvConfig() AgentConfig {
 	}
 
 	// AXON_RELAY_TRANSPORT is the documented name (design doc §10);
-	// RELAY_MODE is accepted as an alias.
-	cfg.RelayMode = "snyk-broker"
-	relayMode := envFirst("AXON_RELAY_TRANSPORT", "RELAY_MODE")
-	if relayMode != "" {
-		cfg.RelayMode = relayMode
-	}
-	cfg.RelayMode = applyForcedRelayMode(cfg.RelayMode, relayMode)
+	// RELAY_MODE is accepted as an alias. No default here: an unset mode
+	// must stay distinguishable from a customer choice, so the default
+	// lives in the relaymode package.
+	cfg.RelayMode = applyForcedRelayMode(envFirst("AXON_RELAY_TRANSPORT", "RELAY_MODE"))
 
 	cfg.TunnelConns = 4
 	if v := os.Getenv("AXON_GRPC_TUNNEL_CONNS"); v != "" {

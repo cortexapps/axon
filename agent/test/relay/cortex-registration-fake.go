@@ -20,8 +20,9 @@ type RegisterRequest struct {
 
 // RegisterResponse represents the response body for the register endpoint
 type RegisterResponse struct {
-	ServerUri string `json:"serverUri"`
-	Token     string `json:"token"`
+	ServerUri  string `json:"serverUri"`
+	Token      string `json:"token"`
+	TunnelMode string `json:"tunnelMode,omitempty"`
 }
 
 // handleRegister handles the /api/v1/relay/register route
@@ -54,6 +55,8 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 	resp := RegisterResponse{
 		ServerUri: os.Getenv("BROKER_SERVER_URL"),
 		Token:     os.Getenv("TOKEN"),
+		// Empty omits the field, like Cortex for a tenant with no preference.
+		TunnelMode: os.Getenv("TUNNEL_MODE"),
 	}
 
 	// Set the response header to application/json

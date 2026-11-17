@@ -99,7 +99,7 @@ test: mocks
 # not yet: server, server/handler, server/http and cmd have known races
 # (handler manager, the fx server stack). Move packages up here as those are
 # fixed.
-RACE_CLEAN_PKGS := ./common/... ./config/... ./scaffold/... ./server/api/... ./server/cron/... ./server/snykbroker/... ./test/httpfake/... ./util/...
+RACE_CLEAN_PKGS := ./common/... ./config/... ./relaymode/... ./scaffold/... ./server/api/... ./server/cron/... ./server/relay/... ./server/snykbroker/... ./test/httpfake/... ./util/...
 
 test-race: mocks
 	go test -race $(RACE_CLEAN_PKGS)

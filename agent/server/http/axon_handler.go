@@ -9,6 +9,7 @@ import (
 
 	pb "github.com/cortexapps/axon/.generated/proto/github.com/cortexapps/axon"
 	"github.com/cortexapps/axon/config"
+	"github.com/cortexapps/axon/relaymode"
 	"github.com/cortexapps/axon/server/handler"
 	"github.com/gorilla/mux"
 	"go.uber.org/fx"
@@ -25,6 +26,7 @@ type axonHandler struct {
 	logger         *zap.Logger
 	client         pb.AxonAgentClient
 	handlerManager handler.Manager
+	relayStatus    *relaymode.Status
 }
 
 type AxonHandlerParams struct {
@@ -33,6 +35,9 @@ type AxonHandlerParams struct {
 	Logger         *zap.Logger
 	Config         config.AgentConfig
 	HandlerManager handler.Manager `optional:"true"`
+	// RelayStatus reports the relay mode that runs now. Without it, /info
+	// reports the mode that the configuration selects.
+	RelayStatus *relaymode.Status `optional:"true"`
 }
 
 func NewAxonHandler(p AxonHandlerParams) RegisterableHandler {
@@ -41,6 +46,7 @@ func NewAxonHandler(p AxonHandlerParams) RegisterableHandler {
 		config:         p.Config,
 		logger:         p.Logger,
 		handlerManager: p.HandlerManager,
+		relayStatus:    p.RelayStatus,
 	}
 
 	return handler
@@ -98,16 +104,20 @@ func getBuildVersion() string {
 }
 
 // relayMode reports the transport this agent relays over. It answers with the
-// effective transport rather than echoing the configured string: an unset mode
-// means the snyk-broker default rather than "unknown", and only an exact
-// "grpc-tunnel" selects the tunnel, so anything else — a typo included — is
-// running snyk-broker and is reported as such. Deciding this through the same
-// predicate the relay itself switches on keeps the two from drifting.
+// effective transport rather than echoing the configured string. Cortex can
+// change the mode at runtime, so the running mode comes from the relay status
+// when there is one. Otherwise it is the configured mode, or the default when
+// none is configured. Only an exact "grpc-tunnel" selects the tunnel, so
+// anything else — a typo included — is running snyk-broker and is reported as
+// such. Deciding this through the same predicate the relay itself switches on
+// keeps the two from drifting.
 func (h *axonHandler) relayMode() string {
-	if h.config.IsGRPCTunnel() {
-		return string(config.RelayModeGrpcTunnel)
+	if h.relayStatus != nil {
+		if m := h.relayStatus.Active(); m != "" {
+			return string(m)
+		}
 	}
-	return string(config.RelayModeSnykBroker)
+	return string(relaymode.Effective(h.config))
 }
 
 func (h *axonHandler) healthcheck(w http.ResponseWriter, r *http.Request) {
