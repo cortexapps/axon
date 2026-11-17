@@ -146,7 +146,6 @@ type RegistrationInfoResponse struct {
 	Token     string `json:"token"`
 	// TunnelMode is the relay mode Cortex selects for this tenant:
 	// "snyk-broker" or "grpc-tunnel". Empty when Cortex has no preference.
-	// See the relaymode package for how it combines with the configuration.
 	TunnelMode string `json:"tunnelMode,omitempty"`
 }
 

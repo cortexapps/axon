@@ -347,11 +347,7 @@ func NewTunnelClient(p TunnelClientParams) snykbroker.RelayInstanceManager {
 
 	collectors := tc.initMetrics()
 
-	// A nil HttpServer means the caller mounts the routes itself (see
-	// RegisterRoutes), as the relay mode switcher does.
-	if p.HttpServer != nil {
-		p.HttpServer.RegisterHandler(tc)
-	}
+	p.HttpServer.RegisterHandler(tc)
 
 	if p.Registry != nil {
 		p.Registry.MustRegister(collectors...)

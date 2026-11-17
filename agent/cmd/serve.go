@@ -7,8 +7,9 @@ import (
 
 	"github.com/cortexapps/axon/common"
 	"github.com/cortexapps/axon/config"
+	"github.com/cortexapps/axon/server/grpctunnel"
 	"github.com/cortexapps/axon/server/http"
-	"github.com/cortexapps/axon/server/relay"
+	"github.com/cortexapps/axon/server/snykbroker"
 	"github.com/spf13/cobra"
 	"go.uber.org/fx"
 )
@@ -41,11 +42,18 @@ var serveCmd = &cobra.Command{
 			Alias:       config.IntegrationAlias,
 		}
 
+		config = withRelayMode(config, info)
+
+		relayModule := snykbroker.Module
+		if config.IsGRPCTunnel() {
+			relayModule = grpctunnel.Module
+		}
+
 		stack := fx.Options(
 			initStack(cmd, config, info),
 			AgentModule,
 			http.Module,
-			relay.Module,
+			relayModule,
 		)
 
 		startAgent(stack)

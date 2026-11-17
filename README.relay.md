@@ -163,14 +163,14 @@ are rewritten. To switch, set the environment variable and restart the
 agent; to roll back, unset it and restart. No state carries between modes.
 
 When `AXON_RELAY_TRANSPORT` is not set, Cortex can select the transport for
-your tenant. The agent reads it from the `/register` response, and it moves
-to a different transport without a restart when Cortex changes it. The
-agent checks at the auto-register interval (`AUTO_REGISTER_FREQUENCY`,
-default 5 minutes). The agent selects the transport in this order:
+your tenant. At start, the agent reads it from the `/register` response. A
+change in Cortex takes effect when the agent starts again. The agent
+selects the transport in this order:
 
 1. `AXON_RELAY_TRANSPORT` (or `RELAY_MODE`), if set. Cortex never changes it.
 2. The transport Cortex selects for your tenant.
-3. The default, `snyk-broker`.
+3. The default, `snyk-broker`. The agent also uses the default if the
+   `/register` call fails at start.
 
 gRPC-tunnel-specific settings (all optional):
 

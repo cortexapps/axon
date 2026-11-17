@@ -81,7 +81,7 @@ func TestEnvConfig_RelayModeSelectsTheTunnel(t *testing.T) {
 }
 
 // An unset mode stays empty, so that the agent can tell it from a customer
-// choice and let Cortex select the mode. The default is in relaymode.
+// choice and let Cortex select the mode.
 func TestEnvConfig_RelayModeUnsetIsNotPinned(t *testing.T) {
 	t.Setenv("AXON_RELAY_TRANSPORT", "")
 	t.Setenv("RELAY_MODE", "")

@@ -95,12 +95,12 @@ type AgentConfig struct {
 	ReflectorWebSocketUpgrade bool
 	RelayIdleTimeout          time.Duration
 
-	// RelayMode is the tunnel implementation the customer selected with
-	// AXON_RELAY_TRANSPORT (or RELAY_MODE), or that the build forces:
-	// "snyk-broker" or "grpc-tunnel". Empty when nothing selects one. Then
-	// the tunnelMode from the Cortex registration, or else
-	// relaymode.Default, selects the tunnel, and it can change at runtime.
-	// See the relaymode package.
+	// RelayMode selects the tunnel implementation: "snyk-broker" or
+	// "grpc-tunnel". NewAgentEnvConfig sets it only from AXON_RELAY_TRANSPORT
+	// (or RELAY_MODE) or ForcedRelayMode, and leaves it empty otherwise, so
+	// that a customer choice is distinguishable from the default. The relay
+	// commands then fill it in from the Cortex registration or the default
+	// before they build the stack; see cmd/relay_mode.go.
 	RelayMode string
 	// TunnelConns is how many gRPC connections the agent opens outbound, and
 	// the only tunnel dial there is. Each is load-balanced round-robin
@@ -171,14 +171,13 @@ func applyForcedRelayMode(requested string) string {
 	return ForcedRelayMode
 }
 
-// IsGRPCTunnel returns true if the configuration pins the relay mode to
-// grpc-tunnel. False does not mean snyk-broker: the mode can also be unset.
+// IsGRPCTunnel returns true if the relay mode is grpc-tunnel.
 func (ac AgentConfig) IsGRPCTunnel() bool {
 	return ac.RelayMode == "grpc-tunnel"
 }
 
 // RelayModePinned returns true if the customer or the build selected a relay
-// mode. A pinned mode never changes at runtime.
+// mode. Cortex cannot change a pinned mode.
 func (ac AgentConfig) RelayModePinned() bool {
 	return ac.RelayMode != ""
 }
@@ -415,8 +414,7 @@ func NewAgentEnvConfig() AgentConfig {
 
 	// AXON_RELAY_TRANSPORT is the documented name (design doc §10);
 	// RELAY_MODE is accepted as an alias. No default here: an unset mode
-	// must stay distinguishable from a customer choice, so the default
-	// lives in the relaymode package.
+	// must stay distinguishable from a customer choice. See RelayMode.
 	cfg.RelayMode = applyForcedRelayMode(envFirst("AXON_RELAY_TRANSPORT", "RELAY_MODE"))
 
 	cfg.TunnelConns = 4

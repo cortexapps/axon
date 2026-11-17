@@ -51,14 +51,9 @@ type relayInstanceManager struct {
 	logger          *zap.Logger
 	// supervisor is written by Start's goroutine and taken by Close, from
 	// different goroutines; supervisorMu guards it. Use currentSupervisor.
-	supervisorMu sync.Mutex
-	supervisor   *Supervisor
-	running      atomic.Bool
-	// lifecycleMu serializes Start, Close and Restart. closed records an
-	// explicit Close, so that a Restart from the watchdog or the restart
-	// consumer cannot start a broker that its owner closed.
-	lifecycleMu       sync.Mutex
-	closed            bool
+	supervisorMu      sync.Mutex
+	supervisor        *Supervisor
+	running           atomic.Bool
 	startCount        atomic.Int32
 	generation        atomic.Int32 // incremented on each Start(), used to deduplicate restart requests
 	tokenInfo         *tokenInfo
@@ -125,11 +120,7 @@ func NewRelayInstanceManager(
 		restartCh: make(chan restartRequest, 1),
 	}
 
-	// A nil HttpServer means the caller mounts the routes itself (see
-	// RegisterRoutes), as the relay mode switcher does.
-	if p.HttpServer != nil {
-		p.HttpServer.RegisterHandler(mgr)
-	}
+	p.HttpServer.RegisterHandler(mgr)
 
 	if p.Registry != nil {
 		p.Registry.MustRegister(mgr.operationsCounter)
@@ -295,15 +286,6 @@ func (r *relayInstanceManager) restartConsumer() {
 			}
 		}
 
-		// A closed manager stays closed. Without this, the idle watchdog
-		// above starts the broker again after the relay mode switcher
-		// moved the agent to the gRPC tunnel.
-		if !r.running.Load() {
-			r.logger.Info("Ignoring restart request, broker is closed",
-				zap.String("reason", req.reason))
-			continue
-		}
-
 		current := r.generation.Load()
 		if req.generation != current {
 			r.logger.Info("Ignoring stale restart request",
@@ -373,13 +355,6 @@ func (r *relayInstanceManager) restartBackoff(attempt int) time.Duration {
 var errSkipBroker = errors.New("NoBrokerToken")
 
 func (r *relayInstanceManager) Restart() error {
-	r.lifecycleMu.Lock()
-	defer r.lifecycleMu.Unlock()
-
-	if r.closed {
-		r.logger.Info("Not restarting broker, it is closed")
-		return nil
-	}
 
 	var err error
 
@@ -389,7 +364,7 @@ func (r *relayInstanceManager) Restart() error {
 
 	r.logger.Info("Restarting broker, shutting down existing broker")
 	// re-register and restart supervisor
-	err = r.close()
+	err = r.Close()
 	if err != nil {
 		r.logger.Error("unable to close supervisor on Restart", zap.Error(err))
 	}
@@ -404,7 +379,7 @@ func (r *relayInstanceManager) Restart() error {
 	}
 
 	r.logger.Info("Restarting broker")
-	err = r.start()
+	err = r.Start()
 	if err != nil {
 		return fmt.Errorf("unable to start supervisor on Restart: %w", err)
 	}
@@ -555,16 +530,7 @@ func (r *relayInstanceManager) reflectorRenderStep(renderContext acceptfile.Rend
 	return nil
 }
 
-// Start starts the broker. It also ends an earlier Close, so that Restart
-// works again.
 func (r *relayInstanceManager) Start() error {
-	r.lifecycleMu.Lock()
-	defer r.lifecycleMu.Unlock()
-	r.closed = false
-	return r.start()
-}
-
-func (r *relayInstanceManager) start() error {
 
 	if !r.running.CompareAndSwap(false, true) {
 		return fmt.Errorf("already started")
@@ -939,16 +905,7 @@ func (r *relayInstanceManager) applyClientValidationConfig(validationConfig *com
 	}
 }
 
-// Close stops the broker. Restart does nothing after Close until the next
-// Start.
 func (r *relayInstanceManager) Close() error {
-	r.lifecycleMu.Lock()
-	defer r.lifecycleMu.Unlock()
-	r.closed = true
-	return r.close()
-}
-
-func (r *relayInstanceManager) close() error {
 
 	if r.running.CompareAndSwap(true, false) {
 		r.supervisorMu.Lock()
