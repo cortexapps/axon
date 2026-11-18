@@ -21,7 +21,7 @@ func (grpcTunnelRegistration) Register(context.Context, common.Integration, stri
 
 // When Cortex selects a different mode, the watcher stops the app and
 // requests a restart. startAgent then starts the agent again.
-func TestWatchRelayMode_StopsTheAppOnAChange(t *testing.T) {
+func TestRestartOnRelayModeChange_StopsTheApp(t *testing.T) {
 	restartRequested.Store(false)
 	t.Cleanup(func() { restartRequested.Store(false) })
 
@@ -29,10 +29,8 @@ func TestWatchRelayMode_StopsTheAppOnAChange(t *testing.T) {
 		fx.NopLogger,
 		fx.Supply(zap.NewNop()),
 		fx.Provide(func() snykbroker.Registration { return grpcTunnelRegistration{} }),
-		fx.Invoke(func(lc fx.Lifecycle, s fx.Shutdowner, logger *zap.Logger, reg snykbroker.Registration) {
-			cfg := config.AgentConfig{AutoRegisterFrequency: time.Millisecond}
-			watchRelayMode(lc, s, logger, cfg, common.IntegrationInfo{}, reg, config.RelayModeSnykBroker)
-		}),
+		restartOnRelayModeChange(config.AgentConfig{AutoRegisterFrequency: time.Millisecond},
+			common.IntegrationInfo{}, config.RelayModeSnykBroker),
 	)
 	require.NoError(t, app.Start(context.Background()))
 

@@ -42,7 +42,7 @@ var serveCmd = &cobra.Command{
 			Alias:       config.IntegrationAlias,
 		}
 
-		config, watchRelayMode := withRelayMode(config, info)
+		config, relayModeRestart := withRelayMode(config, info)
 
 		relayModule := snykbroker.Module
 		if config.IsGRPCTunnel() {
@@ -54,7 +54,7 @@ var serveCmd = &cobra.Command{
 			AgentModule,
 			http.Module,
 			relayModule,
-			watchRelayMode,
+			relayModeRestart,
 		)
 
 		startAgent(stack)

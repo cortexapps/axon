@@ -23,11 +23,11 @@ const defaultRelayModeCheckInterval = 5 * time.Minute
 // Cortex selected a different mode. startAgent then starts the agent again.
 var restartRequested atomic.Bool
 
-// withRelayMode returns cfg with RelayMode set to the mode the stack runs,
-// and an fx option that watches Cortex for a different mode. It runs
-// before the stack is built, because the mode decides which relay module
-// the stack contains. The registration uses the same transport settings
-// (proxy, CA) as the stack.
+// withRelayMode returns cfg with RelayMode set to the mode the stack runs.
+// It runs before the stack is built, because the mode decides which relay
+// module the stack contains. The registration uses the same transport
+// settings (proxy, CA) as the stack. When Cortex drives the mode, it also
+// returns restartOnRelayModeChange for the stack.
 func withRelayMode(cfg config.AgentConfig, info common.IntegrationInfo) (config.AgentConfig, fx.Option) {
 	reg := snykbroker.NewRegistration(cfg, createHttpClient(cfg, createHttpTransport(cfg, zap.NewNop())))
 	res := relaymode.Resolve(context.Background(), cfg, info, reg)
@@ -37,49 +37,43 @@ func withRelayMode(cfg config.AgentConfig, info common.IntegrationInfo) (config.
 	if !res.Remote {
 		return cfg, fx.Options()
 	}
-	return cfg, fx.Invoke(func(lc fx.Lifecycle, shutdowner fx.Shutdowner, logger *zap.Logger, reg snykbroker.Registration) {
-		watchRelayMode(lc, shutdowner, logger, cfg, info, reg, res.Mode)
-	})
+	return cfg, restartOnRelayModeChange(cfg, info, res.Mode)
 }
 
-// watchRelayMode runs relaymode.Watch for the life of the app. When Cortex
-// selects a different mode, it stops the app and requests a restart.
-func watchRelayMode(
-	lc fx.Lifecycle,
-	shutdowner fx.Shutdowner,
-	logger *zap.Logger,
-	cfg config.AgentConfig,
-	info common.IntegrationInfo,
-	reg snykbroker.Registration,
-	running config.RelayMode,
-) {
+// restartOnRelayModeChange is the fx wiring for relaymode.Watch, which has
+// the watch logic. It runs Watch for the life of the app. When Watch
+// reports a different mode, it stops the app and requests a restart, which
+// startAgent does after the stop.
+func restartOnRelayModeChange(cfg config.AgentConfig, info common.IntegrationInfo, running config.RelayMode) fx.Option {
 	interval := cfg.AutoRegisterFrequency
 	if interval <= 0 {
 		interval = defaultRelayModeCheckInterval
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	lc.Append(fx.Hook{
-		OnStart: func(context.Context) error {
-			go func() {
-				defer close(done)
-				relaymode.Watch(ctx, interval, info, reg, running, func(mode config.RelayMode) {
-					logger.Info("Cortex selected a different relay mode, restarting the agent",
-						zap.String("from", string(running)), zap.String("to", string(mode)))
-					restartRequested.Store(true)
-					if err := shutdowner.Shutdown(); err != nil {
-						logger.Error("Unable to stop the agent for a relay mode change", zap.Error(err))
-					}
-				})
-			}()
-			return nil
-		},
-		OnStop: func(context.Context) error {
-			cancel()
-			<-done
-			return nil
-		},
+	return fx.Invoke(func(lc fx.Lifecycle, shutdowner fx.Shutdowner, logger *zap.Logger, reg snykbroker.Registration) {
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		lc.Append(fx.Hook{
+			OnStart: func(context.Context) error {
+				go func() {
+					defer close(done)
+					relaymode.Watch(ctx, interval, info, reg, running, func(mode config.RelayMode) {
+						logger.Info("Cortex selected a different relay mode, restarting the agent",
+							zap.String("from", string(running)), zap.String("to", string(mode)))
+						restartRequested.Store(true)
+						if err := shutdowner.Shutdown(); err != nil {
+							logger.Error("Unable to stop the agent for a relay mode change", zap.Error(err))
+						}
+					})
+				}()
+				return nil
+			},
+			OnStop: func(context.Context) error {
+				cancel()
+				<-done
+				return nil
+			},
+		})
 	})
 }
 

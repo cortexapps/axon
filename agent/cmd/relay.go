@@ -82,7 +82,7 @@ func init() {
 }
 
 func buildRelayStack(cmd *cobra.Command, cfg config.AgentConfig, integrationInfo common.IntegrationInfo) fx.Option {
-	cfg, watchRelayMode := withRelayMode(cfg, integrationInfo)
+	cfg, relayModeRestart := withRelayMode(cfg, integrationInfo)
 
 	relayModule := snykbroker.Module
 	if cfg.IsGRPCTunnel() {
@@ -94,7 +94,7 @@ func buildRelayStack(cmd *cobra.Command, cfg config.AgentConfig, integrationInfo
 		AgentModule,
 		fx.Provide(handler.NewHandlerManager),
 		relayModule,
-		watchRelayMode,
+		relayModeRestart,
 	)
 	return stack
 }
