@@ -3,8 +3,6 @@
 #   grpc - go-only. No Node or snyk-broker, and the agent binary is pinned to
 #          AXON_RELAY_TRANSPORT=grpc-tunnel (see config.ForcedRelayMode).
 #          Published with a -grpc tag suffix, e.g. cortex-axon-agent:3.1.1-grpc.
-# The full variant is also published on Node 22 with a -node22 suffix; that is
-# a NODE_VERSION build arg, not a separate variant (see deps-full).
 # BuildKit only builds the stages the selected variant reaches, so the grpc
 # build never runs the Node install at all.
 ARG VARIANT=full
@@ -100,14 +98,12 @@ ENV AXON_RELAY_TRANSPORT=grpc-tunnel
 FROM runtime-base AS deps-full
 # Install NodeJS and Snyk Broker
 #
-# NODE_VERSION is the NodeSource major. 20 is what ships. CI also builds this
-# variant with NODE_VERSION=22 as a parallel test path (cortex-axon-agent:
-# <tag>-node22, latest-node22) toward clearing CVE-2026-111497, which Node 20
-# (end of life) will never get a fix for. NODE_MIN_VERSION, when set, fails
-# the build if NodeSource serves anything older, so a -node22 image can never
+# NODE_VERSION is the NodeSource major. Node 20 is end of life and will never
+# get the CVE-2026-111497 fix; 22.23.4 has it. NODE_MIN_VERSION, when set,
+# fails the build if NodeSource serves anything older, so the image can never
 # quietly ship an unpatched 22.x.
-ARG NODE_VERSION=20
-ARG NODE_MIN_VERSION=
+ARG NODE_VERSION=22
+ARG NODE_MIN_VERSION=22.23.4
 ENV NODE_VERSION=${NODE_VERSION}
 
 ARG SNYK_BROKER_VERSION=v1.0.22-axon

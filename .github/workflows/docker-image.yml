@@ -23,7 +23,7 @@ on:
       build-args:
         description: >-
           Extra docker/Dockerfile build args, one KEY=value per line, e.g.
-          NODE_VERSION=22 for the -node22 image.
+          NODE_VERSION=22.
         required: false
         type: string
         default: ''
