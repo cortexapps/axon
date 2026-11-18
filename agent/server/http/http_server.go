@@ -39,6 +39,7 @@ type serverOptions struct {
 	registry     *prometheus.Registry
 	port         int
 	loopbackOnly bool
+	readTimeout  time.Duration
 }
 
 func WithName(name string) ServerOption {
@@ -65,6 +66,14 @@ func WithPort(port int) ServerOption {
 func WithLoopbackOnly() ServerOption {
 	return func(s *serverOptions) {
 		s.loopbackOnly = true
+	}
+}
+
+// WithReadTimeout replaces the one-second bound on reading a request, for a
+// server whose clients may connect well before they write.
+func WithReadTimeout(d time.Duration) ServerOption {
+	return func(s *serverOptions) {
+		s.readTimeout = d
 	}
 }
 
@@ -132,6 +141,7 @@ func NewHttpServer(p HttpServerParams, opts ...ServerOption) Server {
 		),
 		config:       p.Config,
 		loopbackOnly: serverOpts.loopbackOnly,
+		readTimeout:  serverOpts.readTimeout,
 	}
 
 	server.mux.Use(server.requestMiddleware)
@@ -177,6 +187,7 @@ type httpServer struct {
 	requestLatency *prometheus.HistogramVec
 	config         config.AgentConfig
 	loopbackOnly   bool
+	readTimeout    time.Duration
 }
 
 func (h *httpServer) RegisterHandler(handler RegisterableHandler) {
@@ -203,6 +214,12 @@ func (rr *responseRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 		return h.Hijack()
 	}
 	return nil, nil, fmt.Errorf("response writer does not support hijacking")
+}
+
+// Unwrap lets handlers use http.ResponseController, for example to extend
+// the read deadline, through this wrapper.
+func (rr *responseRecorder) Unwrap() http.ResponseWriter {
+	return rr.ResponseWriter
 }
 
 func (h *httpServer) requestMiddleware(next http.Handler) http.Handler {
@@ -269,14 +286,18 @@ func metricPath(r *http.Request) string {
 	return unmatchedMetricPath
 }
 
+// defaultReadTimeout bounds reading a whole request, headers and body, unless
+// WithReadTimeout sets another value. It is counted from the moment the
+// connection is accepted, so a client that opens a connection and writes its
+// request later needs a longer value.
 var defaultReadTimeout = time.Second
 
 // defaultIdleTimeout is how long a keep-alive connection may sit between
 // requests. It is set explicitly because net/http otherwise reuses
-// ReadTimeout for this, and one second is shorter than the gaps between the
-// broker's requests: the broker keeps its connections open and would write
-// the next request into a socket this server had just closed, failing with
-// ECONNRESET and retrying.
+// ReadTimeout for this. It must outlast the gaps between the broker's
+// requests: the broker keeps its connections open and would write the next
+// request into a socket this server had just closed, failing with ECONNRESET
+// and retrying.
 var defaultIdleTimeout = 5 * time.Minute
 
 func (h *httpServer) Start() (int, error) {
@@ -295,11 +316,15 @@ func (h *httpServer) Start() (int, error) {
 	if err != nil {
 		panic(err)
 	}
+	readTimeout := defaultReadTimeout
+	if h.readTimeout > 0 {
+		readTimeout = h.readTimeout
+	}
 	// construct the server before spawning the serve goroutine and hand it a
 	// local reference, so Close (which nils h.server) never races with it
 	server := &http.Server{
 		Handler:     h.mux,
-		ReadTimeout: defaultReadTimeout,
+		ReadTimeout: readTimeout,
 		IdleTimeout: defaultIdleTimeout,
 	}
 	h.server = server
