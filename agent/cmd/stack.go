@@ -30,6 +30,12 @@ func startAgent(opts fx.Option) {
 		fmt.Println(banner)
 	}
 	app.Run()
+
+	// Run returns after a clean stop. When the relay mode watcher stopped
+	// the app, start the agent again with the new mode.
+	if restartRequested.Load() {
+		reexec()
+	}
 }
 
 var AgentModule = fx.Module("agent",
