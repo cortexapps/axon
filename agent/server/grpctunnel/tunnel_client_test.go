@@ -64,6 +64,12 @@ func (r *fakeRegistration) Register(_ context.Context, integration common.Integr
 	}, nil
 }
 
+func (r *fakeRegistration) setServerURI(uri string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.serverURI = uri
+}
+
 // stubBackend is a deterministic Backend for call-handling tests.
 type stubBackend struct {
 	mu          sync.Mutex

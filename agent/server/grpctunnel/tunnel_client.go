@@ -622,19 +622,21 @@ func (tc *tunnelClient) resolveRegistration() (token, serverAddr string, fromEnv
 }
 
 // storeRegistration records the resolved token/address and reports whether
-// the token rotated. It also stamps lastRegisterAt for the forced-
-// re-register rate limit.
-func (tc *tunnelClient) storeRegistration(token, serverAddr string) (rotated bool) {
+// the token rotated and whether the server address moved. It also stamps
+// lastRegisterAt for the forced-re-register rate limit.
+func (tc *tunnelClient) storeRegistration(token, serverAddr string) (rotated, moved bool) {
+	addr := serverDialAddr(serverAddr)
 	tc.mu.Lock()
 	rotated = tc.currentToken != "" && tc.currentToken != token
+	moved = tc.currentServerAddr != "" && tc.currentServerAddr != addr
 	tc.currentToken = token
-	tc.currentServerAddr = serverDialAddr(serverAddr)
+	tc.currentServerAddr = addr
 	tc.mu.Unlock()
 
 	tc.registerMu.Lock()
 	tc.lastRegisterAt = time.Now()
 	tc.registerMu.Unlock()
-	return rotated
+	return rotated, moved
 }
 
 // initialRegister establishes the initial server address + token, retrying
@@ -712,9 +714,18 @@ func (tc *tunnelClient) reregister(reason string, force bool) {
 		return
 	}
 
-	if tc.storeRegistration(token, serverAddr) {
+	rotated, moved := tc.storeRegistration(token, serverAddr)
+	if rotated {
 		tc.tokenRotationsTotal.Inc()
 		tc.logger.Info("Token rotated; cycling streams", zap.String("reason", reason))
+	}
+	if moved {
+		// Streams reopen on the new address, and the pool replaces each
+		// connection dialed for the old one as they do.
+		tc.logger.Info("Server address changed; cycling streams",
+			zap.String("reason", reason), zap.String("serverAddr", serverDialAddr(serverAddr)))
+	}
+	if rotated || moved {
 		tc.cycleAllStreams()
 	}
 }
@@ -1469,7 +1480,7 @@ func (tc *tunnelClient) openSlot(id int, recovering bool) (*streamCtx, error) {
 
 	// Streams are spread over the pool by worker id. The connection is the
 	// pool's to close, never the stream's.
-	conn, err := tc.pool.get(id-1, func() (*grpc.ClientConn, error) {
+	conn, err := tc.pool.get(id-1, serverAddr, func() (*grpc.ClientConn, error) {
 		return grpc.NewClient(dialAddr, dialOpts...)
 	})
 	if err != nil {
