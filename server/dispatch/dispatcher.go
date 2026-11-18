@@ -611,6 +611,31 @@ func (d *Dispatcher) acquireStream(ctx context.Context, token broker.Token) (*tu
 	}
 }
 
+// StreamLoad is a token's load on this server: its streams, how many carry a
+// call, and how many dispatches wait for one. Callers report it to
+// BROKER_SERVER so it can send calls to the server with the most free
+// streams; see Free.
+type StreamLoad struct {
+	Streams int
+	Busy    int
+	Waiting int
+}
+
+// Free is the streams a new call could take without waiting: idle streams
+// minus the dispatches already waiting for one. It is negative when calls
+// queue.
+func (l StreamLoad) Free() int { return l.Streams - l.Busy - l.Waiting }
+
+// Load reports the token's StreamLoad on this server. It is cheap enough for
+// every response: one pass over the token's streams and one map lookup.
+func (d *Dispatcher) Load(token broker.Token) StreamLoad {
+	streams, busy := d.registry.Load(token)
+	d.mu.Lock()
+	waiting := d.waiters[token.Hashed()]
+	d.mu.Unlock()
+	return StreamLoad{Streams: streams, Busy: busy, Waiting: waiting}
+}
+
 func (d *Dispatcher) addWaiter(token broker.Token, delta int) {
 	key := token.Hashed()
 	d.mu.Lock()

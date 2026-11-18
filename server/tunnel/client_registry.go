@@ -487,6 +487,26 @@ func (r *ClientRegistry) Snapshot(token broker.Token) StreamSnapshot {
 	return snap
 }
 
+// Load returns how many streams the token has on this server and how many of
+// them carry a call. It is Snapshot without the per-instance split, cheap
+// enough to run on every dispatched response. Busy comes from each stream's
+// own flag, not the idle stack.
+func (r *ClientRegistry) Load(token broker.Token) (streams, busy int) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	entry, ok := r.entries[token.Hashed()]
+	if !ok {
+		return 0, 0
+	}
+	for _, s := range entry.Streams {
+		if s.Busy() {
+			busy++
+		}
+	}
+	return len(entry.Streams), busy
+}
+
 // SetBrokerServerRegistered marks a token as successfully registered with BROKER_SERVER.
 func (r *ClientRegistry) SetBrokerServerRegistered(token broker.Token) {
 	r.mu.RLock()

@@ -32,6 +32,19 @@ import (
 // JSON error response body.
 const failedDispatchDetailMax = 2048
 
+// StreamsHeader carries the token's stream load on this server on every
+// dispatched response; see setStreamsHeader.
+const StreamsHeader = "X-Axon-Streams"
+
+// serverHeaders are the response headers this server sets, in lower case.
+// The agent's own response headers with these names are dropped. Other
+// x-axon- headers from the agent, such as x-axon-relay-instance, pass through.
+var serverHeaders = map[string]bool{
+	"x-axon-streams":          true,
+	"x-axon-dispatch-failure": true,
+	"x-axon-dispatch-phase":   true,
+}
+
 // HttpAdapter translates HTTP/1.1 callers into dispatched calls.
 // It mounts at /broker/* to preserve the snyk-broker dispatcher URL shape:
 //   - GET /broker/connection-status/{token} → connection-status JSON
@@ -266,8 +279,16 @@ func (h *HttpAdapter) handleBrokerDispatch(w http.ResponseWriter, r *http.Reques
 	h.metrics.DispatchCount(tenantID, integration, alias, r.Method, statusCode)
 
 	for k, v := range resp.Headers {
+		// An agent that sends one of this server's headers must not speak
+		// for this server.
+		if serverHeaders[strings.ToLower(k)] {
+			continue
+		}
 		w.Header().Set(k, v)
 	}
+	// This call holds its stream until the body is copied, so it is about
+	// to free one: report the load without it.
+	h.setStreamsHeader(w, token, 1)
 	w.WriteHeader(statusCode)
 
 	// Stream the body, flushing as chunks arrive so streaming responses
@@ -367,6 +388,13 @@ func (h *HttpAdapter) writeDispatchError(w http.ResponseWriter, err error, token
 	errors.As(err, &cancelErr)
 	cause := failureCause(err, dispErr, cancelErr, dispatch.AgentNotAsked)
 
+	// A failed call may still hold its stream (the agent has a grace period
+	// to answer the cancel), so the load is reported as it is. ErrNoTunnel
+	// gets no header: the dispatcher matches that response byte for byte.
+	if !errors.Is(err, dispatch.ErrNoTunnel) {
+		h.setStreamsHeader(w, token, 0)
+	}
+
 	var status int
 	switch {
 	case cancelErr != nil:
@@ -457,6 +485,22 @@ func failureLevel(err error, cause dispatch.FailureCause) zapcore.Level {
 		return zapcore.InfoLevel
 	}
 	return zapcore.WarnLevel
+}
+
+// setStreamsHeader reports the token's stream load on this server to the
+// caller, BROKER_SERVER, which uses it to pick the server for the token's
+// next call. finishing is the busy streams that will be free when this
+// response completes.
+//
+// The value is an RFC 8941 dictionary, so fields can be added without a new
+// header: "streams=8, busy=5, waiting=0". Free streams are
+// streams - busy - waiting. The caller strips the header before it answers
+// its own caller.
+func (h *HttpAdapter) setStreamsHeader(w http.ResponseWriter, token broker.Token, finishing int) {
+	load := h.dispatcher.Load(token)
+	load.Busy = max(0, load.Busy-finishing)
+	w.Header().Set(StreamsHeader, fmt.Sprintf("streams=%d, busy=%d, waiting=%d",
+		load.Streams, load.Busy, load.Waiting))
 }
 
 // setFailureHeaders tells the caller why its dispatch failed, as far as the
