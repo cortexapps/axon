@@ -145,17 +145,9 @@ type jsonAPIData struct {
 
 // ClientConnected notifies the BROKER_SERVER that a client has connected.
 // POST /internal/brokerservers/{serverId}/connections/{hashedToken}?broker_client_id=...&request_type=client-connected&version=...
-// TenantIDHeader is the response header in which BROKER_SERVER returns the
-// tenant of a token on client-connected. The agent does not know its tenant,
-// so this is the only source of the tenant for logs and metrics.
-const TenantIDHeader = "X-Cortex-Tenant-Id"
-
-// ClientConnected announces a token's connection to BROKER_SERVER. It returns
-// the token's tenant id from TenantIDHeader, or "" when BROKER_SERVER does not
-// send one.
-func (c *Client) ClientConnected(ctx context.Context, token Token, clientID string, metadata map[string]string) (string, error) {
+func (c *Client) ClientConnected(ctx context.Context, token Token, clientID string, metadata map[string]string) error {
 	if !c.IsConfigured() {
-		return "", nil
+		return nil
 	}
 
 	path := fmt.Sprintf("/internal/brokerservers/%s/connections/%s", c.serverID, token.Hashed())
@@ -181,11 +173,7 @@ func (c *Client) ClientConnected(ctx context.Context, token Token, clientID stri
 		}
 	}
 
-	header, err := c.doRequestHeader(ctx, http.MethodPost, path, params, body)
-	if err != nil {
-		return "", err
-	}
-	return header.Get(TenantIDHeader), nil
+	return c.doRequest(ctx, http.MethodPost, path, params, body)
 }
 
 // ClientDisconnected notifies the BROKER_SERVER that a client has disconnected.
@@ -241,20 +229,13 @@ func (c *Client) ServerStopping(ctx context.Context) error {
 // 5xx) with jittered exponential backoff, bounded by ctx and the client's
 // retry policy. Permanent failures (other 4xx) return immediately.
 func (c *Client) doRequest(ctx context.Context, method, path string, params url.Values, body any) error {
-	_, err := c.doRequestHeader(ctx, method, path, params, body)
-	return err
-}
-
-// doRequestHeader is doRequest that also returns the response headers of the
-// successful attempt.
-func (c *Client) doRequestHeader(ctx context.Context, method, path string, params url.Values, body any) (http.Header, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 
 	u, err := url.Parse(c.baseURL + path)
 	if err != nil {
-		return nil, fmt.Errorf("parse URL: %w", err)
+		return fmt.Errorf("parse URL: %w", err)
 	}
 
 	// Merge params and always add version.
@@ -274,7 +255,7 @@ func (c *Client) doRequestHeader(ctx context.Context, method, path string, param
 	if body != nil {
 		jsonBody, err = json.Marshal(body)
 		if err != nil {
-			return nil, fmt.Errorf("marshal request body: %w", err)
+			return fmt.Errorf("marshal request body: %w", err)
 		}
 	}
 
@@ -286,7 +267,7 @@ func (c *Client) doRequestHeader(ctx context.Context, method, path string, param
 			jitter := time.Duration(rand.Int64N(int64(backoff) / 2))
 			select {
 			case <-ctx.Done():
-				return nil, fmt.Errorf("broker-server %s %s: %w (last error: %w)", method, path, ctx.Err(), lastErr)
+				return fmt.Errorf("broker-server %s %s: %w (last error: %w)", method, path, ctx.Err(), lastErr)
 			case <-time.After(backoff/2 + jitter):
 			}
 			if backoff *= 2; backoff > maxRetryBackoff {
@@ -294,13 +275,12 @@ func (c *Client) doRequestHeader(ctx context.Context, method, path string, param
 			}
 		}
 
-		var header http.Header
-		header, lastErr = c.attempt(ctx, method, u.String(), path, jsonBody)
+		lastErr = c.attempt(ctx, method, u.String(), path, jsonBody)
 		if lastErr == nil {
-			return header, nil
+			return nil
 		}
 		if !isRetryable(lastErr) {
-			return nil, lastErr
+			return lastErr
 		}
 		c.logger.Warn("BROKER_SERVER request failed; will retry",
 			zap.String("method", method),
@@ -310,18 +290,18 @@ func (c *Client) doRequestHeader(ctx context.Context, method, path string, param
 			zap.Error(lastErr),
 		)
 	}
-	return nil, fmt.Errorf("broker-server %s %s failed after %d attempts: %w", method, path, c.maxAttempts, lastErr)
+	return fmt.Errorf("broker-server %s %s failed after %d attempts: %w", method, path, c.maxAttempts, lastErr)
 }
 
 // attempt performs a single request.
-func (c *Client) attempt(ctx context.Context, method, fullURL, path string, jsonBody []byte) (http.Header, error) {
+func (c *Client) attempt(ctx context.Context, method, fullURL, path string, jsonBody []byte) error {
 	var reader io.Reader
 	if jsonBody != nil {
 		reader = bytes.NewReader(jsonBody)
 	}
 	httpReq, err := http.NewRequestWithContext(ctx, method, fullURL, reader)
 	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
+		return fmt.Errorf("create request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/vnd.api+json")
 	httpReq.Header.Set("Connection", "Keep-Alive")
@@ -329,12 +309,12 @@ func (c *Client) attempt(ctx context.Context, method, fullURL, path string, json
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("broker-server %s %s: %w", method, path, err)
+		return fmt.Errorf("broker-server %s %s: %w", method, path, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 300 {
-		return nil, &statusError{method: method, path: path, code: resp.StatusCode}
+		return &statusError{method: method, path: path, code: resp.StatusCode}
 	}
-	return resp.Header, nil
+	return nil
 }
