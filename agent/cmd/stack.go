@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	_ "embed"
 	"fmt"
 	"os"
@@ -11,8 +10,6 @@ import (
 	"github.com/cortexapps/axon/config"
 	"github.com/cortexapps/axon/server"
 	cortexHttp "github.com/cortexapps/axon/server/http"
-	"github.com/cortexapps/axon/server/relaymode"
-	"github.com/cortexapps/axon/server/snykbroker"
 	"github.com/spf13/cobra"
 	"go.uber.org/fx"
 	"go.uber.org/fx/fxevent"
@@ -33,6 +30,12 @@ func startAgent(opts fx.Option) {
 		fmt.Println(banner)
 	}
 	app.Run()
+
+	// Run returns after a clean stop. When the relay mode watcher stopped
+	// the app, start the agent again with the new mode.
+	if restartRequested.Load() {
+		reexec()
+	}
 }
 
 var AgentModule = fx.Module("agent",
@@ -82,16 +85,4 @@ func initStack(cmd *cobra.Command, cfg config.AgentConfig, integrationInfo commo
 		fx.Supply(cmd),
 		fx.Supply(cfg),
 	)
-}
-
-// withRelayMode returns cfg with RelayMode set to the mode the stack runs,
-// selected by relaymode.Resolve. It runs before the stack is built, because
-// the mode decides which relay module the stack contains. The registration
-// uses the same transport settings (proxy, CA) as the stack.
-func withRelayMode(cfg config.AgentConfig, info common.IntegrationInfo) config.AgentConfig {
-	reg := snykbroker.NewRegistration(cfg, createHttpClient(cfg, createHttpTransport(cfg, zap.NewNop())))
-	mode, reason := relaymode.Resolve(context.Background(), cfg, info, reg)
-	fmt.Printf("Relay mode: %s, %s\n", mode, reason)
-	cfg.RelayMode = string(mode)
-	return cfg
 }
