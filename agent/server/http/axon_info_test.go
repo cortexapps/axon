@@ -57,10 +57,10 @@ func TestRelayMode_UnrecognizedReportsTheEffectiveMode(t *testing.T) {
 // Always populated, so a fleet view never has a blank column. Outside a
 // container image this is the "dev" fallback rather than a build tag.
 func TestBuildVersion_AlwaysPopulated(t *testing.T) {
-	assert.NotEmpty(t, getBuildVersion())
+	assert.NotEmpty(t, config.BuildVersion())
 
 	t.Setenv("AXON_BUILD_VERSION", "grpc-tunnel-initial-commit-abc1234")
-	assert.Equal(t, "grpc-tunnel-initial-commit-abc1234", getBuildVersion())
+	assert.Equal(t, "grpc-tunnel-initial-commit-abc1234", config.BuildVersion())
 }
 
 // /healthcheck carries the build version too, not just /info. The tunnel

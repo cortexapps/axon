@@ -125,3 +125,13 @@ func TestHello_CredentialsNeverReachTheLog(t *testing.T) {
 	}
 	assert.NotEmpty(t, logs.All(), "no log output captured, so the check proved nothing")
 }
+
+// The server logs client_version, so it must be the release the agent runs
+// rather than the fixed protocol version.
+func TestHello_CarriesBuildVersion(t *testing.T) {
+	t.Setenv("AXON_BUILD_VERSION", "v9.9.9-test")
+	hello := captureHello(t, config.AgentConfig{InstanceId: "agent-4"}, "broker-token-value")
+
+	require.NotNil(t, hello)
+	assert.Equal(t, "v9.9.9-test", hello.ClientVersion)
+}
