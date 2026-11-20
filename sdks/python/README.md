@@ -106,3 +106,64 @@ client = AxonClient(scope=globals(), max_concurrent_handlers=16)
 ```
 
 Set it to `1` for the old behaviour, where handlers run one at a time.
+
+## Failure hooks
+
+Pass `on_failure` to `AxonClient` to run your own code whenever an
+invocation fails, for example to send the failed message somewhere you can
+replay it from. Every failure goes through the agent, wherever it happened:
+a handler that raised in this process, or a webhook the agent couldn't hand
+to this process because every handler was busy. The agent sends each one to
+your hook and does what the hook returns. Failures arrive on their own
+stream, so they get through even while every handler slot is taken, and a
+failure your hook hadn't answered when the connection dropped is sent again.
+This needs an agent that supports failure events.
+
+```python
+from cortex_axon import AxonClient, FailureAction, FailureSource
+from cortex_axon.handler import cortex_webhook
+
+
+@cortex_webhook(id="my-webhook-1")
+def my_webhook_handler(context):
+    process(context.args["body"])
+
+
+def on_failure(info, failure):
+    # info.args holds the original webhook: "body", "content-type", "url"
+    dead_letters.publish({
+        "handler": info.handler_name,
+        "invocation_id": info.invocation_id,
+        "attempt": info.attempt,
+        "reason": failure.reason.name,       # HANDLER_ERROR, TIMEOUT, NO_RESOURCES
+        "source": failure.source.name,       # APPLICATION or RUNTIME
+        "caller_rejected": failure.caller_rejected,
+        "message": info.args,
+    })
+    # Optionally have the agent run it again, as a new attempt.
+    if failure.source == FailureSource.RUNTIME and info.attempt < 3:
+        return FailureAction.RETRY
+
+
+client = AxonClient(scope=globals(), on_failure=on_failure)
+client.run()
+```
+
+| Reason | When | Source |
+|---|---|---|
+| `HANDLER_ERROR` | The handler raised | `APPLICATION` |
+| `TIMEOUT` | The handler ran past its timeout | `RUNTIME` if a Cortex API call was in flight, the invocation waited for a free handler, or the agent never got a result; otherwise `APPLICATION` |
+| `NO_RESOURCES` | The agent's queue was full, or the message expired waiting for a free handler | `RUNTIME` |
+
+`caller_rejected` is true when the sender was told the message wasn't
+accepted (a webhook got a 503), so the sender may also retry it.
+
+Returning `FailureAction.RETRY` has the agent queue the invocation again,
+with `attempt` incremented; it stops after 5 attempts. Returning
+`FailureAction.DROP`, or nothing, drops it. If the hook raises, the
+invocation is dropped.
+
+The hook runs for every handler type, not only webhooks. Python can't stop a
+handler that overruns its timeout: at the deadline the SDK reports the
+`TIMEOUT` and runs the hook, and whatever the handler does after that is
+dropped.
