@@ -253,7 +253,7 @@ func (fhm *fakeManager) Trigger(handler Invocable) error {
 	return os.ErrNotExist
 }
 
-func (fhm *fakeManager) Dequeue(ctx context.Context, id string, waitTime time.Duration) (Invocable, error) {
+func (fhm *fakeManager) Dequeue(ctx context.Context, id string) (Invocable, error) {
 	panic("not implemented") // TODO: Implement
 }
 
@@ -286,4 +286,7 @@ func (fc *fakeCron) Add(spec string, cmd func()) (string, error) {
 
 func (fc *fakeCron) Remove(id string) {
 	delete(fc.handlers, id)
+}
+
+func (fhm *fakeManager) SetFailureNotifier(notifier FailureNotifier) {
 }
