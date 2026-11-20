@@ -26,7 +26,12 @@ type recordingNotifier struct {
 }
 
 func (r *recordingNotifier) Notify(invoke *pb.DispatchHandlerInvoke, failure *pb.InvocationFailure) {
-	r.failures <- &pb.DispatchEvent{Invoke: invoke, Failure: failure}
+	// Never block the manager's watcher. A test reads the failures it
+	// expects, so one past the buffer is one no test is waiting for.
+	select {
+	case r.failures <- &pb.DispatchEvent{Invoke: invoke, Failure: failure}:
+	default:
+	}
 }
 
 type invocationFailureFixture struct {

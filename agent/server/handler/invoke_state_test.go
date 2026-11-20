@@ -22,7 +22,12 @@ func newRecordingNotifier() *recordingNotifier {
 }
 
 func (r *recordingNotifier) Notify(invoke *pb.DispatchHandlerInvoke, failure *pb.InvocationFailure) {
-	r.events <- &pb.DispatchEvent{Invoke: invoke, Failure: failure}
+	// Never block the manager's watcher. A test reads the failures it
+	// expects, so one past the buffer is one no test is waiting for.
+	select {
+	case r.events <- &pb.DispatchEvent{Invoke: invoke, Failure: failure}:
+	default:
+	}
 }
 
 func (r *recordingNotifier) next(t *testing.T) *pb.DispatchEvent {
