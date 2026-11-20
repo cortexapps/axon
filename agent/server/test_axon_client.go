@@ -166,3 +166,15 @@ func (c *testAxonClient) GetHandlerHistory(ctx context.Context, name string) ([]
 	}
 	return resp.History, nil
 }
+
+// DispatchEvents opens the failure event stream and sends the first message.
+func (c *testAxonClient) DispatchEvents(ctx context.Context) (grpc.BidiStreamingClient[pb.DispatchEventsRequest, pb.DispatchEvent], error) {
+	stream, err := c.client.DispatchEvents(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := stream.Send(&pb.DispatchEventsRequest{DispatchId: c.dispatchId}); err != nil {
+		return nil, err
+	}
+	return stream, nil
+}

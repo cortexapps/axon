@@ -39,6 +39,7 @@ type AxonAgent struct {
 	config              config.AgentConfig
 	logger              *zap.Logger
 	Manager             handler.Manager
+	Failures            handler.FailureManager
 	cortexApiServer     pb.CortexApiServer
 	grpcServer          *grpc.Server
 	inflightLock        sync.RWMutex
@@ -60,7 +61,8 @@ type Params struct {
 	Lifecycle fx.Lifecycle `optional:"true"`
 	Logger    *zap.Logger
 	Config    config.AgentConfig
-	Manager   handler.Manager `optional:"true"`
+	Manager   handler.Manager        `optional:"true"`
+	Failures  handler.FailureManager `optional:"true"`
 }
 
 func NewAxonAgent(
@@ -71,6 +73,7 @@ func NewAxonAgent(
 		config:              p.Config,
 		logger:              logger,
 		Manager:             p.Manager,
+		Failures:            p.Failures,
 		cortexApiServer:     api.NewCortexApiServer(logger, p.Config),
 		outstandingRequests: make(map[string]inflightRequest),
 		historyManager:      handler.NewHistoryManager(p.Config, logger),
@@ -136,6 +139,12 @@ func (s *AxonAgent) Dispatch(stream pb.AxonAgent_DispatchServer) error {
 		if err != nil {
 			s.logger.Error("failed to receive message", zap.Error(err))
 			return err
+		}
+
+		// Subscribe before any handler starts, so a failure can't happen
+		// before the client's DispatchEvents stream connects and be lost.
+		if req.FailureEvents && s.Failures != nil {
+			s.Failures.Subscribe(req.DispatchId)
 		}
 
 		s.sendInvocations(req.DispatchId, stream)
@@ -328,10 +337,70 @@ func (s *AxonAgent) completeInvocation(ctx context.Context, req *pb.ReportInvoca
 	}
 }
 
-// DispatchEvents is not served yet. A client that asks for failure events
-// gets Unimplemented, which it treats as an agent without them.
+// DispatchEvents sends a client its failed invocations and applies its answer
+// to each. One the client hasn't answered when the stream ends is sent again
+// on its next stream.
 func (s *AxonAgent) DispatchEvents(stream pb.AxonAgent_DispatchEventsServer) error {
-	return status.Error(codes.Unimplemented, "failure events are not enabled")
+	if s.Failures == nil {
+		return status.Error(codes.Unimplemented, "failure events are not enabled")
+	}
+
+	first, err := stream.Recv()
+	if err != nil {
+		return err
+	}
+	dispatchId := first.GetDispatchId()
+	logger := s.logger.With(zap.String("dispatch-id", dispatchId))
+	logger.Info("client subscribed to failure events", zap.String("client-version", first.GetClientVersion()))
+	s.Failures.Subscribe(dispatchId)
+
+	var mu sync.Mutex
+	unanswered := map[string]*handler.FailureEvent{}
+	defer func() {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, ev := range unanswered {
+			ev.Requeue()
+		}
+	}()
+
+	ctx, cancel := context.WithCancel(stream.Context())
+	defer cancel()
+	go func() {
+		defer cancel()
+		for {
+			req, err := stream.Recv()
+			if err != nil {
+				return
+			}
+			res := req.GetResolution()
+			if res == nil {
+				continue
+			}
+			mu.Lock()
+			ev := unanswered[res.GetInvocationId()]
+			delete(unanswered, res.GetInvocationId())
+			mu.Unlock()
+			if ev == nil {
+				logger.Warn("resolution for a failure that is not pending", zap.String("invocation-id", res.GetInvocationId()))
+				continue
+			}
+			// Resolve logs its own outcome.
+			_ = ev.Resolve(res.GetAction())
+		}
+	}()
+
+	send := func(ev *handler.FailureEvent) error {
+		mu.Lock()
+		unanswered[ev.Invoke.InvocationId] = ev
+		mu.Unlock()
+		return stream.Send(ev.DispatchEvent)
+	}
+	if err := drain(ctx, s.Failures, dispatchId, send, 0, nil); err != nil {
+		logger.Warn("failure event stream ended", zap.Error(err))
+		return err
+	}
+	return nil
 }
 
 // ListHandlers returns a list of all registered handlers
