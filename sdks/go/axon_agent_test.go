@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -103,10 +104,11 @@ func TestInvokeHandlerWithTimeoutTriggered(t *testing.T) {
 	controller := gomock.NewController(t)
 	defer controller.Finish()
 
-	called := false
+	// The handler outlives the timeout, so it runs concurrently with the check.
+	var called atomic.Bool
 
 	theHandler := func(ctx HandlerContext) error {
-		called = true
+		called.Store(true)
 		time.Sleep(time.Millisecond * 10)
 		return nil
 	}
@@ -117,7 +119,7 @@ func TestInvokeHandlerWithTimeoutTriggered(t *testing.T) {
 		require.Equal(t, "timeout", reportedErr.Code)
 	})
 
-	require.True(t, called)
+	require.True(t, called.Load())
 
 }
 
@@ -237,6 +239,16 @@ func createAgent(controller *gomock.Controller) (*Agent, *mockGrpcClient) {
 type agentCallback func(*mockGrpcClient)
 
 func executeHandlerHelper(t *testing.T, controller *gomock.Controller, handler any, timeoutMs int, reportCallback func(*pb.ReportInvocationRequest), callback ...agentCallback) error {
+	return executeHandlerWithAgent(t, controller, handler, timeoutMs, reportCallback, func(_ *Agent, mock *mockGrpcClient) {
+		if len(callback) > 0 {
+			callback[0](mock)
+		}
+	})
+}
+
+// executeHandlerWithAgent runs one invocation of handler. configure can set
+// up the agent and mocks before it runs.
+func executeHandlerWithAgent(t *testing.T, controller *gomock.Controller, handler any, timeoutMs int, reportCallback func(*pb.ReportInvocationRequest), configure func(*Agent, *mockGrpcClient)) error {
 
 	agent, mock := createAgent(controller)
 	id := fmt.Sprintf("%d", time.Now().UnixNano())
@@ -257,6 +269,7 @@ func executeHandlerHelper(t *testing.T, controller *gomock.Controller, handler a
 		},
 	)
 
+	mock.lastStream = stream
 	mock.agentStub.EXPECT().RegisterHandler(gomock.Any(), gomock.Any()).Return(&pb.RegisterHandlerResponse{Id: id}, nil)
 	mock.agentStub.EXPECT().Dispatch(gomock.Any(), gomock.Any()).AnyTimes().Return(stream, nil)
 	mock.agentStub.EXPECT().ReportInvocation(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
@@ -267,9 +280,7 @@ func executeHandlerHelper(t *testing.T, controller *gomock.Controller, handler a
 			return &pb.ReportInvocationResponse{}, nil
 		})
 
-	if len(callback) > 0 {
-		callback[0](mock)
-	}
+	configure(agent, mock)
 
 	options := []RegisterHandlerOption{
 		WithInvokeOption(pb.HandlerInvokeType_RUN_NOW, ""),
@@ -302,6 +313,8 @@ func executeHandlerHelper(t *testing.T, controller *gomock.Controller, handler a
 type mockGrpcClient struct {
 	apiStub   *mock_axon.MockCortexApiClient
 	agentStub *mock_axon.MockAxonAgentClient
+
+	lastStream *mockBidiClient
 }
 
 func (m *mockGrpcClient) api() pb.CortexApiClient {
@@ -318,6 +331,7 @@ type mockBidiClient struct {
 	messages     []*pb.DispatchMessage
 	messageIndex int
 	eofOnFinish  bool
+	sent         []*pb.DispatchRequest
 }
 
 func newBidiClient(messages ...*pb.DispatchMessage) *mockBidiClient {
@@ -346,7 +360,8 @@ func (m *mockBidiClient) Recv() (*pb.DispatchMessage, error) {
 	return msg, nil
 }
 
-func (m *mockBidiClient) Send(*pb.DispatchRequest) error {
+func (m *mockBidiClient) Send(req *pb.DispatchRequest) error {
+	m.sent = append(m.sent, req)
 	if m.IsDone() && m.eofOnFinish {
 		return io.EOF
 	}

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -38,12 +39,17 @@ type AxonAgent struct {
 	config              config.AgentConfig
 	logger              *zap.Logger
 	Manager             handler.Manager
+	Failures            handler.FailureManager
 	cortexApiServer     pb.CortexApiServer
 	grpcServer          *grpc.Server
 	inflightLock        sync.RWMutex
 	outstandingRequests map[string]inflightRequest
 	historyManager      handler.HistoryManager
 }
+
+// reportGrace is how long past an invocation's timeout the agent waits for
+// the client's report before deciding the client never answered.
+var reportGrace = 5 * time.Second
 
 type inflightRequest struct {
 	invocable handler.Invocable
@@ -55,7 +61,8 @@ type Params struct {
 	Lifecycle fx.Lifecycle `optional:"true"`
 	Logger    *zap.Logger
 	Config    config.AgentConfig
-	Manager   handler.Manager `optional:"true"`
+	Manager   handler.Manager        `optional:"true"`
+	Failures  handler.FailureManager `optional:"true"`
 }
 
 func NewAxonAgent(
@@ -66,6 +73,7 @@ func NewAxonAgent(
 		config:              p.Config,
 		logger:              logger,
 		Manager:             p.Manager,
+		Failures:            p.Failures,
 		cortexApiServer:     api.NewCortexApiServer(logger, p.Config),
 		outstandingRequests: make(map[string]inflightRequest),
 		historyManager:      handler.NewHistoryManager(p.Config, logger),
@@ -133,6 +141,12 @@ func (s *AxonAgent) Dispatch(stream pb.AxonAgent_DispatchServer) error {
 			return err
 		}
 
+		// Subscribe before any handler starts, so a failure can't happen
+		// before the client's DispatchEvents stream connects and be lost.
+		if req.FailureEvents && s.Failures != nil {
+			s.Failures.Subscribe(req.DispatchId)
+		}
+
 		s.sendInvocations(req.DispatchId, stream)
 	}
 
@@ -149,6 +163,39 @@ func (s *AxonAgent) sendComplete(stream pb.AxonAgent_DispatchServer) error {
 	return nil
 }
 
+// drain sends whatever src hands out for a dispatch id until ctx ends or a
+// send fails. With a wait, idle runs whenever src has had nothing for that
+// long; returning true ends the drain.
+func drain[T any](ctx context.Context, src handler.InvocationSource[T], dispatchId string, send func(T) error, wait time.Duration, idle func() bool) error {
+	for {
+		item, err := dequeue(ctx, src, dispatchId, wait)
+		switch {
+		case err == nil:
+			if err := send(item); err != nil {
+				return err
+			}
+		case ctx.Err() != nil:
+			return nil
+		case errors.Is(err, context.DeadlineExceeded):
+			if idle != nil && idle() {
+				return nil
+			}
+		default:
+			return err
+		}
+	}
+}
+
+// dequeue waits for src's next item, for at most wait if it is set.
+func dequeue[T any](ctx context.Context, src handler.InvocationSource[T], dispatchId string, wait time.Duration) (T, error) {
+	if wait > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, wait)
+		defer cancel()
+	}
+	return src.Dequeue(ctx, dispatchId)
+}
+
 func (s *AxonAgent) sendInvocations(dispatchId string, stream pb.AxonAgent_DispatchServer) error {
 
 	s.logger.Info("starting handler set", zap.String("dispatch-id", dispatchId))
@@ -158,67 +205,65 @@ func (s *AxonAgent) sendInvocations(dispatchId string, stream pb.AxonAgent_Dispa
 		return err
 	}
 
-	finished := false
-	go func() {
-		<-stream.Context().Done()
-		s.logger.Info("stream context closed", zap.String("dispatch-id", dispatchId), zap.Error(stream.Context().Err()))
-		finished = true
-	}()
-
 	go func() {
 		defer func() {
 			s.logger.Info("closing handler set", zap.String("dispatch-id", dispatchId))
 			s.Manager.Stop(dispatchId)
 		}()
 
-		for !finished {
-			invoke, err := s.Manager.Dequeue(stream.Context(), dispatchId, s.config.DequeueWaitTime)
-			if err != nil {
-				s.logger.Error("failed to dequeue message", zap.Error(err))
-				continue
-			}
-
-			if invoke == nil {
-
-				if s.Manager.IsFinished() && len(s.outstandingRequests) == 0 {
-					s.sendComplete(stream)
-					finished = true
-				}
-				continue
-			}
-
-			now := time.Now()
-			msg := invoke.ToDispatchInvoke()
-
-			dispatchMessage := &pb.DispatchMessage{
+		send := func(invoke handler.Invocable) error {
+			return stream.Send(&pb.DispatchMessage{
 				Type:    pb.DispatchMessageType_DISPATCH_MESSAGE_INVOKE,
-				Message: &pb.DispatchMessage_Invoke{Invoke: msg},
-			}
-
-			if err := stream.Send(dispatchMessage); err != nil {
-				s.logger.Error("failed to send dispatch message to client", zap.Error(err))
-				return
-			}
-
-			s.setOutstandingRequest(msg.InvocationId, &inflightRequest{
-				invocable: invoke,
-				sentAt:    now,
+				Message: &pb.DispatchMessage_Invoke{Invoke: s.track(invoke)},
 			})
-			go func(requestId string) {
-				<-time.After(time.Duration(msg.TimeoutMs) * time.Millisecond)
-				s.ReportInvocation(context.Background(), &pb.ReportInvocationRequest{
-					HandlerInvoke: msg,
-					Message: &pb.ReportInvocationRequest_Error{Error: &pb.Error{
-						Code: "timeout",
-						Message: fmt.Sprintf(
-							"handler did not report a result within %dms",
-							msg.TimeoutMs),
-					}},
-				})
-			}(msg.InvocationId)
+		}
+		idle := func() bool {
+			if s.Manager.IsFinished() && s.outstandingCount() == 0 {
+				s.sendComplete(stream)
+				return true
+			}
+			return false
+		}
+		err := drain(stream.Context(), s.Manager, dispatchId, send, s.config.DequeueWaitTime, idle)
+		if err != nil {
+			s.logger.Error("failed to send dispatch message to client", zap.Error(err))
 		}
 	}()
 	return nil
+}
+
+// track records an invocation as sent and gives it a deadline. If no report
+// comes back by then, the agent completes it as a timeout, which it reports
+// like any other failure. The grace lets a client that enforces the timeout
+// itself report it first, so it is described by the side that saw it.
+func (s *AxonAgent) track(invoke handler.Invocable) *pb.DispatchHandlerInvoke {
+	now := time.Now()
+	msg := invoke.ToDispatchInvoke()
+	// The client may not read this for a while if every handler is busy, so
+	// it gets an absolute deadline rather than only a timeout.
+	deadline := now.Add(time.Duration(msg.TimeoutMs)*time.Millisecond + reportGrace)
+	msg.Deadline = timestamppb.New(deadline)
+
+	s.setOutstandingRequest(msg.InvocationId, &inflightRequest{invocable: invoke, sentAt: now})
+	time.AfterFunc(time.Until(deadline), func() {
+		message := fmt.Sprintf("handler did not report a result within %dms", msg.TimeoutMs)
+		s.completeInvocation(context.Background(), &pb.ReportInvocationRequest{
+			HandlerInvoke: msg,
+			Message:       &pb.ReportInvocationRequest_Error{Error: &pb.Error{Code: "timeout", Message: message}},
+			Failure: &pb.InvocationFailure{
+				Reason:  pb.FailureReason_TIMEOUT,
+				Source:  pb.FailureSource_RUNTIME,
+				Message: message,
+			},
+		})
+	})
+	return msg
+}
+
+func (s *AxonAgent) outstandingCount() int {
+	s.inflightLock.RLock()
+	defer s.inflightLock.RUnlock()
+	return len(s.outstandingRequests)
 }
 
 func (s *AxonAgent) setOutstandingRequest(id string, req *inflightRequest) {
@@ -252,19 +297,31 @@ func describeError(e *pb.Error) string {
 // ReportInvocation is called by the client to report the result of an invocation, which will
 // log the result of an invocation into the history path.
 func (s *AxonAgent) ReportInvocation(ctx context.Context, req *pb.ReportInvocationRequest) (*pb.ReportInvocationResponse, error) {
-	s.inflightLock.RLock()
+	s.completeInvocation(ctx, req)
+	return &pb.ReportInvocationResponse{}, nil
+}
+
+// completeInvocation records the result of an outstanding invocation, once:
+// a later report for the same invocation is ignored. A report that carries a
+// failure completes the invocation with a FailureError, which is how both
+// client and agent failures reach the failure manager.
+func (s *AxonAgent) completeInvocation(ctx context.Context, req *pb.ReportInvocationRequest) {
+	s.inflightLock.Lock()
 	ifr, ok := s.outstandingRequests[req.HandlerInvoke.InvocationId]
-	s.inflightLock.RUnlock()
+	delete(s.outstandingRequests, req.HandlerInvoke.InvocationId)
+	s.inflightLock.Unlock()
 
 	if !ok {
-		return &pb.ReportInvocationResponse{}, nil
+		return
 	}
-	defer s.setOutstandingRequest(req.HandlerInvoke.InvocationId, nil)
 
 	var requestErr error
 
 	if e := req.GetError(); e != nil {
 		requestErr = fmt.Errorf("invocation error: %s", describeError(e))
+	}
+	if f := req.GetFailure(); f != nil {
+		requestErr = &handler.FailureError{Failure: f}
 	}
 	requestResult := ""
 
@@ -278,7 +335,72 @@ func (s *AxonAgent) ReportInvocation(ctx context.Context, req *pb.ReportInvocati
 	if err != nil {
 		s.logger.Error("failed to write history file", zap.Error(err))
 	}
-	return &pb.ReportInvocationResponse{}, nil
+}
+
+// DispatchEvents sends a client its failed invocations and applies its answer
+// to each. One the client hasn't answered when the stream ends is sent again
+// on its next stream.
+func (s *AxonAgent) DispatchEvents(stream pb.AxonAgent_DispatchEventsServer) error {
+	if s.Failures == nil {
+		return status.Error(codes.Unimplemented, "failure events are not enabled")
+	}
+
+	first, err := stream.Recv()
+	if err != nil {
+		return err
+	}
+	dispatchId := first.GetDispatchId()
+	logger := s.logger.With(zap.String("dispatch-id", dispatchId))
+	logger.Info("client subscribed to failure events", zap.String("client-version", first.GetClientVersion()))
+	s.Failures.Subscribe(dispatchId)
+
+	var mu sync.Mutex
+	unanswered := map[string]*handler.FailureEvent{}
+	defer func() {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, ev := range unanswered {
+			ev.Requeue()
+		}
+	}()
+
+	ctx, cancel := context.WithCancel(stream.Context())
+	defer cancel()
+	go func() {
+		defer cancel()
+		for {
+			req, err := stream.Recv()
+			if err != nil {
+				return
+			}
+			res := req.GetResolution()
+			if res == nil {
+				continue
+			}
+			mu.Lock()
+			ev := unanswered[res.GetInvocationId()]
+			delete(unanswered, res.GetInvocationId())
+			mu.Unlock()
+			if ev == nil {
+				logger.Warn("resolution for a failure that is not pending", zap.String("invocation-id", res.GetInvocationId()))
+				continue
+			}
+			// Resolve logs its own outcome.
+			_ = ev.Resolve(res.GetAction())
+		}
+	}()
+
+	send := func(ev *handler.FailureEvent) error {
+		mu.Lock()
+		unanswered[ev.Invoke.InvocationId] = ev
+		mu.Unlock()
+		return stream.Send(ev.DispatchEvent)
+	}
+	if err := drain(ctx, s.Failures, dispatchId, send, 0, nil); err != nil {
+		logger.Warn("failure event stream ended", zap.Error(err))
+		return err
+	}
+	return nil
 }
 
 // ListHandlers returns a list of all registered handlers

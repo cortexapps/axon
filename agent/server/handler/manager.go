@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	pb "github.com/cortexapps/axon/.generated/proto/github.com/cortexapps/axon"
@@ -31,13 +32,20 @@ type Manager interface {
 	Stop(id string) error
 	Trigger(handler Invocable) error
 	GetByTag(tag string) HandlerEntry
-	Dequeue(ctx context.Context, id string, waitTime time.Duration) (Invocable, error)
+	// Dequeue hands out the next queued invocation, already moved to
+	// InvokeDispatched; ones that expired while queued are skipped.
+	InvocationSource[Invocable]
 	Close() error
 	IsFinished() bool
+
+	// SetFailureNotifier sets where invocations that complete with a
+	// FailureError are sent.
+	SetFailureNotifier(notifier FailureNotifier)
 }
 
 type handlerManager struct {
 	logger              *zap.Logger
+	queuesMu            sync.Mutex
 	dispatchQueues      map[string]chan Invocable
 	outstandingRequests map[string]Invocable
 	handlers            map[string]HandlerEntry
@@ -47,6 +55,7 @@ type handlerManager struct {
 	invokeCounter       *prometheus.CounterVec
 	queueDepthGauge     *prometheus.GaugeVec
 	handlerLatencyGauge *prometheus.HistogramVec
+	failures            FailureNotifier
 }
 
 func NewHandlerManager(logger *zap.Logger, cron cron.Cron, metrics *prometheus.Registry) Manager {
@@ -203,16 +212,23 @@ func (s *handlerManager) removeHandler(entry HandlerEntry) {
 	delete(s.handlers, entry.Id())
 }
 
-func (s *handlerManager) Dequeue(ctx context.Context, dispatchId string, waitTime time.Duration) (Invocable, error) {
+func (s *handlerManager) SetFailureNotifier(notifier FailureNotifier) {
+	s.failures = notifier
+}
+
+func (s *handlerManager) Dequeue(ctx context.Context, dispatchId string) (Invocable, error) {
 	queue := s.getDispatchQueue(dispatchId)
-	select {
-	case <-time.After(waitTime):
-		s.checkFinished()
-		return nil, nil
-	case response := <-queue:
-		return response, nil
-	case <-ctx.Done():
-		return nil, nil
+	for {
+		select {
+		case invoke := <-queue:
+			if invoke.SetState(InvokeDispatched) {
+				return invoke, nil
+			}
+			// It expired while queued, and that failure has been reported;
+			// handing it out now would run stale work.
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
 }
 
@@ -247,28 +263,39 @@ func (s *handlerManager) Trigger(handler Invocable) error {
 
 	entry.OnTrigger(message.GetReason())
 
-	startTime := time.Now()
 	queue := s.getDispatchQueue(entry.DispatchId())
+	go s.watch(message, logger, cancel)
 	select {
 	case queue <- message:
 	default:
 		// Never block here: Trigger runs on the inbound HTTP goroutine for a
 		// webhook, and a blocked send holds that request open with no timeout.
-		// Cancelling completes the invocation rather than leaking it.
-		cancel()
-		s.queueDepthGauge.WithLabelValues(handlerName).Set(float64(len(queue)))
-		s.invokeCounter.WithLabelValues(handlerName, "rejected").Inc()
+		message.SetState(InvokeRejected)
+		failure := NewFailureError(pb.FailureReason_NO_RESOURCES, pb.FailureSource_RUNTIME,
+			fmt.Sprintf("dispatch queue is full (%d waiting)", len(queue)))
+		failure.Failure.CallerRejected = true
+		message.Complete("", failure)
 		logger.Warn("Dispatch queue is full, rejecting invocation",
 			zap.Int("depth", len(queue)))
 		return ErrDispatchQueueFull
 	}
 	s.queueDepthGauge.WithLabelValues(handlerName).Set(float64(len(queue)))
+	return nil
+}
 
-	go func() {
-		defer cancel()
-		<-message.Done()
-		result, err := message.GetResult()
-		s.queueDepthGauge.WithLabelValues(handlerName).Set(float64(len(queue)))
+// watch waits for an invocation to finish, however that happens, and is the
+// one place a failed invocation is handed to the failure manager.
+func (s *handlerManager) watch(invoke Invocable, logger *zap.Logger, cancel context.CancelFunc) {
+	defer cancel()
+	startTime := time.Now()
+	handlerName := invoke.GetEntry().Name()
+	<-invoke.Done()
+	result, err := invoke.GetResult()
+
+	s.queueDepthGauge.WithLabelValues(handlerName).Set(float64(len(s.getDispatchQueue(invoke.GetEntry().DispatchId()))))
+	if invoke.State() == InvokeRejected {
+		s.invokeCounter.WithLabelValues(handlerName, "rejected").Inc()
+	} else {
 		s.handlerLatencyGauge.WithLabelValues(handlerName, result).Observe(float64(time.Since(startTime).Milliseconds()))
 		if err != nil {
 			logger.Error("handler error", zap.Error(err))
@@ -277,13 +304,22 @@ func (s *handlerManager) Trigger(handler Invocable) error {
 			logger.Info("Handler completed", zap.Int("result-length", len(result)))
 			s.invokeCounter.WithLabelValues(handlerName, "success").Inc()
 		}
-	}()
+	}
 
-	return nil
+	var failure *FailureError
+	if errors.As(err, &failure) {
+		if s.failures == nil {
+			logger.Warn("Invocation failed, no failure manager", zap.Error(err))
+			return
+		}
+		s.failures.Notify(invoke.ToDispatchInvoke(), failure.Failure)
+	}
 }
 
 func (s *handlerManager) getDispatchQueue(DispatchId string) chan Invocable {
-
+	// Webhook goroutines trigger while client streams dequeue.
+	s.queuesMu.Lock()
+	defer s.queuesMu.Unlock()
 	queue, ok := s.dispatchQueues[DispatchId]
 	if !ok {
 		queue = make(chan Invocable, dispatchQueueDepth)
@@ -326,6 +362,10 @@ func TriggerInvoke(context context.Context, manager Manager, handlerName string,
 		return "", err
 	}
 
-	<-handlerInvoke.Done()
-	return handlerInvoke.GetResult()
+	select {
+	case <-handlerInvoke.Done():
+		return handlerInvoke.GetResult()
+	case <-context.Done():
+		return "", context.Err()
+	}
 }
