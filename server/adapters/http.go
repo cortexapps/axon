@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -76,8 +77,28 @@ func NewHttpAdapter(
 
 // ServeHTTP delegates to the internal mux which routes between
 // connection-status lookups and broker dispatch.
+//
+// A /broker/ path that is not clean (it has "//", "/./" or "/../") goes
+// directly to dispatch. ServeMux answers such a path with a 301 to the
+// cleaned path, and that Location is relative. The dispatcher cannot follow
+// a relative redirect, so the call failed. snyk-broker forwards the path as
+// it is, and the upstream decides what the path means. We do the same.
 func (h *HttpAdapter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, "/broker/") && !isCleanPath(r.URL.Path) {
+		h.handleBrokerDispatch(w, r)
+		return
+	}
 	h.mux.ServeHTTP(w, r)
+}
+
+// isCleanPath reports whether ServeMux would route p without a redirect. It
+// uses the same rule as ServeMux: path.Clean, with a trailing slash kept.
+func isCleanPath(p string) bool {
+	cleaned := path.Clean(p)
+	if strings.HasSuffix(p, "/") && cleaned != "/" {
+		cleaned += "/"
+	}
+	return cleaned == p
 }
 
 // brokerOKFalse and brokerOKTrue are snyk-broker's response bodies, byte for
