@@ -32,7 +32,7 @@ func TestHandleWebhook(t *testing.T) {
 		},
 	}
 
-	_, err := manager.RegisterHandler("1", "test", 1, option)
+	_, err := manager.RegisterHandler("1", "test", time.Minute, option)
 	require.NoError(t, err)
 
 	err = manager.Start("1")
@@ -61,7 +61,7 @@ func TestHandleWebhook(t *testing.T) {
 	Ensure that the handler was invoked
 	*/
 	assert.NotNil(t, manager.GetByTag("my-webhook-id").LastInvoked())
-	handlerInvocation, err := manager.Dequeue(context.Background(), "1", 500*time.Millisecond)
+	handlerInvocation, err := dequeueWithin(manager, 500*time.Millisecond)
 	require.NoError(t, err)
 	require.Equal(t, "test", handlerInvocation.GetEntry().Name())
 
@@ -121,4 +121,11 @@ func TestHandleWebhookRejectsWhenQueueIsFull(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		require.Fail(t, "webhook request hung on a full queue instead of returning 503")
 	}
+}
+
+// dequeueWithin waits up to wait for src's next item.
+func dequeueWithin[T any](src handler.InvocationSource[T], wait time.Duration) (T, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), wait)
+	defer cancel()
+	return src.Dequeue(ctx, "1")
 }

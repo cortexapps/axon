@@ -106,6 +106,26 @@ func (mr *MockAxonAgentClientMockRecorder) Dispatch(ctx any, opts ...any) *gomoc
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Dispatch", reflect.TypeOf((*MockAxonAgentClient)(nil).Dispatch), varargs...)
 }
 
+// DispatchEvents mocks base method.
+func (m *MockAxonAgentClient) DispatchEvents(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[axon.DispatchEventsRequest, axon.DispatchEvent], error) {
+	m.ctrl.T.Helper()
+	varargs := []any{ctx}
+	for _, a := range opts {
+		varargs = append(varargs, a)
+	}
+	ret := m.ctrl.Call(m, "DispatchEvents", varargs...)
+	ret0, _ := ret[0].(grpc.BidiStreamingClient[axon.DispatchEventsRequest, axon.DispatchEvent])
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// DispatchEvents indicates an expected call of DispatchEvents.
+func (mr *MockAxonAgentClientMockRecorder) DispatchEvents(ctx any, opts ...any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	varargs := append([]any{ctx}, opts...)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DispatchEvents", reflect.TypeOf((*MockAxonAgentClient)(nil).DispatchEvents), varargs...)
+}
+
 // GetHandlerHistory mocks base method.
 func (m *MockAxonAgentClient) GetHandlerHistory(ctx context.Context, in *axon.GetHandlerHistoryRequest, opts ...grpc.CallOption) (*axon.GetHandlerHistoryResponse, error) {
 	m.ctrl.T.Helper()
