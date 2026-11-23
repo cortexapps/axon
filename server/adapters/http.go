@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -85,9 +86,11 @@ func (h *HttpAdapter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // snyk-broker forwards the path as it is.
 func (h *HttpAdapter) Wrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if token, ok := connectionStatusToken(r); ok {
-			h.getConnectionStatus(w, token)
-			return
+		if r.Method == http.MethodGet || r.Method == http.MethodHead {
+			if token, ok := connectionStatusToken(r.URL.Path); ok {
+				h.getConnectionStatus(w, token)
+				return
+			}
 		}
 		if strings.HasPrefix(r.URL.Path, "/broker/") {
 			h.handleBrokerDispatch(w, r)
@@ -97,21 +100,20 @@ func (h *HttpAdapter) Wrap(next http.Handler) http.Handler {
 	})
 }
 
-// connectionStatusToken returns the token of a connection-status request.
-// Both the root and the /broker/ form are served, as snyk-broker does: the
-// dispatcher's ClientConnectivityService.checkBroker asks at the root and
-// reads any non-200 as "this client is not connected here".
-func connectionStatusToken(r *http.Request) (string, bool) {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+// connectionStatusPath matches /connection-status/{token} and
+// /broker/connection-status/{token}, where {token} is one path segment. Both
+// forms are served, as snyk-broker does: the dispatcher's
+// ClientConnectivityService.checkBroker asks at the root and reads any
+// non-200 as "this client is not connected here".
+var connectionStatusPath = regexp.MustCompile(`^(?:/broker)?/connection-status/([^/]+)$`)
+
+// connectionStatusToken returns the token of a connection-status path.
+func connectionStatusToken(path string) (string, bool) {
+	m := connectionStatusPath.FindStringSubmatch(path)
+	if m == nil {
 		return "", false
 	}
-	for _, prefix := range []string{"/connection-status/", "/broker/connection-status/"} {
-		token, ok := strings.CutPrefix(r.URL.Path, prefix)
-		if ok && token != "" && !strings.Contains(token, "/") {
-			return token, true
-		}
-	}
-	return "", false
+	return m[1], true
 }
 
 // brokerOKFalse and brokerOKTrue are snyk-broker's response bodies, byte for

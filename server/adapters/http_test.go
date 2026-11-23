@@ -50,3 +50,38 @@ func TestBrokerDispatch_ForwardsPathAsSent(t *testing.T) {
 		}
 	}
 }
+
+func TestConnectionStatusToken(t *testing.T) {
+	for _, tc := range []struct {
+		path  string
+		token string
+		ok    bool
+	}{
+		{"/connection-status/tok", "tok", true},
+		{"/broker/connection-status/tok", "tok", true},
+		{"/connection-status/66fa3dbe-46fa-4949-9713-89a2ead1e7c2", "66fa3dbe-46fa-4949-9713-89a2ead1e7c2", true},
+		{"/broker/connection-status/0961c6399152f7cc71c525cfedf37c265008ed00183a6b9ae15ce70beb452b5a",
+			"0961c6399152f7cc71c525cfedf37c265008ed00183a6b9ae15ce70beb452b5a", true},
+
+		// No token, or more than one segment after the prefix.
+		{"/connection-status/", "", false},
+		{"/connection-status", "", false},
+		{"/broker/connection-status/", "", false},
+		{"/connection-status/tok/", "", false},
+		{"/connection-status/tok/extra", "", false},
+		{"/connection-status//tok", "", false},
+
+		// Other prefixes. /broker/<token>/... is dispatch, not connection status.
+		{"/broker/tok/connection-status/x", "", false},
+		{"/broker//connection-status/tok", "", false},
+		{"/x/connection-status/tok", "", false},
+		{"/connection-statusx/tok", "", false},
+		{"/broker/connection-statusx/tok", "", false},
+		{"connection-status/tok", "", false},
+		{"/broker/tok/repos/o/r/contents//Jenkinsfile", "", false},
+	} {
+		token, ok := connectionStatusToken(tc.path)
+		require.Equal(t, tc.ok, ok, tc.path)
+		require.Equal(t, tc.token, token, tc.path)
+	}
+}
