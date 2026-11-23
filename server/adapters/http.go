@@ -14,7 +14,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -61,35 +60,34 @@ func NewHttpAdapter(
 		logger:          logger.Named("http-adapter"),
 		dispatchTimeout: cfg.DispatchTimeout,
 	}
-	mux := http.NewServeMux()
-	// The dispatcher asks at the root: ClientConnectivityService.checkBroker
-	// builds http://{hostPort}/connection-status/{rawToken}, and treats any
-	// non-200 as "this client is not connected here". Serving it only under
-	// /broker/ meant every liveness check 404'd, so verifyClientLiveness and
-	// bootstrapServerIndex removed this server from the token's index no
-	// matter how many clients it was holding. snyk-broker serves the root
-	// path; matching it is what makes the two transports interchangeable.
-	mux.HandleFunc("GET /connection-status/{token}", h.getConnectionStatus)
-	mux.HandleFunc("GET /broker/connection-status/{token}", h.getConnectionStatus)
-	mux.HandleFunc("/broker/", h.handleBrokerDispatch)
-	h.handler = h.Wrap(mux)
+	h.handler = h.Wrap(http.NotFoundHandler())
 	return h
 }
 
-// ServeHTTP routes between connection-status lookups and broker dispatch.
+// ServeHTTP serves the adapter's routes (see Wrap) and answers 404 to all
+// other requests.
 func (h *HttpAdapter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.handler.ServeHTTP(w, r)
 }
 
-// Wrap returns a handler that sends /broker/ paths that are not clean (they
-// have "//", "/./" or "/../") directly to broker dispatch, and all other
-// requests to next. Put it in front of every ServeMux that routes to the
-// adapter, including the adapter's own. ServeMux answers such a path with a
+// Wrap returns a handler that serves the adapter's routes and sends all other
+// requests to next:
+//
+//	GET /connection-status/{token}         → connection status
+//	GET /broker/connection-status/{token}  → connection status
+//	/broker/{token}/{path...}              → tunnel dispatch
+//
+// Wrap matches the path as it was sent. Do not route these paths through a
+// ServeMux: it cleans the path, and answers a path with "//" or "/./" with a
 // 301 to a relative Location, which the dispatcher cannot follow.
-// snyk-broker forwards the path as it is, and so do we.
+// snyk-broker forwards the path as it is.
 func (h *HttpAdapter) Wrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/broker/") && !isCleanPath(r.URL.Path) {
+		if token, ok := connectionStatusToken(r); ok {
+			h.getConnectionStatus(w, token)
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/broker/") {
 			h.handleBrokerDispatch(w, r)
 			return
 		}
@@ -97,14 +95,21 @@ func (h *HttpAdapter) Wrap(next http.Handler) http.Handler {
 	})
 }
 
-// isCleanPath reports whether ServeMux would route p without a redirect. It
-// uses the same rule as ServeMux: path.Clean, with a trailing slash kept.
-func isCleanPath(p string) bool {
-	cleaned := path.Clean(p)
-	if strings.HasSuffix(p, "/") && cleaned != "/" {
-		cleaned += "/"
+// connectionStatusToken returns the token of a connection-status request.
+// Both the root and the /broker/ form are served, as snyk-broker does: the
+// dispatcher's ClientConnectivityService.checkBroker asks at the root and
+// reads any non-200 as "this client is not connected here".
+func connectionStatusToken(r *http.Request) (string, bool) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		return "", false
 	}
-	return cleaned == p
+	for _, prefix := range []string{"/connection-status/", "/broker/connection-status/"} {
+		token, ok := strings.CutPrefix(r.URL.Path, prefix)
+		if ok && token != "" && !strings.Contains(token, "/") {
+			return token, true
+		}
+	}
+	return "", false
 }
 
 // brokerOKFalse and brokerOKTrue are snyk-broker's response bodies, byte for
@@ -160,9 +165,7 @@ func writeBrokerJSON(w http.ResponseWriter, status int, body string) {
 //
 //	200  {"ok": true}                                       // token has at least one connected client
 //	404  {"ok": false}     + x-broker-failure: no-connection
-func (h *HttpAdapter) getConnectionStatus(w http.ResponseWriter, r *http.Request) {
-	tokenOrHash := r.PathValue("token")
-
+func (h *HttpAdapter) getConnectionStatus(w http.ResponseWriter, tokenOrHash string) {
 	// Try raw token first, then as already-hashed (mirrors handleBrokerDispatch).
 	token := broker.NewToken(tokenOrHash)
 	if h.registry.GetIdentity(token) == nil {

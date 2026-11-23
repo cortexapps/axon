@@ -22,11 +22,11 @@ func TestBrokerDispatch_ForwardsPathAsSent(t *testing.T) {
 	}
 	entryPoints := map[string]func(h *HttpAdapter) http.Handler{
 		"adapter": func(h *HttpAdapter) http.Handler { return h },
-		// cmd/main.go mounts the adapter on an outer ServeMux.
-		"outer mux": func(h *HttpAdapter) http.Handler {
-			outer := http.NewServeMux()
-			outer.Handle("/broker/", h)
-			return h.Wrap(outer)
+		// The cmd/main.go shape: the adapter in front of the server's ServeMux.
+		"wrapped mux": func(h *HttpAdapter) http.Handler {
+			mux := http.NewServeMux()
+			mux.HandleFunc("/healthz", func(http.ResponseWriter, *http.Request) {})
+			return h.Wrap(mux)
 		},
 	}
 	for entryName, entryPoint := range entryPoints {
