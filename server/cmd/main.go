@@ -171,9 +171,11 @@ func main() {
 	// one shape for the dispatcher across both transports.
 	httpMux.HandleFunc("/healthcheck", health)
 
+	// httpMux would answer a /broker/ path that is not clean with a relative
+	// 301 before the adapter sees it. See HttpAdapter.Wrap.
 	httpServer := &http.Server{
 		Addr:    fmt.Sprintf(":%d", cfg.HttpPort),
-		Handler: httpMux,
+		Handler: httpAdapter.Wrap(httpMux),
 	}
 
 	// Notify BROKER_SERVER that this server instance has started. The

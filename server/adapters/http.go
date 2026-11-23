@@ -91,6 +91,20 @@ func (h *HttpAdapter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.mux.ServeHTTP(w, r)
 }
 
+// Wrap returns a handler that sends /broker/ paths that are not clean
+// directly to h, and all other requests to next. Put it in front of any
+// ServeMux that mounts h: that mux cleans the path and sends the relative
+// 301 before h.ServeHTTP runs.
+func (h *HttpAdapter) Wrap(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/broker/") && !isCleanPath(r.URL.Path) {
+			h.ServeHTTP(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // isCleanPath reports whether ServeMux would route p without a redirect. It
 // uses the same rule as ServeMux: path.Clean, with a trailing slash kept.
 func isCleanPath(p string) bool {

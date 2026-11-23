@@ -2,6 +2,7 @@ package adapters
 
 import (
 	"context"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 
@@ -23,7 +24,17 @@ func TestBrokerDispatch_ForwardsPathAsSent(t *testing.T) {
 			fh := newFailureHarness(t, 0)
 			ctx, cancel := context.WithCancel(context.Background())
 			done := make(chan *httptest.ResponseRecorder, 1)
-			go func() { done <- fh.serve(ctx, path) }()
+			// The production shape: cmd/main.go mounts the adapter on an
+			// outer ServeMux, which also cleans paths.
+			outer := http.NewServeMux()
+			outer.Handle("/broker/", fh.h)
+			handler := fh.h.Wrap(outer)
+			go func() {
+				req := httptest.NewRequest(http.MethodGet, "/broker/"+failureToken+path, nil).WithContext(ctx)
+				w := httptest.NewRecorder()
+				handler.ServeHTTP(w, req)
+				done <- w
+			}()
 
 			start := fh.next(t, isStart).GetStart()
 			require.Equal(t, path, start.GetPseudoHeaders()[":path"])
