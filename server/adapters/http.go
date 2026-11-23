@@ -60,6 +60,8 @@ func NewHttpAdapter(
 		logger:          logger.Named("http-adapter"),
 		dispatchTimeout: cfg.DispatchTimeout,
 	}
+	// When the adapter is the whole server (as in tests), no other routes
+	// exist, so the requests that Wrap does not serve get a 404.
 	h.handler = h.Wrap(http.NotFoundHandler())
 	return h
 }
