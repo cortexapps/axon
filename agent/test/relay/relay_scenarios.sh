@@ -83,6 +83,28 @@ scenario_broker_passthrough() {
     echo "Success: text passthrough"
 }
 
+# Paths that are not clean, such as GitHub's contents//Jenkinsfile, must get
+# to the origin as they are. Go's ServeMux answers such a path with a 301 to a
+# relative Location, which the Cortex dispatcher cannot follow, so the call
+# failed. --path-as-is stops curl from cleaning the path before it is sent.
+scenario_unclean_path_passthrough() {
+    echo "Checking relay passthrough of paths that are not clean..."
+    local dir result
+    dir="path-test-$(date +%s)"
+    mkdir -p "/tmp/$dir"
+    printf %s "$TOKEN" > "/tmp/$dir/file"
+
+    for path in "$dir//file" "$dir/./file"; do
+        result=$(curlw --path-as-is -w '\n%{http_code}' "$DISPATCH_URL/$path")
+        if [ "$result" != "$TOKEN"$'\n'"200" ]; then
+            rm -rf "/tmp/$dir"
+            scenario_fail "Expected '$TOKEN' with 200 for /$path, got:" "$result"
+        fi
+        echo "Success: /$path relayed as is"
+    done
+    rm -rf "/tmp/$dir"
+}
+
 # A payload large enough to be split across frames in either transport, so
 # chunking and reassembly are covered rather than assumed. Compared by
 # checksum: a corrupted byte anywhere fails.
@@ -194,6 +216,7 @@ scenario_no_proxy_headers() {
 run_shared_scenarios() {
     scenario_axon_endpoints
     scenario_broker_passthrough
+    scenario_unclean_path_passthrough
     scenario_binary_passthrough "$@"
     scenario_gitlab_basic_auth
     scenario_https_relay
