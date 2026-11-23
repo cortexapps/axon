@@ -13,33 +13,40 @@ import (
 // ServeMux cleans a path with "//", "/./" or "/../" and answers with a 301
 // to a relative Location, which the dispatcher cannot follow.
 func TestBrokerDispatch_ForwardsPathAsSent(t *testing.T) {
-	for name, path := range map[string]string{
+	paths := map[string]string{
 		"clean":        "/repos/o/r/contents/Jenkinsfile",
 		"double slash": "/repos/o/r/contents//Jenkinsfile",
 		"dot":          "/repos/o/r/contents/./Jenkinsfile",
 		"dot dot":      "/repos/o/r/../r/contents/Jenkinsfile",
 		"query":        "/repos/o/r/contents//Jenkinsfile?ref=main",
-	} {
-		t.Run(name, func(t *testing.T) {
-			fh := newFailureHarness(t, 0)
-			ctx, cancel := context.WithCancel(context.Background())
-			done := make(chan *httptest.ResponseRecorder, 1)
-			// The production shape: cmd/main.go mounts the adapter on an
-			// outer ServeMux, which also cleans paths.
+	}
+	entryPoints := map[string]func(h *HttpAdapter) http.Handler{
+		"adapter": func(h *HttpAdapter) http.Handler { return h },
+		// cmd/main.go mounts the adapter on an outer ServeMux.
+		"outer mux": func(h *HttpAdapter) http.Handler {
 			outer := http.NewServeMux()
-			outer.Handle("/broker/", fh.h)
-			handler := fh.h.Wrap(outer)
-			go func() {
-				req := httptest.NewRequest(http.MethodGet, "/broker/"+failureToken+path, nil).WithContext(ctx)
-				w := httptest.NewRecorder()
-				handler.ServeHTTP(w, req)
-				done <- w
-			}()
+			outer.Handle("/broker/", h)
+			return h.Wrap(outer)
+		},
+	}
+	for entryName, entryPoint := range entryPoints {
+		for name, path := range paths {
+			t.Run(entryName+"/"+name, func(t *testing.T) {
+				fh := newFailureHarness(t, 0)
+				handler := entryPoint(fh.h)
+				ctx, cancel := context.WithCancel(context.Background())
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					req := httptest.NewRequest(http.MethodGet, "/broker/"+failureToken+path, nil).WithContext(ctx)
+					handler.ServeHTTP(httptest.NewRecorder(), req)
+				}()
 
-			start := fh.next(t, isStart).GetStart()
-			require.Equal(t, path, start.GetPseudoHeaders()[":path"])
-			cancel()
-			<-done
-		})
+				start := fh.next(t, isStart).GetStart()
+				require.Equal(t, path, start.GetPseudoHeaders()[":path"])
+				cancel()
+				<-done
+			})
+		}
 	}
 }

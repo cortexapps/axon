@@ -43,7 +43,7 @@ type HttpAdapter struct {
 	metrics         *metrics.Metrics
 	logger          *zap.Logger
 	dispatchTimeout time.Duration
-	mux             *http.ServeMux
+	handler         http.Handler
 }
 
 // NewHttpAdapter creates a new HTTP adapter over the dispatcher.
@@ -61,7 +61,7 @@ func NewHttpAdapter(
 		logger:          logger.Named("http-adapter"),
 		dispatchTimeout: cfg.DispatchTimeout,
 	}
-	h.mux = http.NewServeMux()
+	mux := http.NewServeMux()
 	// The dispatcher asks at the root: ClientConnectivityService.checkBroker
 	// builds http://{hostPort}/connection-status/{rawToken}, and treats any
 	// non-200 as "this client is not connected here". Serving it only under
@@ -69,36 +69,28 @@ func NewHttpAdapter(
 	// bootstrapServerIndex removed this server from the token's index no
 	// matter how many clients it was holding. snyk-broker serves the root
 	// path; matching it is what makes the two transports interchangeable.
-	h.mux.HandleFunc("GET /connection-status/{token}", h.getConnectionStatus)
-	h.mux.HandleFunc("GET /broker/connection-status/{token}", h.getConnectionStatus)
-	h.mux.HandleFunc("/broker/", h.handleBrokerDispatch)
+	mux.HandleFunc("GET /connection-status/{token}", h.getConnectionStatus)
+	mux.HandleFunc("GET /broker/connection-status/{token}", h.getConnectionStatus)
+	mux.HandleFunc("/broker/", h.handleBrokerDispatch)
+	h.handler = h.Wrap(mux)
 	return h
 }
 
-// ServeHTTP delegates to the internal mux which routes between
-// connection-status lookups and broker dispatch.
-//
-// A /broker/ path that is not clean (it has "//", "/./" or "/../") goes
-// directly to dispatch. ServeMux answers such a path with a 301 to the
-// cleaned path, and that Location is relative. The dispatcher cannot follow
-// a relative redirect, so the call failed. snyk-broker forwards the path as
-// it is, and the upstream decides what the path means. We do the same.
+// ServeHTTP routes between connection-status lookups and broker dispatch.
 func (h *HttpAdapter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if strings.HasPrefix(r.URL.Path, "/broker/") && !isCleanPath(r.URL.Path) {
-		h.handleBrokerDispatch(w, r)
-		return
-	}
-	h.mux.ServeHTTP(w, r)
+	h.handler.ServeHTTP(w, r)
 }
 
-// Wrap returns a handler that sends /broker/ paths that are not clean
-// directly to h, and all other requests to next. Put it in front of any
-// ServeMux that mounts h: that mux cleans the path and sends the relative
-// 301 before h.ServeHTTP runs.
+// Wrap returns a handler that sends /broker/ paths that are not clean (they
+// have "//", "/./" or "/../") directly to broker dispatch, and all other
+// requests to next. Put it in front of every ServeMux that routes to the
+// adapter, including the adapter's own. ServeMux answers such a path with a
+// 301 to a relative Location, which the dispatcher cannot follow.
+// snyk-broker forwards the path as it is, and so do we.
 func (h *HttpAdapter) Wrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/broker/") && !isCleanPath(r.URL.Path) {
-			h.ServeHTTP(w, r)
+			h.handleBrokerDispatch(w, r)
 			return
 		}
 		next.ServeHTTP(w, r)
