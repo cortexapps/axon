@@ -83,6 +83,23 @@ scenario_broker_passthrough() {
     echo "Success: text passthrough"
 }
 
+# A path that is not clean, such as GitHub's contents//Jenkinsfile, must get
+# to the agent, and the agent's accept filter rejects it with a 4xx. The
+# ingress must not answer first: Go's ServeMux sends a 301 to a relative
+# Location, which the Cortex dispatcher cannot follow. --path-as-is stops curl
+# from cleaning the path before it is sent.
+scenario_unclean_path_reaches_agent() {
+    echo "Checking that paths that are not clean reach the agent..."
+    local path result
+    for path in "repos/o/r/contents//Jenkinsfile" "repos/o/r/contents/./Jenkinsfile"; do
+        result=$(curlw --path-as-is -o /dev/null -w '%{http_code}:%{redirect_url}' "$DISPATCH_URL/$path")
+        case "$result" in
+            400: | 401:) echo "Success: /$path reached the agent, which rejected it ($result)" ;;
+            *) scenario_fail "Expected a 400 or 401 from the agent and no redirect for /$path, got '$result'" ;;
+        esac
+    done
+}
+
 # A payload large enough to be split across frames in either transport, so
 # chunking and reassembly are covered rather than assumed. Compared by
 # checksum: a corrupted byte anywhere fails.
@@ -194,6 +211,7 @@ scenario_no_proxy_headers() {
 run_shared_scenarios() {
     scenario_axon_endpoints
     scenario_broker_passthrough
+    scenario_unclean_path_reaches_agent
     scenario_binary_passthrough "$@"
     scenario_gitlab_basic_auth
     scenario_https_relay

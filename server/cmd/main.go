@@ -158,10 +158,6 @@ func main() {
 	// Start HTTP server for metrics, health, and dispatch.
 	httpMux := http.NewServeMux()
 	httpMux.Handle("/metrics", m.Handler())
-	httpMux.Handle("/broker/", httpAdapter)
-	// The dispatcher's connection-status probe lives at the root, not under
-	// /broker/. Both forms reach the same handler in the adapter.
-	httpMux.Handle("/connection-status/", httpAdapter)
 	health := newHealthHandler(cfg, registry, dispatcher, brokerClient)
 	httpMux.HandleFunc("/healthz", health)
 	// The same body under the path we actually advertise. Both
@@ -171,9 +167,11 @@ func main() {
 	// one shape for the dispatcher across both transports.
 	httpMux.HandleFunc("/healthcheck", health)
 
+	// The adapter serves its own routes in front of httpMux. See
+	// HttpAdapter.Wrap.
 	httpServer := &http.Server{
 		Addr:    fmt.Sprintf(":%d", cfg.HttpPort),
-		Handler: httpMux,
+		Handler: httpAdapter.Wrap(httpMux),
 	}
 
 	// Notify BROKER_SERVER that this server instance has started. The
